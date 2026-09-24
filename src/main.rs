@@ -1,0 +1,56 @@
+mod bsp;
+mod camera;
+mod cli;
+mod export;
+mod grid;
+mod gui;
+mod light;
+mod mesh;
+mod overview;
+mod paths;
+mod quant;
+mod reach;
+mod render;
+mod scene;
+mod sky;
+mod spin;
+mod timing;
+mod wad;
+
+use clap::Parser;
+
+#[cfg(windows)]
+fn detach_console() {
+    unsafe extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut ids = [0u32; 2];
+    unsafe {
+        if GetConsoleProcessList(ids.as_mut_ptr(), 2) == 1 {
+            FreeConsole();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn detach_console() {}
+
+fn main() {
+    let cli = cli::Cli::parse();
+    if cli.cmd.is_none() {
+        detach_console();
+    }
+    let res = match &cli.cmd {
+        Some(cli::Cmd::Iso(a)) => cli::run_iso(a),
+        Some(cli::Cmd::Overview(a)) => cli::run_overview(a),
+        Some(cli::Cmd::Spin(a)) => cli::run_spin(a),
+        Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
+        Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
+        None => gui::run(None, None, "iso"),
+    };
+    if let Err(e) = res {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}

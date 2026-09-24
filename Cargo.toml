@@ -1,0 +1,30 @@
+[package]
+name = "bsp2img"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "x11", "wayland"] }
+egui-wgpu = "0.36"
+pollster = "1"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.33"
+rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png", "tga", "bmp"] }
+fast_image_resize = "6"
+tiny-skia = "0.12"
+ab_glyph = "0.2"
+epaint_default_fonts = "0.36"
+clap = { version = "4", features = ["derive"] }
+rfd = "0.17"
+anyhow = "1"
+gif = "0.13"
+png = "0.18"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
