@@ -1,3 +1,5 @@
+use std::cell::Cell;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -6,9 +8,10 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
+use crate::look::{FaceArgs, LookArgs};
 use crate::paths::{resolve_map, run_dir};
-use crate::render::{Gpu, Renderer, parse_color};
-use crate::scene::{CutOpts, LoadOpts, Scene};
+use crate::render::Gpu;
+use crate::scene::{CutOpts, LoadOpts, Report, Scene};
 use crate::spin::{SpinOpts, export_spin};
 use crate::timing::{TimingOpts, export_timing};
 
@@ -71,10 +74,6 @@ pub struct Common {
     pub no_auto_crop: bool,
     #[arg(long, default_value_t = 3, help = "supersampling factor")]
     pub ss: u32,
-    #[arg(long = "no-cull", help = "draw back faces")]
-    pub no_cull: bool,
-    #[arg(long, help = "pixelated texture filtering")]
-    pub nearest: bool,
     #[arg(long, default_value_t = 2.5)]
     pub gamma: f64,
     #[arg(long, default_value_t = 2.0)]
@@ -109,21 +108,8 @@ pub struct IsoArgs {
     pub pitch: f64,
     #[arg(long, num_args = 1.., default_values_t = [45.0, 135.0, 225.0, 315.0], allow_negative_numbers = true)]
     pub yaw: Vec<f64>,
-    #[arg(long, help = "background colour, e.g. #202020 (default transparent)")]
-    pub bg: Option<String>,
     #[command(flatten)]
-    pub s: SkyArgs,
-}
-
-#[derive(Args, Clone)]
-pub struct SkyArgs {
-    #[arg(long, num_args = 0..=1, value_name = "NAME",
-          help = "draw the skybox behind the map (map's own sky, or NAME from gfx/env)")]
-    pub sky: Option<Option<String>>,
-    #[arg(long = "sky-fov", default_value_t = 90.0)]
-    pub sky_fov: f64,
-    #[arg(long = "sky-pitch", default_value_t = 10.0)]
-    pub sky_pitch: f64,
+    pub l: LookArgs,
 }
 
 #[derive(Args)]
@@ -131,7 +117,7 @@ pub struct SpinArgs {
     #[command(flatten)]
     pub c: Common,
     #[command(flatten)]
-    pub s: SkyArgs,
+    pub l: LookArgs,
     #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
@@ -144,8 +130,6 @@ pub struct SpinArgs {
     pub start: f64,
     #[arg(long, help = "turn the other way")]
     pub ccw: bool,
-    #[arg(long, help = "background colour (default #202020; APNG stays transparent unless set)")]
-    pub bg: Option<String>,
     #[arg(long, help = "also write an animated PNG")]
     pub apng: bool,
     #[arg(long, help = "also write an animated GIF")]
@@ -166,6 +150,8 @@ pub struct TimingArgs {
     pub interval: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
+    #[command(flatten)]
+    pub f: FaceArgs,
 }
 
 #[derive(Args)]
@@ -178,6 +164,8 @@ pub struct OverviewArgs {
     pub from_txt: Option<PathBuf>,
     #[arg(long, help = "also write a transparent PNG")]
     pub png: bool,
+    #[command(flatten)]
+    pub f: FaceArgs,
 }
 
 impl Common {
@@ -217,20 +205,30 @@ fn say(s: String) {
     println!("{s}");
 }
 
-fn apply_sky(scene: &Scene, r: &mut Renderer, a: &SkyArgs) -> String {
-    let Some(sky) = &a.sky else { return String::new() };
-    let sname = scene.sky_name(sky.as_deref());
-    match scene.load_sky(&sname) {
-        Some(f) => {
-            r.set_sky(Some(f), a.sky_fov, a.sky_pitch);
-            println!("sky: {sname}");
-            sky.as_deref().filter(|n| !n.is_empty()).map(|n| format!("_{n}")).unwrap_or_default()
+fn reported<T>(f: impl FnOnce(&mut Report) -> Result<T>) -> Result<T> {
+    let tty = std::io::stdout().is_terminal();
+    let shown = Cell::new(-1i32);
+    let clear = || {
+        if shown.replace(-1) >= 0 {
+            print!("\r        \r");
         }
-        None => {
-            println!("sky: {sname} not found in gfx/env, using background");
-            String::new()
+    };
+    let mut log = |s: String| {
+        clear();
+        println!("{s}");
+    };
+    let mut progress = |p: f32| {
+        let pct = (p * 100.0).floor() as i32;
+        if tty && pct != shown.get() {
+            print!("\r  {pct:3}%");
+            let _ = std::io::stdout().flush();
+            shown.set(pct);
         }
-    }
+        true
+    };
+    let res = f(&mut Report { log: &mut log, progress: &mut progress });
+    clear();
+    res
 }
 
 pub fn run_spin(a: &SpinArgs) -> Result<()> {
@@ -245,11 +243,10 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         fps: a.fps,
         start: a.start,
         ccw: a.ccw,
-        bg: a.bg.as_deref().map(parse_color).transpose()?,
-        cull: !a.c.no_cull,
         gif: a.gif,
         mp4: !a.no_mp4,
         apng: a.apng,
+        look: a.l.look()?,
     };
     for m in &a.c.maps {
         let t0 = Instant::now();
@@ -259,9 +256,8 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let mut r = scene.renderer(&gpu, a.c.nearest);
-        let sky_tag = apply_sky(&scene, &mut r, &a.s);
-        export_spin(&mut r, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, &mut say)?;
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        reported(|rep| export_spin(&mut r, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())
@@ -280,8 +276,8 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let mut r = scene.renderer(&gpu, a.c.nearest);
-        export_timing(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, &mut say)?;
+        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say);
+        reported(|rep| export_timing(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())
@@ -296,9 +292,8 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         ss: a.c.ss,
         pitch: a.pitch,
         yaws: a.yaw.clone(),
-        bg: a.bg.as_deref().map(parse_color).transpose()?,
-        cull: !a.c.no_cull,
         grid: a.c.grid,
+        look: a.l.look()?,
     };
     for m in &a.c.maps {
         let t0 = Instant::now();
@@ -308,9 +303,8 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let mut r = scene.renderer(&gpu, a.c.nearest);
-        let sky_tag = apply_sky(&scene, &mut r, &a.s);
-        export_iso(&mut r, &scene.bsp, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, &mut say)?;
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())
@@ -323,7 +317,7 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
     let o = OverviewOpts {
         margin: a.margin,
         ss: a.c.ss,
-        cull: !a.c.no_cull,
+        cull: !a.f.no_cull,
         from_txt: a.from_txt.clone(),
         png: a.png,
         grid: a.c.grid,
@@ -336,8 +330,8 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         let mut log = |s: String| println!("  {s}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut log)?;
         let cuts = scene.cuts(&co, &mut log);
-        let mut r = scene.renderer(&gpu, a.c.nearest);
-        export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, &mut say)?;
+        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut log);
+        reported(|rep| export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, rep))?;
     }
     Ok(())
 }

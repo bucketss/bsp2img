@@ -11,9 +11,9 @@ use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
 use crate::camera::top_down;
 use crate::grid::{CT, T, Text, grid_frame, line, outline, paint, rect};
-use crate::paths::free_name;
+use crate::paths::{Partial, free_name};
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
-use crate::scene::Log;
+use crate::scene::Report;
 
 const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
@@ -560,10 +560,12 @@ pub fn export_timing(
     cuts: &Cuts,
     o: &TimingOpts,
     out: &Path,
-    log: Log,
+    rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
     let t0 = std::time::Instant::now();
+    rep.step(0.0)?;
     let nav = Nav::build(bsp, o.cell, o.speed)?;
+    rep.step(0.35)?;
     let count = |cls: &str| bsp.entities.iter().filter(|e| e.class() == cls).count();
     let spawn = |cls: &str| -> Vec<usize> {
         bsp.entities
@@ -580,8 +582,9 @@ pub fn export_timing(
     }
     let dt = nav.flood(&st, o.speed);
     let dct = nav.flood(&sct, o.speed);
+    rep.step(0.5)?;
     let reach = (0..nav.len()).filter(|&n| dt[n].is_finite() || dct[n].is_finite()).count();
-    log(format!(
+    rep.log(format!(
         "  nav: {} floor cells, {} reachable, {} ladders, {} blocking entities, spawns placed T {}/{} CT {}/{} ({:.1}s)",
         nav.len(),
         reach,
@@ -611,7 +614,7 @@ pub fn export_timing(
         writeln!(txt, "{:<14}{:>8}{:>8}", l, fmt_t(*a), fmt_t(*b))?;
     }
     for line in txt.lines().skip(4) {
-        log(format!("  {line}"));
+        rep.log(format!("  {line}"));
     }
 
     let g = grid_frame(r, cuts, o.size);
@@ -636,6 +639,7 @@ pub fn export_timing(
     let tmax_both = percentile(firsts, 0.98);
     let tmax_t = percentile(field.t.clone(), 0.98);
     let tmax_ct = percentile(field.ct.clone(), 0.98);
+    rep.step(0.7)?;
 
     let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
     let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
@@ -651,12 +655,16 @@ pub fn export_timing(
         })
         .collect();
 
-    let mut files = Vec::new();
-    for (suffix, kind, tmax) in [
+    let mut files = Partial::default();
+    for (k, (suffix, kind, tmax)) in [
         ("", Kind::Both, tmax_both),
         ("_t", Kind::Team(true), tmax_t),
         ("_ct", Kind::Team(false), tmax_ct),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        rep.step(0.7 + 0.1 * k as f32)?;
         let px = paint_heat(&base, &field, &kind, tmax, o.interval);
         let mut pm = Pixmap::from_vec(px, tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?)
             .context("pixmap")?;
@@ -732,13 +740,14 @@ pub fn export_timing(
 
         let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
         let f = free_name(out, &format!("{name}{cut_tag}_timing{suffix}"), ".png");
+        files.add(f.clone());
         image::RgbImage::from_raw(g.wpx, g.hpx, rgb).context("image")?.save(&f)?;
-        log(format!("  {}", f.display()));
-        files.push(f);
+        rep.log(format!("  {}", f.display()));
     }
+    rep.step(1.0)?;
     let f = free_name(out, &format!("{name}{cut_tag}_timing"), ".txt");
+    files.add(f.clone());
     std::fs::write(&f, txt)?;
-    log(format!("  {}", f.display()));
-    files.push(f);
-    Ok(files)
+    rep.log(format!("  {}", f.display()));
+    Ok(files.keep())
 }

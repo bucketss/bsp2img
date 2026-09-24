@@ -8,12 +8,13 @@ Requires opengl, dx12, or vulkan.
 
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
-- Pick the game folder (install root or mod folder), then a map from the list, or open any `.bsp`.
+- Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, pixelated textures, cutaway), **Camera** (pitch, yaw), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
 - Overview view: the exact 1024x768 overview framing.
-- Export animation writes the `spin` files, using the isometric pitch and supersampling.
-- Export writes the same files as the CLI into `<output>/<map>NN/`.
+- Exports run in the background and write the same files as the CLI into `<output>/<map>NN/`. Cancel deletes the partial files.
+- Settings are saved to `%APPDATA%\bsp2img\gui.cfg`.
 
 ## CLI
 
@@ -24,6 +25,8 @@ bsp2img overview de_dust2 --game C:\HLDS
 bsp2img spin de_dust2 --game C:\HLDS --gif
 bsp2img timing de_dust2 --game C:\HLDS
 ```
+
+In a terminal, exports show a percentage while they run.
 
 `iso` writes `renders/<map>NN/<map>_045.png`, `_135`, `_225`, `_315` (transparent PNG).
 `spin` writes `<map>_spin.mp4`, a seamless loop of the map turning a full circle (needs `ffmpeg` on PATH). `--gif` and `--apng` add `<map>_spin.gif` and `<map>_spin.png`.

@@ -523,8 +523,10 @@ impl Renderer {
         self.sky = Some(SkyRes { pipeline, ubuf, bind, fov, pitch });
     }
 
-    pub fn has_sky(&self) -> bool {
-        self.sky.is_some()
+    pub fn set_sky_angles(&mut self, fov: f64, pitch: f64) {
+        if let Some(s) = &mut self.sky {
+            (s.fov, s.pitch) = (fov, pitch);
+        }
     }
 
     pub fn points_in(&self, cuts: &Cuts) -> Vec<DVec3> {

@@ -9,10 +9,11 @@ use glam::DVec3;
 use rayon::prelude::*;
 
 use crate::camera::camera_basis;
-use crate::paths::free_name;
+use crate::look::Look;
+use crate::paths::{Partial, free_name};
 use crate::quant::{median_cut, nearest};
 use crate::render::{Cuts, Renderer, View, composite_bg};
-use crate::scene::Log;
+use crate::scene::Report;
 
 pub const DEFAULT_BG: [u8; 3] = [0x20, 0x20, 0x20];
 const PAD: u32 = 16;
@@ -27,11 +28,10 @@ pub struct SpinOpts {
     pub fps: f64,
     pub start: f64,
     pub ccw: bool,
-    pub bg: Option<[u8; 3]>,
-    pub cull: bool,
     pub gif: bool,
     pub mp4: bool,
     pub apng: bool,
+    pub look: Look,
 }
 
 impl Default for SpinOpts {
@@ -44,11 +44,10 @@ impl Default for SpinOpts {
             fps: 60.0,
             start: 45.0,
             ccw: false,
-            bg: None,
-            cull: true,
             gif: false,
             mp4: true,
             apng: false,
+            look: Look::default(),
         }
     }
 }
@@ -168,6 +167,27 @@ fn apng_writer(path: &Path, w: u32, h: u32, frames: u32, fps: f64) -> Result<Apn
     Ok(enc.write_header()?)
 }
 
+struct Ffmpeg(Option<Child>);
+
+impl Ffmpeg {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.0.as_mut().unwrap().stdin.as_mut().unwrap().write_all(data)
+    }
+
+    fn finish(mut self) -> Result<()> {
+        finish_ffmpeg(self.0.take().unwrap())
+    }
+}
+
+impl Drop for Ffmpeg {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
 fn spawn_ffmpeg(path: &Path, w: u32, h: u32, fps: f64) -> std::io::Result<Child> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error", "-nostats", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
@@ -209,7 +229,7 @@ pub fn export_spin(
     cuts: &Cuts,
     o: &SpinOpts,
     out: &Path,
-    log: Log,
+    rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
     if !o.gif && !o.mp4 && !o.apng {
         bail!("nothing to write: GIF, MP4 and APNG are all off");
@@ -219,69 +239,76 @@ pub fn export_spin(
         let cs = (100.0 / o.fps).round().max(2.0);
         let fps = 100.0 / cs;
         if (fps - o.fps).abs() > 1e-6 {
-            log(format!("  GIF frame delays are whole centiseconds: using {fps:.2} fps"));
+            rep.log(format!("  GIF frame delays are whole centiseconds: using {fps:.2} fps"));
             o.fps = fps;
         }
     }
     let o = &o;
     let yaws = o.yaws();
     let (views, w, h) = spin_views(r, cuts, &yaws, o.pitch, o.size);
+    let (cull, bg) = (o.look.cull, o.look.bg);
     let flat = |mut img: image::RgbaImage| {
-        if o.bg.is_none() {
+        if bg.is_none() {
             composite_bg(&mut img, DEFAULT_BG);
         }
         img
     };
     let stem = format!("{name}{sky_tag}{cut_tag}_spin");
-    let mut files = Vec::new();
+    let mut files = Partial::default();
 
     let mut ff = None;
     if o.mp4 {
         let f = free_name(out, &stem, ".mp4");
         match spawn_ffmpeg(&f, w, h, o.fps) {
             Ok(c) => {
-                ff = Some(c);
-                files.push(f);
+                ff = Some(Ffmpeg(Some(c)));
+                files.add(f);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if !o.gif && !o.apng {
                     bail!("ffmpeg not found on PATH; install it or use --gif / --apng");
                 }
-                log("  ffmpeg not found on PATH, skipping MP4".into())
+                rep.log("  ffmpeg not found on PATH, skipping MP4".into())
             }
             Err(e) => return Err(e).context("starting ffmpeg"),
         }
     }
 
     let n = views.len();
+    let total = (n + if o.gif { PALETTE_SAMPLES.min(n) } else { 0 }) as f32;
+    let mut done = 0;
     let mut cache: HashMap<usize, image::RgbaImage> = HashMap::new();
     let mut gif = None;
     if o.gif {
         let picks: Vec<usize> = (0..PALETTE_SAMPLES.min(n)).map(|k| k * n / PALETTE_SAMPLES.min(n)).collect();
         for &i in &picks {
-            cache.insert(i, r.render_view(&views[i], w, h, o.ss, cuts, o.cull, o.bg)?);
+            rep.step(done as f32 / total)?;
+            cache.insert(i, r.render_view(&views[i], w, h, o.ss, cuts, cull, bg)?);
+            done += 1;
         }
         let samples: Vec<image::RgbaImage> = picks.iter().map(|i| flat(cache[i].clone())).collect();
         let f = free_name(out, &stem, ".gif");
+        files.add(f.clone());
         gif = Some(GifOut::new(&f, w, h, &samples)?);
-        files.push(f);
     }
     let mut apng = None;
     if o.apng {
         let f = free_name(out, &stem, ".png");
+        files.add(f.clone());
         apng = Some(apng_writer(&f, w, h, n as u32, o.fps)?);
-        files.push(f);
     }
     if gif.is_none() && ff.is_none() && apng.is_none() {
-        return Ok(files);
+        return Ok(files.keep());
     }
 
     let delay = (100.0 / o.fps).round() as u16;
     for (i, view) in views.iter().enumerate() {
+        rep.step(done as f32 / total)?;
         let img = match cache.remove(&i) {
             Some(img) => img,
-            None => r.render_view(view, w, h, o.ss, cuts, o.cull, o.bg)?,
+            None => r.render_view(view, w, h, o.ss, cuts, cull, bg)?,
         };
+        done += 1;
         if let Some(a) = &mut apng {
             a.write_image_data(img.as_raw())?;
         }
@@ -293,8 +320,8 @@ pub fn export_spin(
             g.frame(&img, delay)?;
         }
         if let Some(c) = &mut ff {
-            if let Err(e) = c.stdin.as_mut().unwrap().write_all(img.as_raw()) {
-                finish_ffmpeg(ff.take().unwrap())?;
+            if let Err(e) = c.write(img.as_raw()) {
+                ff.take().unwrap().finish()?;
                 return Err(e).context("writing to ffmpeg");
             }
         }
@@ -304,13 +331,15 @@ pub fn export_spin(
         a.finish()?;
     }
     if let Some(c) = ff {
-        finish_ffmpeg(c)?;
+        c.finish()?;
     }
+    let files = files.keep();
+    let _ = rep.step(1.0);
     let step = 360.0 / n as f64;
     let edge = spin_radius(r, cuts, &views[0], w) * step.to_radians();
-    log(format!("  {n} frames at {:.2} fps, {step:.2} deg/frame, edge moves ~{edge:.1} px/frame", o.fps));
+    rep.log(format!("  {n} frames at {:.2} fps, {step:.2} deg/frame, edge moves ~{edge:.1} px/frame", o.fps));
     for f in &files {
-        log(format!("  {} {}x{}", f.display(), w, h));
+        rep.log(format!("  {} {}x{}", f.display(), w, h));
     }
     Ok(files)
 }

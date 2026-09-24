@@ -14,6 +14,32 @@ use crate::wad::TextureSource;
 
 pub type Log<'a> = &'a mut dyn FnMut(String);
 
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+pub struct Report<'a> {
+    pub log: &'a mut dyn FnMut(String),
+    pub progress: &'a mut dyn FnMut(f32) -> bool,
+}
+
+impl Report<'_> {
+    pub fn log(&mut self, s: String) {
+        (self.log)(s)
+    }
+
+    pub fn step(&mut self, f: f32) -> Result<()> {
+        if (self.progress)(f.clamp(0.0, 1.0)) { Ok(()) } else { Err(Cancelled.into()) }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoadOpts {
     pub game: Option<PathBuf>,
@@ -185,6 +211,24 @@ impl Scene {
         let mut r = Renderer::new(gpu, &self.mesh, nearest);
         r.set_mask(self.mask.clone());
         r
+    }
+
+    pub fn job_renderer(&self, gpu: &Gpu, nearest: bool, sky: Option<(String, f64, f64)>, log: Log) -> (Renderer, String) {
+        let mut r = self.renderer(gpu, nearest);
+        let Some((name, fov, pitch)) = sky else { return (r, String::new()) };
+        let sname = self.sky_name(Some(&name));
+        match self.load_sky(&sname) {
+            Some(f) => {
+                r.set_sky(Some(f), fov, pitch);
+                log(format!("sky: {sname}"));
+                let tag = if name.is_empty() { String::new() } else { format!("_{name}") };
+                (r, tag)
+            }
+            None => {
+                log(format!("sky: {sname} not found in gfx/env, using background"));
+                (r, String::new())
+            }
+        }
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {

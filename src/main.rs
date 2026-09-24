@@ -5,6 +5,7 @@ mod export;
 mod grid;
 mod gui;
 mod light;
+mod look;
 mod mesh;
 mod overview;
 mod paths;

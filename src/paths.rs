@@ -130,3 +130,30 @@ pub fn set_suffix(dir: &Path, stems: &[String], ext: &str) -> String {
     }
     format!("_{i:02}")
 }
+
+#[derive(Default)]
+pub struct Partial {
+    files: Vec<PathBuf>,
+    keep: bool,
+}
+
+impl Partial {
+    pub fn add(&mut self, p: PathBuf) {
+        self.files.push(p);
+    }
+
+    pub fn keep(mut self) -> Vec<PathBuf> {
+        self.keep = true;
+        std::mem::take(&mut self.files)
+    }
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if !self.keep {
+            for f in &self.files {
+                let _ = std::fs::remove_file(f);
+            }
+        }
+    }
+}

@@ -170,6 +170,10 @@ pub fn tga_bytes(img: &image::RgbaImage) -> Vec<u8> {
     out
 }
 
+pub fn exts(png: bool) -> &'static [&'static str] {
+    if png { &[".bmp", ".tga", ".txt", ".png"] } else { &[".bmp", ".tga", ".txt"] }
+}
+
 pub fn save(dir: &Path, name: &str, ov: &Overview, img: &image::RgbaImage, png: bool) -> Result<()> {
     std::fs::write(dir.join(format!("{name}.bmp")), bmp_bytes(img))?;
     std::fs::write(dir.join(format!("{name}.tga")), tga_bytes(img))?;

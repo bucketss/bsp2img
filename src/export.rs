@@ -5,10 +5,11 @@ use anyhow::Result;
 use crate::bsp::Bsp;
 use crate::camera::{camera_basis, extents};
 use crate::grid::grid_preview;
+use crate::look::Look;
 use crate::overview::{self, Overview};
-use crate::paths::{free_name, set_suffix};
+use crate::paths::{Partial, free_name, set_suffix};
 use crate::render::{Cuts, Renderer};
-use crate::scene::Log;
+use crate::scene::Report;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoOpts {
@@ -16,9 +17,8 @@ pub struct IsoOpts {
     pub ss: u32,
     pub pitch: f64,
     pub yaws: Vec<f64>,
-    pub bg: Option<[u8; 3]>,
-    pub cull: bool,
     pub grid: bool,
+    pub look: Look,
 }
 
 impl Default for IsoOpts {
@@ -28,9 +28,8 @@ impl Default for IsoOpts {
             ss: 3,
             pitch: 35.264,
             yaws: vec![45.0, 135.0, 225.0, 315.0],
-            bg: None,
-            cull: true,
             grid: false,
+            look: Look::default(),
         }
     }
 }
@@ -70,28 +69,32 @@ pub fn export_iso(
     cuts: &Cuts,
     o: &IsoOpts,
     out: &Path,
-    log: Log,
+    rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+    let mut files = Partial::default();
+    let total = (o.yaws.len() + o.grid as usize).max(1) as f32;
     if o.grid {
+        rep.step(0.0)?;
         let f = free_name(out, &format!("{name}{cut_tag}_grid"), ".png");
+        files.add(f.clone());
         grid_preview(r, bsp, &f, cuts)?;
-        log(format!("  {}", f.display()));
-        files.push(f);
+        rep.log(format!("  {}", f.display()));
     }
     let upp = iso_upp(r, cuts, &o.yaws, o.pitch, o.size);
     let stems: Vec<String> =
         o.yaws.iter().map(|y| format!("{name}{sky_tag}{cut_tag}_{:03}", (*y as i64).rem_euclid(360))).collect();
     let suffix = set_suffix(out, &stems, ".png");
-    for (&yaw, stem) in o.yaws.iter().zip(&stems) {
+    for (i, (&yaw, stem)) in o.yaws.iter().zip(&stems).enumerate() {
+        rep.step((i + o.grid as usize) as f32 / total)?;
         let (view, w, h) = r.iso_view(yaw, o.pitch, upp, 16, cuts);
-        let img = r.render_view(&view, w, h, o.ss, cuts, o.cull, o.bg)?;
+        let img = r.render_view(&view, w, h, o.ss, cuts, o.look.cull, o.look.bg)?;
         let f = out.join(format!("{stem}{suffix}.png"));
+        files.add(f.clone());
         img.save(&f)?;
-        log(format!("  {} {}x{}", f.display(), w, h));
-        files.push(f);
+        rep.log(format!("  {} {}x{}", f.display(), w, h));
     }
-    Ok(files)
+    let _ = rep.step(1.0);
+    Ok(files.keep())
 }
 
 pub fn overview_params(r: &Renderer, cuts: &Cuts, o: &OverviewOpts) -> Result<Overview> {
@@ -108,20 +111,30 @@ pub fn export_overview(
     cuts: &Cuts,
     o: &OverviewOpts,
     out: &Path,
-    log: Log,
+    rep: &mut Report,
 ) -> Result<Overview> {
+    let mut files = Partial::default();
+    rep.step(0.0)?;
     if o.grid {
         let f = free_name(out, &format!("{name}_grid"), ".png");
+        files.add(f.clone());
         grid_preview(r, bsp, &f, cuts)?;
-        log(format!("  {}", f.display()));
+        rep.log(format!("  {}", f.display()));
+        rep.step(0.3)?;
     }
     let ov = overview_params(r, cuts, o)?;
     let img = overview::render(r, &ov, o.ss, cuts, o.cull)?;
+    rep.step(0.8)?;
+    for ext in overview::exts(o.png) {
+        files.add(out.join(format!("{name}{ext}")));
+    }
     overview::save(out, name, &ov, &img, o.png)?;
-    log(format!(
+    files.keep();
+    let _ = rep.step(1.0);
+    rep.log(format!(
         "  ZOOM {:.2}  ORIGIN {:.0} {:.0} {:.0}  ROTATED {}",
         ov.zoom, ov.origin[0], ov.origin[1], ov.origin[2], ov.rotated
     ));
-    log(format!("  {}.bmp/.tga/.txt", out.join(name).display()));
+    rep.log(format!("  {}.bmp/.tga/.txt", out.join(name).display()));
     Ok(ov)
 }
