@@ -12,6 +12,7 @@ use crate::look::Look;
 use crate::mesh::{Batch, Mesh, Mode, Vertex};
 use crate::post::{Cam, NORMAL_FORMAT, Post, PostTargets};
 use crate::reach::HullMask;
+use crate::sun::{Sun, SunEnv, baked_sun, sun_at};
 
 pub use egui_wgpu::wgpu;
 
@@ -24,6 +25,13 @@ const PERSP_MARGIN: f64 = 32.0;
 const GUIDE_PX: f64 = 1.5;
 const GUIDE_COLOR: [u8; 4] = [0xe8, 0xe8, 0xe8, 0xff];
 const GUIDE_VERTS: usize = 24;
+pub const SHADOW_RES: u32 = 4096;
+const SHADOW_PAD: f64 = 32.0;
+const SHADOW_NORMAL: f64 = 1.0;
+const SHADOW_DEPTH: f64 = 0.75;
+const SHADOW_SLOPE: f32 = 1.5;
+const KEEP_MARGIN: f32 = 0.1;
+const SHADOW_CACHE: usize = 2;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -82,6 +90,32 @@ struct SkyU {
     u: [f32; 4],
     f: [f32; 4],
     tanfov: [f32; 4],
+    tint: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct LightU {
+    mvp: [f32; 16],
+    dir: [f32; 4],
+    color: [f32; 4],
+    ambient: [f32; 4],
+    shadow: [f32; 4],
+    mvp0: [f32; 16],
+    dir0: [f32; 4],
+    color0: [f32; 4],
+    ambient0: [f32; 4],
+    shadow0: [f32; 4],
+}
+
+#[derive(Clone)]
+struct ShadowMap {
+    key: String,
+    res: u32,
+    view: wgpu::TextureView,
+    mvp: DMat4,
+    texel: f64,
+    depth: f64,
 }
 
 struct GpuBatch {
@@ -206,6 +240,15 @@ pub struct Renderer {
     batches: Vec<GpuBatch>,
     sky: Option<SkyRes>,
     post: Post,
+    light_layout: wgpu::BindGroupLayout,
+    light_buf: wgpu::Buffer,
+    light_off: wgpu::BindGroup,
+    cmp_sampler: wgpu::Sampler,
+    shadow_pipe: wgpu::RenderPipeline,
+    shadow_frame_buf: wgpu::Buffer,
+    shadow_frame_bind: wgpu::BindGroup,
+    shadow: Mutex<Vec<ShadowMap>>,
+    pub sun_env: SunEnv,
 }
 
 fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
@@ -437,11 +480,48 @@ impl Renderer {
                 ubuf_entry(2, wgpu::ShaderStages::VERTEX_FRAGMENT),
             ],
         });
+        let light_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                ubuf_entry(0, wgpu::ShaderStages::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
+            bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout), Some(&light_layout)],
             immediate_size: 0,
         });
+        let vbuf_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3],
+        };
 
         let premul = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -469,11 +549,7 @@ impl Renderer {
                             module: &shader,
                             entry_point: Some("vs"),
                             compilation_options: Default::default(),
-                            buffers: &[Some(wgpu::VertexBufferLayout {
-                                array_stride: std::mem::size_of::<Vertex>() as u64,
-                                step_mode: wgpu::VertexStepMode::Vertex,
-                                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3],
-                            })],
+                            buffers: &[Some(vbuf_layout.clone())],
                         },
                         primitive: wgpu::PrimitiveState {
                             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -502,6 +578,38 @@ impl Renderer {
             }
         }
 
+        let shadow_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
+            immediate_size: 0,
+        });
+        let shadow_pipe = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("shadow"),
+            layout: Some(&shadow_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[Some(vbuf_layout.clone())],
+            },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 0, slope_scale: SHADOW_SLOPE, clamp: 0.0 },
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_shadow"),
+                compilation_options: Default::default(),
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let tex_sampler = sampler(gpu, true, nearest, true);
         let mut tex_views: Vec<Option<wgpu::TextureView>> = Vec::new();
         for t in &mesh.textures {
@@ -532,6 +640,31 @@ impl Renderer {
         });
         let frame_bind =
             Self::make_frame_bind(dev, &frame_layout, &frame_buf, &lmap_view, &dummy_view, &linear_clamp);
+        let shadow_frame_buf = dev.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: std::mem::size_of::<FrameU>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_frame_bind =
+            Self::make_frame_bind(dev, &frame_layout, &shadow_frame_buf, &lmap_view, &dummy_view, &linear_clamp);
+        let light_buf = dev.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: std::mem::size_of::<LightU>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let cmp_sampler = dev.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let off_depth = texture(dev, 1, 1, DEPTH_FORMAT, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT)
+            .create_view(&Default::default());
+        let light_off = Self::make_light_bind(dev, &light_layout, &light_buf, &off_depth, &cmp_sampler);
         Renderer {
             gpu: gpu.clone(),
             points: mesh.points.clone(),
@@ -554,7 +687,35 @@ impl Renderer {
             batches,
             sky: None,
             post: Post::new(dev),
+            light_layout,
+            light_buf,
+            light_off,
+            cmp_sampler,
+            shadow_pipe,
+            shadow_frame_buf,
+            shadow_frame_bind,
+            shadow: Mutex::new(Vec::new()),
+            sun_env: SunEnv::default(),
         }
+    }
+
+    fn make_light_bind(
+        dev: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        buf: &wgpu::Buffer,
+        depth: &wgpu::TextureView,
+        samp: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        dev.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(depth) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(samp) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(depth) },
+            ],
+        })
     }
 
     fn make_frame_bind(
@@ -601,6 +762,15 @@ impl Renderer {
             mv,
             &self.linear_clamp,
         );
+        self.shadow_frame_bind = Self::make_frame_bind(
+            &self.gpu.device,
+            &self.frame_layout,
+            &self.shadow_frame_buf,
+            &self.lmap_view,
+            mv,
+            &self.linear_clamp,
+        );
+        self.shadow.lock().unwrap().clear();
     }
 
     pub fn animated(&self) -> bool {
@@ -953,6 +1123,8 @@ impl Renderer {
         anim: bool,
         time: f64,
         guide_w: f64,
+        light: &wgpu::BindGroup,
+        tint: [f32; 4],
     ) {
         let b = &view.basis;
         let mask_on = cuts.use_mask && self.mask.is_some();
@@ -996,7 +1168,7 @@ impl Renderer {
             let (tx, ty) = (tanfov[0] as f64, tanfov[1] as f64);
             let f = sb.f + sb.r * (tx * ox) + sb.u * (ty * oy);
             let tanfov = [(tx * sx) as f32, (ty * sy) as f32, 0.0, 0.0];
-            let su = SkyU { r: v4(sb.r, 0.0), u: v4(sb.u, 0.0), f: v4(f, 0.0), tanfov };
+            let su = SkyU { r: v4(sb.r, 0.0), u: v4(sb.u, 0.0), f: v4(f, 0.0), tanfov, tint };
             q.write_buffer(&sky.ubuf, 0, bytemuck::bytes_of(&su));
         }
 
@@ -1036,6 +1208,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         pass.set_bind_group(0, &self.frame_bind, &[]);
+        pass.set_bind_group(2, light, &[]);
         let base = ni * 6 + if cull { 0 } else { 3 };
         let tick = (time * ANIM_FPS).floor().max(0.0) as usize;
         for (pi, modes) in [(0, &[Mode::Opaque, Mode::AlphaTest][..]), (1, &[Mode::Blend][..]), (2, &[Mode::Additive][..])] {
@@ -1053,6 +1226,116 @@ impl Renderer {
                 pass.draw(0..*n, 0..1);
             }
         }
+    }
+
+    pub fn sun(&self, look: &Look) -> Option<Sun> {
+        look.relit().then(|| sun_at(&self.sun_env, look))
+    }
+
+    fn prepare_light(&self, look: &Look, cuts: &Cuts) -> (wgpu::BindGroup, [f32; 4]) {
+        let q = &self.gpu.queue;
+        let Some(sun) = self.sun(look) else {
+            q.write_buffer(&self.light_buf, 0, bytemuck::bytes_of(&LightU::zeroed()));
+            return (self.light_off.clone(), [1.0; 4]);
+        };
+        let res = if look.shadow_res == 0 { SHADOW_RES } else { look.shadow_res };
+        let a = self.shadow_map(sun.dir, cuts, res);
+        let base = baked_sun(&self.sun_env);
+        let b = if look.keep_lights { self.shadow_map(base.dir, cuts, res) } else { a.clone() };
+        let f = |v: [f64; 3], w: f32| [v[0] as f32, v[1] as f32, v[2] as f32, w];
+        let v = |d: DVec3, w: f32| [d.x as f32, d.y as f32, d.z as f32, w];
+        let sh = |s: &ShadowMap| [1.0 / s.res as f32, (SHADOW_NORMAL * s.texel) as f32, (SHADOW_DEPTH * s.texel / s.depth) as f32, 0.0];
+        let lu = LightU {
+            mvp: a.mvp.as_mat4().to_cols_array(),
+            dir: v(sun.dir, look.relight.clamp(0.0, 1.0) as f32),
+            color: f(sun.color, if look.keep_lights { 1.0 } else { 0.0 }),
+            ambient: f(sun.ambient, KEEP_MARGIN),
+            shadow: sh(&a),
+            mvp0: b.mvp.as_mat4().to_cols_array(),
+            dir0: v(base.dir, 0.0),
+            color0: f(base.color, 0.0),
+            ambient0: f(base.ambient, 0.0),
+            shadow0: sh(&b),
+        };
+        q.write_buffer(&self.light_buf, 0, bytemuck::bytes_of(&lu));
+        let bind = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.light_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.light_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&a.view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.cmp_sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&b.view) },
+            ],
+        });
+        let r = look.relight.clamp(0.0, 1.0);
+        (bind, f(sun.sky_tint.map(|c| 1.0 + (c - 1.0) * r), 1.0))
+    }
+
+    fn shadow_map(&self, dir: DVec3, cuts: &Cuts, res: u32) -> ShadowMap {
+        let res = res.clamp(256, self.gpu.max_dim);
+        let key = format!("{:?}{res}{cuts:?}{}{:?}{}", dir.to_array(), self.points.len(), self.explode, self.mask.is_some());
+        let mut cache = self.shadow.lock().unwrap();
+        if let Some(i) = cache.iter().position(|s| s.key == key) {
+            let s = cache.remove(i);
+            cache.push(s.clone());
+            return s;
+        }
+        let dev = &self.gpu.device;
+        let f = -dir.normalize();
+        let r = f.cross(DVec3::Z);
+        let r = if r.length() < 1e-6 { DVec3::X } else { r.normalize() };
+        let b = Basis { r, u: r.cross(f), f };
+        let e = extents(&self.points_in(cuts), &b);
+        let side = (e[0].1 - e[0].0).max(e[1].1 - e[1].0) + 2.0 * SHADOW_PAD;
+        let (d0, d1) = (e[2].0 - SHADOW_PAD, e[2].1 + SHADOW_PAD);
+        let m = ortho(&b, (e[0].0 + e[0].1) / 2.0, (e[1].0 + e[1].1) / 2.0, side, side, d0, d1);
+        let reuse = (cache.len() >= SHADOW_CACHE).then(|| cache.remove(0)).filter(|s| s.res == res);
+        let view = match reuse {
+            Some(s) => s.view,
+            None => texture(dev, res, res, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+                .create_view(&Default::default()),
+        };
+        let mask_on = cuts.use_mask && self.mask.is_some();
+        let rect = self.mask.as_ref().map(|m| m.rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let v4 = |v: DVec3, w: f32| [v.x as f32, v.y as f32, v.z as f32, w];
+        let fu = FrameU {
+            mvp: m.as_mat4().to_cols_array(),
+            clip_xy: cuts.clip.map(|v| v as f32),
+            mask_rect: rect.map(|v| v as f32),
+            zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, 0.0],
+            view_dir: v4(b.f, 0.0),
+            view_r: v4(b.r, self.explode.as_ref().map_or(0.0, |e| e.gap as f32)),
+            view_u: v4(b.u, 0.0),
+            eye: [0.0; 4],
+        };
+        self.gpu.queue.write_buffer(&self.shadow_frame_buf, 0, bytemuck::bytes_of(&fu));
+        let mut enc = dev.create_command_encoder(&Default::default());
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("shadow"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.shadow_pipe);
+            pass.set_bind_group(0, &self.shadow_frame_bind, &[]);
+            for b in self.batches.iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
+                pass.set_bind_group(1, &b.bind, &[]);
+                pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                pass.draw(0..b.count, 0..1);
+            }
+        }
+        self.gpu.queue.submit([enc.finish()]);
+        let s = ShadowMap { key, res, view, mvp: m, texel: side / res as f64, depth: d1 - d0 + 64.0 };
+        cache.push(s.clone());
+        s
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1089,12 +1372,13 @@ impl Renderer {
         let (m, depth) = self.projection(view, c.w, c.h);
         let (m, sky_crop) = c.apply(m, t.w, t.h);
         let guide_w = GUIDE_PX * ss.max(1) as f64 * view.w / c.w.max(1) as f64;
+        let (light, tint) = self.prepare_light(look, cuts);
         let Some(pt) = t.post.as_ref().filter(|_| crate::post::needed(look)) else {
-            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w);
+            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w, &light, tint);
             return;
         };
         let scene = pt.scene();
-        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w);
+        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w, &light, tint);
         let focus = view.persp.map(|p| p.focus);
         let tile = [c.x as f64, c.y as f64, c.w as f64, c.h as f64];
         let cam = Cam { w: t.w, h: t.h, upp: view.w / c.w as f64, ss, depth, focus, tile };

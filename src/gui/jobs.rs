@@ -33,6 +33,15 @@ pub enum Job {
 }
 
 impl Job {
+    pub fn look(&self) -> Option<&crate::look::Look> {
+        match self {
+            Job::Iso(o) => Some(&o.look),
+            Job::Anim(o) if !matches!(o.kind, crate::spin::Anim::Day(_)) => Some(&o.look),
+            Job::Poster(o) => Some(&o.look),
+            _ => None,
+        }
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Job::Iso(_) => "isometric",
@@ -113,6 +122,10 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
             let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log);
             if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {
                 spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
+            }
+            if let Some(l) = spec.job.look() {
+                spec.scene.log_light(l, &mut log);
+                spec.cut_tag += &l.light_tag();
             }
             let mut progress = |f: f32| {
                 send(Msg::Progress(f, tag.clone()));

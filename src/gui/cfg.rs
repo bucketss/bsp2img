@@ -11,7 +11,7 @@ use crate::health::HealthOpts;
 use crate::look::{Look, Tilt};
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
-use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
+use crate::spin::{AnimOpts, DayOpts, PeelOpts, SliceOpts};
 use crate::svg::SvgOpts;
 use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
@@ -146,6 +146,21 @@ impl Cfg for SliceOpts {
             "seconds" => put(&mut self.seconds, v),
             "hold" => put(&mut self.hold, v),
             "then_spin" => put(&mut self.then_spin, v),
+            _ => {}
+        }
+    }
+}
+
+impl Cfg for DayOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[("from", self.from.to_string()), ("to", self.to.to_string()), ("turn", self.turn.to_string())])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "from" => put(&mut self.from, v),
+            "to" => put(&mut self.to, v),
+            "turn" => put(&mut self.turn, v),
             _ => {}
         }
     }
@@ -338,6 +353,12 @@ impl Cfg for Look {
             ("band", self.band.to_string()),
             ("blur", self.blur.to_string()),
             ("focus_dist", self.focus_dist.to_string()),
+            ("relight", self.relight.to_string()),
+            ("time", self.time.to_string()),
+            ("sun_az", self.sun_az.map(|v| v.to_string()).unwrap_or_default()),
+            ("sun_el", self.sun_el.map(|v| v.to_string()).unwrap_or_default()),
+            ("keep_lights", self.keep_lights.to_string()),
+            ("shadow_res", self.shadow_res.to_string()),
         ])
     }
 
@@ -366,6 +387,12 @@ impl Cfg for Look {
             "band" => put(&mut self.band, v),
             "blur" => put(&mut self.blur, v),
             "focus_dist" => put(&mut self.focus_dist, v),
+            "relight" => put(&mut self.relight, v),
+            "time" => put(&mut self.time, v),
+            "sun_az" => self.sun_az = v.trim().parse().ok(),
+            "sun_el" => self.sun_el = v.trim().parse().ok(),
+            "keep_lights" => put(&mut self.keep_lights, v),
+            "shadow_res" => put(&mut self.shadow_res, v),
             _ => {}
         }
     }
@@ -448,13 +475,14 @@ impl App {
             format!("log_open={}", self.log_open),
             format!("cam_export={}", self.cam_export),
         ];
-        let sections: [(&str, &dyn Cfg); 14] = [
+        let sections: [(&str, &dyn Cfg); 15] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
             ("spin", &self.spin),
             ("peel", &self.peel),
             ("slice", &self.slice),
+            ("day", &self.day),
             ("overview", &self.ov),
             ("timing", &self.timing),
             ("health", &self.health),
@@ -483,6 +511,7 @@ impl App {
                 Some(("spin", k)) => self.spin.set(k, v),
                 Some(("peel", k)) => self.peel.set(k, v),
                 Some(("slice", k)) => self.slice.set(k, v),
+                Some(("day", k)) => self.day.set(k, v),
                 Some(("overview", k)) => self.ov.set(k, v),
                 Some(("timing", k)) => self.timing.set(k, v),
                 Some(("health", k)) => self.health.set(k, v),

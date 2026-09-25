@@ -24,6 +24,7 @@ pub const PAPERS: [(&str, f64, f64); 7] = [
     ("tabloid", 279.4, 431.8),
 ];
 const TILE_MAX: u32 = 4096;
+const SHADOW_RES: u32 = 8192;
 const LANCZOS_PAD: u32 = 4;
 const MARGIN_MM: f64 = 12.0;
 const STRIP_MM: f64 = 10.0;
@@ -613,7 +614,11 @@ pub fn export_poster(
     enc.set_pixel_dims(Some(png::PixelDimensions { xppu: ppm, yppu: ppm, unit: png::Unit::Meter }));
     let mut sw = enc.write_header()?.into_stream_writer_with_size(1 << 20)?;
 
-    let mut ctx = TileCtx { r, fr: &fr, cuts, look: &o.look, ss: o.ss.max(1), targets: None };
+    let mut look = o.look.clone();
+    if look.shadow_res == 0 {
+        look.shadow_res = SHADOW_RES;
+    }
+    let mut ctx = TileCtx { r, fr: &fr, cuts, look: &look, ss: o.ss.max(1), targets: None };
     let total = (p.cols * p.rows) as f32;
     let mut bands = vec![(0, fy, None)];
     for row in 0..p.rows {

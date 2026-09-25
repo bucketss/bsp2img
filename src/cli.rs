@@ -17,7 +17,8 @@ use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
 use crate::poster::{Orient, PosterOpts, export_poster};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
-use crate::spin::{Anim, AnimOpts, PeelOpts, SliceOpts, export_anim};
+use crate::spin::{Anim, AnimOpts, DayOpts, PeelOpts, SliceOpts, export_anim};
+use crate::sun::parse_time;
 use crate::svg::{SvgOpts, export_svg};
 use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
@@ -181,6 +182,14 @@ pub struct SpinArgs {
     pub gif: bool,
     #[arg(long = "no-mp4", help = "skip the MP4")]
     pub no_mp4: bool,
+    #[arg(long = "day-cycle", help = "relight and sweep the time of day over the clip")]
+    pub day_cycle: bool,
+    #[arg(long = "day-from", value_name = "HH:MM", default_value = "00:00", value_parser = parse_time)]
+    pub day_from: f64,
+    #[arg(long = "day-to", value_name = "HH:MM", default_value = "24:00", value_parser = parse_time)]
+    pub day_to: f64,
+    #[arg(long = "no-turn", requires = "day_cycle", help = "with --day-cycle, keep the camera still")]
+    pub no_turn: bool,
 }
 
 #[derive(Args)]
@@ -441,7 +450,7 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         mp4: !a.no_mp4,
         apng: a.apng,
         look: a.l.look()?,
-        kind: Anim::Spin,
+        kind: if a.day_cycle { Anim::Day(DayOpts { from: a.day_from, to: a.day_to, turn: !a.no_turn }) } else { Anim::Spin },
         framing: a.cam.framing()?,
     };
     run_anim(&a.c, &o, &a.ex)
@@ -497,7 +506,11 @@ fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        let mut tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        if !matches!(o.kind, Anim::Day(_)) {
+            scene.log_light(&o.look, &mut say);
+            tag += &o.look.light_tag();
+        }
         let res = reported(|rep| export_anim(&mut r, &scene.levels, &name, &sky_tag, &tag, &cuts, o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);
@@ -551,7 +564,8 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
+        scene.log_light(&o.look, &mut say);
         reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
@@ -688,7 +702,8 @@ pub fn run_poster(a: &PosterArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
+        scene.log_light(&o.look, &mut say);
         let res = reported(|rep| export_poster(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);

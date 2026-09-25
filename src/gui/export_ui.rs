@@ -5,6 +5,7 @@ use super::jobs::Job;
 use crate::gltf::Lighting;
 use crate::poster::{Orient, PAPERS};
 use crate::spin::Anim;
+use crate::sun::{hhmm, parse_time};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Exporter {
@@ -12,6 +13,7 @@ pub enum Exporter {
     Spin,
     Peel,
     Slice,
+    Day,
     Overview,
     Timing,
     Health,
@@ -23,7 +25,7 @@ pub enum Exporter {
 
 const GROUPS: &[(&str, &[Exporter])] = &[
     ("Images", &[Exporter::Iso, Exporter::Poster]),
-    ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
+    ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice, Exporter::Day]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing, Exporter::Health]),
     ("3D and vector", &[Exporter::Svg, Exporter::Stl, Exporter::Gltf]),
@@ -36,6 +38,7 @@ impl Exporter {
             Exporter::Spin => "spin",
             Exporter::Peel => "peel",
             Exporter::Slice => "slice",
+            Exporter::Day => "day",
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
             Exporter::Health => "health",
@@ -56,6 +59,7 @@ impl Exporter {
             Exporter::Spin => "Spin",
             Exporter::Peel => "Roof peel",
             Exporter::Slice => "Slice",
+            Exporter::Day => "Day cycle",
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
             Exporter::Health => "Health report",
@@ -82,7 +86,7 @@ impl App {
                 o.framing.camera = self.cam_export.then_some(self.cam);
                 Job::Iso(o)
             }
-            Exporter::Spin | Exporter::Peel | Exporter::Slice => {
+            Exporter::Spin | Exporter::Peel | Exporter::Slice | Exporter::Day => {
                 let mut o = self.spin.clone();
                 o.pitch = self.iso.pitch;
                 o.look = self.look.clone();
@@ -90,6 +94,7 @@ impl App {
                 o.kind = match e {
                     Exporter::Peel => Anim::Peel(self.peel.clone()),
                     Exporter::Slice => Anim::Slice(self.slice.clone()),
+                    Exporter::Day => Anim::Day(self.day.clone()),
                     _ => Anim::Spin,
                 };
                 Job::Anim(o)
@@ -146,6 +151,7 @@ impl App {
             Exporter::Spin => self.form_anim(ui, true),
             Exporter::Peel => self.form_peel(ui),
             Exporter::Slice => self.form_slice(ui),
+            Exporter::Day => self.form_day(ui),
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
             Exporter::Health => self.form_health(ui),
@@ -222,6 +228,21 @@ impl App {
         ui.checkbox(&mut self.slice.then_spin, "Then spin");
         self.form_anim(ui, self.slice.then_spin);
         ui.weak("Sliced walls show their hollow insides.");
+    }
+
+    fn form_day(&mut self, ui: &mut egui::Ui) {
+        let d = &mut self.day;
+        for (v, t) in [(&mut d.from, "from"), (&mut d.to, "to")] {
+            ui.add(
+                egui::Slider::new(v, 0.0..=24.0)
+                    .text(t)
+                    .custom_formatter(|x, _| hhmm(x))
+                    .custom_parser(|s| parse_time(s).ok()),
+            );
+        }
+        ui.checkbox(&mut d.turn, "Turn while the day passes");
+        self.form_anim(ui, true);
+        ui.weak("The clip lasts one turn. 00:00 to 24:00 loops. Sun, keep-lights and blend are on the Look tab; relighting is switched on if Baked.");
     }
 
     fn form_overview(&mut self, ui: &mut egui::Ui) {

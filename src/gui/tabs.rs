@@ -6,6 +6,7 @@ use crate::camera::{Camera, ISO_PITCH};
 use crate::export::overview_params;
 use crate::look::{BLUEPRINT_BG, Style, Tilt};
 use crate::overview;
+use crate::sun::{hhmm, parse_time, sun_at};
 
 impl App {
     pub(super) fn side(&mut self, ui: &mut egui::Ui) {
@@ -186,6 +187,7 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
         ui.add_enabled(app.look.sky, egui::Slider::new(&mut app.look.sky_fov, 30.0..=150.0).text("sky fov"));
         ui.add_enabled(app.look.sky, egui::Slider::new(&mut app.look.sky_pitch, -45.0..=60.0).text("sky pitch"));
     });
+    lighting_ui(app, ui);
     egui::CollapsingHeader::new("Textures").default_open(true).show(ui, |ui| {
         if ui.checkbox(&mut app.look.nearest, "Pixelated textures").changed() {
             app.rebuild_renderer();
@@ -251,6 +253,61 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
             l.miniature();
         }
         ui.weak("Depth of field needs the Free view in perspective; elsewhere it uses the band. Free view: ctrl+click sets the focus.");
+    });
+}
+
+fn lighting_ui(app: &mut App, ui: &mut egui::Ui) {
+    let env = app.renderer.as_ref().map(|r| r.sun_env).unwrap_or_default();
+    let cur = sun_at(&env, &app.look);
+    let (az, el) = (cur.dir.y.atan2(cur.dir.x).to_degrees(), cur.dir.z.clamp(-1.0, 1.0).asin().to_degrees());
+    let l = &mut app.look;
+    egui::CollapsingHeader::new("Lighting").default_open(true).show(ui, |ui| {
+        let mode = if l.relight <= 0.0 { 0 } else if l.relight >= 1.0 { 2 } else { 1 };
+        ui.horizontal(|ui| {
+            if ui.radio(mode == 0, "Baked").clicked() {
+                l.relight = 0.0;
+            }
+            if ui.radio(mode == 2, "Relit").clicked() {
+                l.relight = 1.0;
+            }
+            if ui.radio(mode == 1, "Blend").clicked() && mode != 1 {
+                l.relight = 0.5;
+            }
+        });
+        ui.add_enabled_ui(mode > 0, |ui| {
+            if mode == 1 {
+                ui.add(egui::Slider::new(&mut l.relight, 0.05..=0.95).text("relit amount"));
+            }
+            ui.add(
+                egui::Slider::new(&mut l.time, 0.0..=24.0)
+                    .text("time")
+                    .custom_formatter(|x, _| hhmm(x))
+                    .custom_parser(|s| parse_time(s).ok()),
+            );
+            ui.horizontal(|ui| {
+                let mut on = l.sun_az.is_some();
+                let mut v = l.sun_az.unwrap_or(az.rem_euclid(360.0).round());
+                ui.checkbox(&mut on, "sun azimuth");
+                ui.add_enabled(on, egui::DragValue::new(&mut v).speed(1.0).range(-360.0..=720.0).suffix("°"));
+                l.sun_az = on.then_some(v);
+            });
+            ui.horizontal(|ui| {
+                let mut on = l.sun_el.is_some();
+                let mut v = l.sun_el.unwrap_or(el.round());
+                ui.checkbox(&mut on, "sun elevation");
+                ui.add_enabled(on, egui::DragValue::new(&mut v).speed(0.5).range(-90.0..=90.0).suffix("°"));
+                l.sun_el = on.then_some(v);
+            });
+            ui.checkbox(&mut l.keep_lights, "Keep baked lamps in shadow");
+            ui.horizontal(|ui| {
+                ui.label("shadow map");
+                for (v, t) in [(0, "auto"), (2048, "2k"), (4096, "4k"), (8192, "8k")] {
+                    ui.selectable_value(&mut l.shadow_res, v, t);
+                }
+            });
+            ui.weak(format!("sun azimuth {:.0}°, elevation {:.0}°", az.rem_euclid(360.0), el));
+        });
+        ui.weak(env.describe());
     });
 }
 

@@ -50,10 +50,32 @@ impl Default for SliceOpts {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct DayOpts {
+    pub from: f64,
+    pub to: f64,
+    pub turn: bool,
+}
+
+impl Default for DayOpts {
+    fn default() -> Self {
+        DayOpts { from: 0.0, to: 24.0, turn: true }
+    }
+}
+
+impl DayOpts {
+    pub fn time(&self, i: usize, n: usize) -> f64 {
+        let span = self.to - self.from;
+        let lo = |v: f64| if (span.abs() - 24.0).abs() < 1e-9 || n < 2 { v / n.max(1) as f64 } else { v / (n - 1) as f64 };
+        (self.from + span * lo(i as f64)).rem_euclid(24.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Anim {
     Spin,
     Peel(PeelOpts),
     Slice(SliceOpts),
+    Day(DayOpts),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -377,6 +399,10 @@ pub fn export_anim(
         bail!("nothing to write: GIF, MP4 and APNG are all off");
     }
     let mut o = o.clone();
+    if matches!(o.kind, Anim::Day(_)) && !o.look.relit() {
+        o.look.relight = 1.0;
+        rep.log("  day cycle: relighting on".into());
+    }
     if o.gif {
         let cs = (100.0 / o.fps).round().max(2.0);
         let fps = 100.0 / cs;
@@ -390,6 +416,11 @@ pub fn export_anim(
         Anim::Spin => (Vec::new(), true, ""),
         Anim::Peel(p) => (peel_zs(r, levels, cuts, p, o.fps, rep)?, p.then_spin, "_peel"),
         Anim::Slice(s) => (slice_zs(r, cuts, s, o.fps, rep), s.then_spin, "_slice"),
+        Anim::Day(d) => (Vec::new(), d.turn, "_day"),
+    };
+    let day = match &o.kind {
+        Anim::Day(d) => Some(d.clone()),
+        _ => None,
     };
     let yaws = if then_spin { o.yaws() } else { vec![o.start] };
     let (views, w, h) = anim_views(r, cuts, &yaws, o);
@@ -397,11 +428,21 @@ pub fn export_anim(
     let mut plan: Vec<(usize, f64)> = intro.iter().map(|&z| (0, z)).collect();
     if then_spin {
         plan.extend((0..views.len()).map(|i| (i, end_z)));
+    } else if day.is_some() {
+        plan.extend(std::iter::repeat_n((0, end_z), o.frames() as usize));
     }
     let cuts_at = |z: f64| Cuts { zmax: z, ..*cuts };
     let bg = o.look.bg;
     let look = &o.look;
     let at = |i: usize| i as f64 / o.fps;
+    let frames = plan.len();
+    let look_at = |i: usize| -> Look {
+        let mut l = look.clone();
+        if let Some(d) = &day {
+            l.time = d.time(i, frames);
+        }
+        l
+    };
     let flat = |mut img: image::RgbaImage| {
         if bg.is_none() {
             composite_bg(&mut img, DEFAULT_BG);
@@ -440,7 +481,7 @@ pub fn export_anim(
         for &i in &picks {
             rep.step(done as f32 / total)?;
             let (v, z) = plan[i];
-            cache.insert(i, r.render_view(&views[v], w, h, o.ss, &cuts_at(z), look, at(i))?);
+            cache.insert(i, r.render_view(&views[v], w, h, o.ss, &cuts_at(z), &look_at(i), at(i))?);
             done += 1;
         }
         let samples: Vec<image::RgbaImage> = picks.iter().map(|i| flat(cache[i].clone())).collect();
@@ -465,9 +506,9 @@ pub fn export_anim(
         let img = match (cache.remove(&i), prev.take()) {
             (Some(img), _) => img,
             (None, Some(img)) => img,
-            (None, None) => r.render_view(&views[v], w, h, o.ss, &cuts_at(z), look, at(i))?,
+            (None, None) => r.render_view(&views[v], w, h, o.ss, &cuts_at(z), &look_at(i), at(i))?,
         };
-        if !look.anim_textures && plan.get(i + 1) == Some(&(v, z)) {
+        if !look.anim_textures && day.is_none() && plan.get(i + 1) == Some(&(v, z)) {
             prev = Some(img.clone());
         }
         done += 1;

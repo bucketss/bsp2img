@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::render::parse_color;
+use crate::sun::{hhmm, parse_time};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Style {
@@ -71,6 +72,12 @@ pub struct Look {
     pub band: f64,
     pub blur: f64,
     pub focus_dist: f64,
+    pub relight: f64,
+    pub time: f64,
+    pub sun_az: Option<f64>,
+    pub sun_el: Option<f64>,
+    pub keep_lights: bool,
+    pub shadow_res: u32,
 }
 
 impl Default for Look {
@@ -99,6 +106,12 @@ impl Default for Look {
             band: 0.2,
             blur: 12.0,
             focus_dist: 0.0,
+            relight: 0.0,
+            time: 12.0,
+            sun_az: None,
+            sun_el: None,
+            keep_lights: false,
+            shadow_res: 0,
         }
     }
 }
@@ -106,6 +119,19 @@ impl Default for Look {
 impl Look {
     pub fn plain(cull: bool, bg: Option<[u8; 3]>) -> Look {
         Look { cull, bg, ..Look::default() }
+    }
+
+    pub fn relit(&self) -> bool {
+        self.relight > 0.0
+    }
+
+    pub fn light_tag(&self) -> String {
+        if !self.relit() {
+            return String::new();
+        }
+        let t = hhmm(self.time).replace(':', "");
+        let amt = if self.relight < 1.0 { format!("{:.0}", self.relight * 100.0) } else { String::new() };
+        format!("_relit{amt}_{t}")
     }
 
     pub fn sky_spec(&self) -> Option<(String, f64, f64)> {
@@ -208,6 +234,19 @@ pub struct LookArgs {
     pub blur: f64,
     #[arg(long = "focus-dist", help = "dof focus distance in units [default: camera target]")]
     pub focus_dist: Option<f64>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "1", value_name = "AMOUNT",
+          help = "light from light_environment with sun shadows instead of the baked lightmaps; AMOUNT 0..1 blends the two [default: 1]")]
+    pub relight: Option<f64>,
+    #[arg(long, value_name = "HH:MM", value_parser = parse_time, help = "time of day for relighting (implies --relight) [default: 12:00]")]
+    pub time: Option<f64>,
+    #[arg(long = "keep-lights", help = "relighting: keep baked lamps where the new light is in shadow")]
+    pub keep_lights: bool,
+    #[arg(long = "sun-az", value_name = "DEG", allow_negative_numbers = true, help = "relighting: direction to the sun, 0 = +X, 90 = +Y")]
+    pub sun_az: Option<f64>,
+    #[arg(long = "sun-el", value_name = "DEG", allow_negative_numbers = true, help = "relighting: sun height above the horizon")]
+    pub sun_el: Option<f64>,
+    #[arg(long = "shadow-res", value_name = "PX", help = "shadow map size [default: 4096, posters 8192]")]
+    pub shadow_res: Option<u32>,
 }
 
 impl LookArgs {
@@ -227,6 +266,11 @@ impl LookArgs {
             band: self.band.max(0.0),
             blur: self.blur.max(0.0),
             focus_dist: self.focus_dist.unwrap_or(0.0).max(0.0),
+            time: self.time.unwrap_or(12.0),
+            sun_az: self.sun_az,
+            sun_el: self.sun_el,
+            keep_lights: self.keep_lights,
+            shadow_res: self.shadow_res.unwrap_or(0).min(16384),
             ..Look::default()
         };
         if let Some(s) = self.style.as_deref().and_then(Style::parse) {
@@ -263,6 +307,8 @@ impl LookArgs {
                 l.tint_amount = 0.25;
             }
         }
+        let implied = self.time.is_some() || self.keep_lights || self.sun_az.is_some() || self.sun_el.is_some();
+        l.relight = self.relight.unwrap_or(if implied { 1.0 } else { 0.0 }).clamp(0.0, 1.0);
         if let Some(a) = self.tint_amount {
             l.tint_amount = a.clamp(0.0, 1.0);
         }

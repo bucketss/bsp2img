@@ -3,6 +3,7 @@ struct Sky {
     u: vec4<f32>,
     f: vec4<f32>,
     tanfov: vec4<f32>,
+    tint: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> sk: Sky;
@@ -40,7 +41,7 @@ fn sky_color(i: SOut) -> vec4<f32> {
         else { layer = 5; s = -d.y / a.z; t = d.x / a.z; }
     }
     let c = textureSampleLevel(sky, ssamp, vec2<f32>((s + 1.0) * 0.5, (1.0 - t) * 0.5), layer, 0.0);
-    return vec4<f32>(c.rgb, 1.0);
+    return vec4<f32>(c.rgb * sk.tint.rgb, 1.0);
 }
 
 @fragment

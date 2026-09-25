@@ -9,7 +9,7 @@ Requires opengl, dx12, or vulkan.
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
 - Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
-- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts, exploded floors), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts, exploded floors), **Look** (sky, background, lighting: baked, relit or blend with time of day, sun overrides and keep-lights, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Free view: perspective or orthographic. Drag to orbit, right- or middle-drag to pan, wheel to dolly, double-click to orbit around the point under the cursor, hold right button + WASD/QE to fly (shift for faster), ctrl+click to set the focus for tilt-shift and depth of field.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
@@ -26,6 +26,8 @@ bsp2img iso de_dust2 --game C:\HLDS --persp 50 --miniature
 bsp2img spin de_dust2 --game C:\HLDS --camera view.cam
 bsp2img overview de_dust2 --game C:\HLDS
 bsp2img spin de_dust2 --game C:\HLDS --gif
+bsp2img iso de_dust2 --game C:\HLDS --time 18:30
+bsp2img spin de_dust2 --game C:\HLDS --day-cycle --seconds 10
 bsp2img peel cs_assault --game C:\HLDS --count 3 --then-spin
 bsp2img slice de_dust2 --game C:\HLDS --count 8
 bsp2img timing de_dust2 --game C:\HLDS
@@ -40,6 +42,7 @@ In a terminal, exports show a percentage while they run.
 
 `iso` writes `renders/<map>NN/<map>_045.png`, `_135`, `_225`, `_315` (transparent PNG). With `--persp` the names get `_persp<FOV>`; with `--camera` it writes one `<map>_cam.png`.
 `spin` writes `<map>_spin.mp4`, a seamless loop of the map turning a full circle (needs `ffmpeg` on PATH). `--gif` and `--apng` add `<map>_spin.gif` and `<map>_spin.png`.
+`spin --day-cycle` writes `<map>_day_spin.mp4`: relit, with the time running from `--day-from` to `--day-to` (default 00:00 to 24:00, a seamless loop) while the map turns. `--no-turn` keeps the camera still (`_day.mp4`).
 `peel` writes `<map>_peel.mp4`: roof levels lift off one at a time, from the top.
 `slice` writes `<map>_slice.mp4`: a height cut rises from the floor so the map builds itself. Sliced walls show their hollow interiors.
 `timing` writes `<map>_timing.png` (which team reaches each spot first, with a white line where both arrive together), `_timing_t.png` and `_timing_ct.png` (arrival times per team), and `<map>_timing.txt` (seconds to each bombsite, hostage and rescue zone). Times are for the first player of each team after freeze time, at `--speed` units/s. Movement model: steps up to 18 units, crouch-jumps up to 63, drops of any height, crouch-only areas at 1/3 speed, ladders at 200 units/s; doors and breakables are treated as open. (EXPERIMENTAL)
@@ -95,6 +98,7 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--gif` | Also write an animated GIF |
 | `--apng` | Also write an animated PNG |
 | `--no-mp4` | Skip the MP4 |
+| `--day-cycle` | Relight and sweep the time of day over the clip; `--day-from`, `--day-to` (HH:MM), `--no-turn` |
 
 ### peel and slice
 
@@ -126,6 +130,18 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--tilt-shift` | Blur above and below a horizontal band; `--focus-y` (band centre, 0 top to 1 bottom, default 0.5), `--band` (sharp fraction of the height, default 0.2), `--blur` (largest radius in output pixels, default 12) |
 | `--dof` | Depth of field around `--focus-dist` (default: the camera target). `--band` is then the sharp fraction of that distance. Perspective only; otherwise it falls back to `--tilt-shift` |
 | `--miniature` | Tilt-shift with saturation +25% and contrast +10% |
+
+### Relighting (iso, spin, peel, slice, poster)
+
+| Option | Effect |
+|---|---|
+| `--relight [A]` | Light from the map's `light_environment` (direction, colour) with sun shadows instead of the baked lightmaps. `A` 0..1 blends with the lightmaps (default 1) |
+| `--time HH:MM` | Time of day (default 12:00, the map's own sun). Sunrise 05:00, sunset 19:00, moonlight at night; the sky is tinted to match. Implies `--relight` |
+| `--sun-az D`, `--sun-el D` | Override the sun direction (degrees; azimuth 0 = +X, 90 = +Y) |
+| `--keep-lights` | Keep baked lamps where the new light is in shadow, so interiors stay lit at night. An artistic control, not physically based |
+| `--shadow-res N` | Shadow map size (default 4096; posters 8192) |
+
+Files get `_relit_HHMM` (`_relit50_HHMM` when blended). Cuts and exploded floors apply to the shadows too.
 
 ### Camera (iso, spin, peel, slice, poster)
 

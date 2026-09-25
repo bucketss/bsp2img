@@ -24,6 +24,7 @@ mod sky;
 mod svg;
 mod spin;
 mod stl;
+mod sun;
 mod timing;
 mod wad;
 

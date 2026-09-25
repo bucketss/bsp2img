@@ -25,7 +25,7 @@ use crate::mesh::roof_zmax;
 use crate::paths::list_maps;
 use crate::render::{Cuts, Gpu, Renderer, wgpu};
 use crate::scene::{CutOpts, LoadOpts, Scene};
-use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
+use crate::spin::{AnimOpts, DayOpts, PeelOpts, SliceOpts};
 use crate::svg::SvgOpts;
 use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
@@ -153,6 +153,7 @@ struct App {
     spin: AnimOpts,
     peel: PeelOpts,
     slice: SliceOpts,
+    day: DayOpts,
     timing: TimingOpts,
     health: HealthOpts,
     svg: SvgOpts,
@@ -217,6 +218,7 @@ impl App {
             spin: AnimOpts::default(),
             peel: PeelOpts::default(),
             slice: SliceOpts::default(),
+            day: DayOpts::default(),
             timing: TimingOpts::default(),
             health: HealthOpts::default(),
             svg: SvgOpts::default(),

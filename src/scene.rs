@@ -10,6 +10,8 @@ use crate::paths::search_dirs;
 use crate::reach::{HullMask, analyze, hull_mask};
 use crate::render::{Cuts, Gpu, NO_CLIP, Renderer};
 use crate::sky::{find_sky, load_sky};
+use crate::sun::{hhmm, sun_env};
+use crate::look::Look;
 use crate::wad::TextureSource;
 
 pub type Log<'a> = &'a mut dyn FnMut(String);
@@ -216,6 +218,7 @@ impl Scene {
     pub fn renderer(&self, gpu: &Gpu, nearest: bool) -> Renderer {
         let mut r = Renderer::new(gpu, &self.mesh, nearest);
         r.set_mask(self.mask.clone());
+        r.sun_env = sun_env(&self.bsp);
         r
     }
 
@@ -235,6 +238,14 @@ impl Scene {
                 (r, String::new())
             }
         }
+    }
+
+    pub fn log_light(&self, look: &Look, log: Log) {
+        if !look.relit() {
+            return;
+        }
+        let env = sun_env(&self.bsp);
+        log(format!("relight: {}, time {}", env.describe(), hhmm(look.time)));
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
