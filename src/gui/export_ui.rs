@@ -13,6 +13,7 @@ pub enum Exporter {
     Overview,
     Timing,
     Health,
+    Svg,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
@@ -20,6 +21,7 @@ const GROUPS: &[(&str, &[Exporter])] = &[
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing, Exporter::Health]),
+    ("3D and vector", &[Exporter::Svg]),
 ];
 
 impl Exporter {
@@ -32,6 +34,7 @@ impl Exporter {
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
             Exporter::Health => "health",
+            Exporter::Svg => "svg",
         }
     }
 
@@ -48,6 +51,7 @@ impl Exporter {
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
             Exporter::Health => "Health report",
+            Exporter::Svg => "SVG callouts",
         }
     }
 }
@@ -84,6 +88,7 @@ impl App {
             }
             Exporter::Timing => Job::Timing(self.timing.clone()),
             Exporter::Health => Job::Health(self.health.clone()),
+            Exporter::Svg => Job::Svg(self.svg.clone()),
         }
     }
 
@@ -116,6 +121,7 @@ impl App {
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
             Exporter::Health => self.form_health(ui),
+            Exporter::Svg => self.form_svg(ui),
         }
         ui.add_space(6.0);
         let ready = self.scene.is_some() && !self.busy();
@@ -199,5 +205,34 @@ impl App {
         ui.add(egui::Slider::new(&mut self.health.cell, 4.0..=32.0).text("walk grid units"));
         ui.add(egui::Slider::new(&mut self.health.size, 300..=2048).text("thumbnail px"));
         ui.weak("Missing assets, VIS and lighting, engine limits, spawns, overview files and open areas.");
+    }
+
+    fn form_svg(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.svg.cell, 4.0..=32.0).text("walk grid units"));
+        ui.add(egui::Slider::new(&mut self.svg.simplify, 0.0..=32.0).text("simplify units"));
+        ui.add(egui::DragValue::new(&mut self.svg.scale).range(1.0..=100000.0).speed(10.0).prefix("scale 1:"));
+        let mut pick = self.svg.planes.is_some();
+        if ui.checkbox(&mut pick, "Pick split heights").changed() {
+            self.svg.planes = pick.then(Vec::new);
+        }
+        match (&mut self.svg.planes, &self.scene) {
+            (None, _) => {
+                ui.add(egui::Slider::new(&mut self.svg.bands, 1..=6).text("max floor bands"));
+            }
+            (Some(planes), Some(scene)) => {
+                for (lo, _, _) in scene.levels.iter().rev() {
+                    let z = lo - 1.0;
+                    let mut on = planes.contains(&z);
+                    if ui.checkbox(&mut on, format!("split below z {lo:.0}")).changed() {
+                        planes.retain(|&p| p != z);
+                        if on {
+                            planes.push(z);
+                        }
+                    }
+                }
+            }
+            (Some(_), None) => {}
+        }
+        ui.weak("Uses the roof, height and XY cuts on the Scene tab.");
     }
 }

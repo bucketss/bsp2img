@@ -16,6 +16,7 @@ mod reach;
 mod render;
 mod scene;
 mod sky;
+mod svg;
 mod spin;
 mod timing;
 mod wad;
@@ -52,6 +53,7 @@ fn main() {
         Some(cli::Cmd::Slice(a)) => cli::run_slice(a),
         Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
         Some(cli::Cmd::Health(a)) => cli::run_health(a),
+        Some(cli::Cmd::Svg(a)) => cli::run_svg(a),
         Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
         None => gui::run(None, None, "iso"),
     };
