@@ -166,7 +166,7 @@ fn explode_ui(app: &mut App, ui: &mut egui::Ui) {
             None => ui.weak("no level boundaries inside the cuts"),
         };
     });
-    ui.weak("Isometric and Free views, isometric and animation exports. SVG callouts split at the same heights.");
+    ui.weak("Isometric and Free views, isometric, animation and poster exports. SVG callouts split at the same heights.");
 }
 
 pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {

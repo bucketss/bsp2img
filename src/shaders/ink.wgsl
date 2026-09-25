@@ -11,8 +11,8 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
     let upp = upp_at(z0);
     var nz = min(n0.z, -0.05);
     if (persp()) {
-        let xc = (f32(c.x) + 0.5 - pu.px.x * 0.5) * pu.cam.z;
-        let yc = (f32(c.y) + 0.5 - pu.px.y * 0.5) * pu.cam.z;
+        let xc = (f32(c.x) + pu.tile.x + 0.5 - pu.tile.z * 0.5) * pu.cam.z;
+        let yc = (f32(c.y) + pu.tile.y + 0.5 - pu.tile.w * 0.5) * pu.cam.z;
         nz = min(n0.z + n0.x * xc - n0.y * yc, -0.05);
     }
     let gx = -n0.x / nz * upp;

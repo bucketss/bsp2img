@@ -33,6 +33,7 @@ bsp2img health "de_*" "cs_*" --game C:\HLDS
 bsp2img svg de_nuke --game C:\HLDS --scale 1:200
 bsp2img stl de_dust2 --game C:\HLDS --roofs 1 --print-width 200
 bsp2img gltf de_dust2 --game C:\HLDS --roofs 1
+bsp2img poster de_dust2 --game C:\HLDS --paper a2 --dpi 300 --top
 ```
 
 In a terminal, exports show a percentage while they run.
@@ -42,6 +43,7 @@ In a terminal, exports show a percentage while they run.
 `peel` writes `<map>_peel.mp4`: roof levels lift off one at a time, from the top.
 `slice` writes `<map>_slice.mp4`: a height cut rises from the floor so the map builds itself. Sliced walls show their hollow interiors.
 `timing` writes `<map>_timing.png` (which team reaches each spot first, with a white line where both arrive together), `_timing_t.png` and `_timing_ct.png` (arrival times per team), and `<map>_timing.txt` (seconds to each bombsite, hostage and rescue zone). Times are for the first player of each team after freeze time, at `--speed` units/s. Movement model: steps up to 18 units, crouch-jumps up to 63, drops of any height, crouch-only areas at 1/3 speed, ladders at 200 units/s; doors and breakables are treated as open. (EXPERIMENTAL)
+`poster` writes `<map>_poster_a2_045.png` (or `_top`): a print-size PNG with a title block (map name, worldspawn `message`, date, view, scale), coordinate ticks (top-down), spawn and objective markers with a legend, and a scale bar. It renders in tiles and streams rows to disk, so size is not limited by the GPU and memory stays low; AO, ink and blur have no seams.
 `overview` writes `<map>.bmp`, `<map>.tga` and `<map>.txt`.
 `health` writes `<map>_health.txt` and `<map>_health.png`: missing WADs, textures, sky, models and sounds; whether VIS and RAD ran; counts against engine and compiler limits (HLSDK and VHLT 34; percentages use the engine limit where known, else VHLT); spawns per team and any not on walkable ground; objectives and buy zones; overview files, BMP palette index 255 and the `.res`; walkable area and the 3 largest open spots. With several maps it also writes `<out>/health_summary.csv`. Map names accept `*` and `?`. Stock maps often have overviews that their `.res` doesn't list; that's normal.
 `svg` writes `<map>_callouts.svg`: vector line art of the floor players can reach from spawns, in world units and printable to scale. Layers: `floors-N` (tinted floor per height band, lowest first; parts under a higher band get a dashed outline instead), `walls`, `objectives`, `spawns`, `grid` (hidden) and an empty `labels` layer for your own callouts. Stacked areas are split into bands at roof levels. Framing matches the `timing` and `--grid` images.
@@ -110,7 +112,7 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 
 `--roofs` and `--zmax` set the starting cut. The camera stays fixed while geometry is removed.
 
-### Effects (iso, spin, peel, slice)
+### Effects (iso, spin, peel, slice, poster)
 
 | Option | Effect |
 |---|---|
@@ -125,7 +127,7 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--dof` | Depth of field around `--focus-dist` (default: the camera target). `--band` is then the sharp fraction of that distance. Perspective only; otherwise it falls back to `--tilt-shift` |
 | `--miniature` | Tilt-shift with saturation +25% and contrast +10% |
 
-### Camera (iso, spin, peel, slice)
+### Camera (iso, spin, peel, slice, poster)
 
 | Option | Effect |
 |---|---|
@@ -134,7 +136,7 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 
 A `.cam` file is `key=value` lines: `proj` (`persp` or `ortho`), `target` (`x y z`), `yaw`, `pitch`, `roll`, `dist`, `fov`, `aspect`. Orthographic cameras show a view `2 * dist * tan(fov / 2)` units high.
 
-### Exploded floors (iso, spin, peel, slice)
+### Exploded floors (iso, spin, peel, slice, poster)
 
 | Option | Effect |
 |---|---|
@@ -144,6 +146,18 @@ A `.cam` file is `key=value` lines: `proj` (`persp` or `ortho`), `target` (`x y 
 | `--explode-guides` | Guide lines at the corners of each lifted floor |
 
 Cuts use the original heights. Files get `_explodeN`. In the GUI, SVG callouts split at the same heights.
+
+### poster only
+
+| Option | Effect |
+|---|---|
+| `--paper a0..a4\|letter\|tabloid` | Page size (default a2) |
+| `--dpi N` | Print resolution (default 300); also sets text and line sizes |
+| `--landscape`, `--portrait` | Orientation (default: follows the map's shape) |
+| `--px W H` | Page size in pixels instead of `--paper` |
+| `--top` | Top-down instead of isometric |
+| `--yaw D`, `--pitch D` | Isometric angles (default 45, 35.264) |
+| `--no-layout` | Map only, no border, title or legend |
 
 ### timing only
 

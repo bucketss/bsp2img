@@ -132,6 +132,36 @@ pub struct Persp {
     pub focus: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl Crop {
+    fn apply(&self, m: DMat4, tw: u32, th: u32) -> (DMat4, [f64; 4]) {
+        if self.x == 0 && self.y == 0 && self.w == tw && self.h == th {
+            return (m, [1.0, 1.0, 0.0, 0.0]);
+        }
+        let (fw, fh) = (self.w as f64, self.h as f64);
+        let a0 = 2.0 * self.x as f64 / fw - 1.0;
+        let a1 = 2.0 * (self.x + tw) as f64 / fw - 1.0;
+        let b1 = 1.0 - 2.0 * self.y as f64 / fh;
+        let b0 = 1.0 - 2.0 * (self.y + th) as f64 / fh;
+        let (sx, sy) = (2.0 / (a1 - a0), 2.0 / (b1 - b0));
+        let (ox, oy) = ((a0 + a1) / (a1 - a0), (b0 + b1) / (b1 - b0));
+        let c = DMat4::from_cols(
+            glam::DVec4::new(sx, 0.0, 0.0, 0.0),
+            glam::DVec4::new(0.0, sy, 0.0, 0.0),
+            glam::DVec4::new(0.0, 0.0, 1.0, 0.0),
+            glam::DVec4::new(-ox, -oy, 0.0, 1.0),
+        );
+        (c * m, [1.0 / sx, 1.0 / sy, (a0 + a1) / 2.0, (b0 + b1) / 2.0])
+    }
+}
+
 pub struct Targets {
     pub w: u32,
     pub h: u32,
@@ -916,6 +946,7 @@ impl Renderer {
         view: &View,
         m: &DMat4,
         aspect: f64,
+        sky_crop: [f64; 4],
         cuts: &Cuts,
         cull: bool,
         clear: [f64; 4],
@@ -961,7 +992,11 @@ impl Renderer {
                     (camera_basis(yaw, -sky.pitch), [tx as f32, (tx * aspect) as f32, 0.0, 0.0])
                 }
             };
-            let su = SkyU { r: v4(sb.r, 0.0), u: v4(sb.u, 0.0), f: v4(sb.f, 0.0), tanfov };
+            let [sx, sy, ox, oy] = sky_crop;
+            let (tx, ty) = (tanfov[0] as f64, tanfov[1] as f64);
+            let f = sb.f + sb.r * (tx * ox) + sb.u * (ty * oy);
+            let tanfov = [(tx * sx) as f32, (ty * sy) as f32, 0.0, 0.0];
+            let su = SkyU { r: v4(sb.r, 0.0), u: v4(sb.u, 0.0), f: v4(f, 0.0), tanfov };
             q.write_buffer(&sky.ubuf, 0, bytemuck::bytes_of(&su));
         }
 
@@ -1032,18 +1067,37 @@ impl Renderer {
         time: f64,
         clear: [f64; 4],
     ) {
-        let aspect = t.h as f64 / t.w as f64;
+        self.draw_crop(enc, t, view, None, cuts, look, ss, time, clear);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_crop(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        t: &Targets,
+        view: &View,
+        crop: Option<Crop>,
+        cuts: &Cuts,
+        look: &Look,
+        ss: u32,
+        time: f64,
+        clear: [f64; 4],
+    ) {
+        let c = crop.unwrap_or(Crop { x: 0, y: 0, w: t.w, h: t.h });
+        let aspect = c.h as f64 / c.w as f64;
         let anim = look.anim_textures;
-        let (m, depth) = self.projection(view, t.w, t.h);
-        let guide_w = GUIDE_PX * ss.max(1) as f64 * view.w / t.w.max(1) as f64;
+        let (m, depth) = self.projection(view, c.w, c.h);
+        let (m, sky_crop) = c.apply(m, t.w, t.h);
+        let guide_w = GUIDE_PX * ss.max(1) as f64 * view.w / c.w.max(1) as f64;
         let Some(pt) = t.post.as_ref().filter(|_| crate::post::needed(look)) else {
-            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, &m, aspect, cuts, look.cull, clear, anim, time, guide_w);
+            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w);
             return;
         };
         let scene = pt.scene();
-        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, &m, aspect, cuts, look.cull, clear, anim, time, guide_w);
+        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, &m, aspect, sky_crop, cuts, look.cull, clear, anim, time, guide_w);
         let focus = view.persp.map(|p| p.focus);
-        let cam = Cam { w: t.w, h: t.h, upp: view.w / t.w as f64, ss, depth, focus };
+        let tile = [c.x as f64, c.y as f64, c.w as f64, c.h as f64];
+        let cam = Cam { w: t.w, h: t.h, upp: view.w / c.w as f64, ss, depth, focus, tile };
         self.post.run(&self.gpu, enc, look, &cam, pt, &t.depth_view, &t.color_view);
     }
 
@@ -1084,9 +1138,32 @@ impl Renderer {
             bail!("render target {w}x{h} exceeds GPU max {}; lower --size or --ss", self.gpu.max_dim);
         }
         let t = self.make_targets(w, h, crate::post::needed(look));
+        let px = self.render_crop(&t, view, None, ss, cuts, look, time)?;
+        let mut px = if ss > 1 { downsample(&px, w, h, wpx, hpx)? } else { px };
+        unpremultiply(&mut px);
+        if let Some(bg) = look.bg {
+            composite_bg(&mut px, bg);
+        }
+        Ok(image::RgbaImage::from_raw(wpx, hpx, px).unwrap())
+    }
+}
+
+impl Renderer {
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_crop(
+        &self,
+        t: &Targets,
+        view: &View,
+        crop: Option<Crop>,
+        ss: u32,
+        cuts: &Cuts,
+        look: &Look,
+        time: f64,
+    ) -> Result<Vec<u8>> {
+        let (w, h) = (t.w, t.h);
         let dev = self.gpu.device.clone();
         let mut enc = dev.create_command_encoder(&Default::default());
-        self.draw(&mut enc, &t, view, cuts, look, ss, time, [0.0; 4]);
+        self.draw_crop(&mut enc, t, view, crop, cuts, look, ss, time, [0.0; 4]);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1119,12 +1196,7 @@ impl Renderer {
             }
         }
         buf.unmap();
-        let mut px = if ss > 1 { downsample(&px, w, h, wpx, hpx)? } else { px };
-        unpremultiply(&mut px);
-        if let Some(bg) = look.bg {
-            composite_bg(&mut px, bg);
-        }
-        Ok(image::RgbaImage::from_raw(wpx, hpx, px).unwrap())
+        Ok(px)
     }
 }
 

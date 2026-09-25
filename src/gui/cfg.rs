@@ -6,6 +6,7 @@ use crate::camera::Camera;
 use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts};
 use crate::gltf::{GltfOpts, Lighting};
+use crate::poster::{Orient, PosterOpts};
 use crate::health::HealthOpts;
 use crate::look::{Look, Tilt};
 use crate::render::parse_color;
@@ -279,6 +280,38 @@ impl Cfg for GltfOpts {
     }
 }
 
+impl Cfg for PosterOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("paper", self.paper.clone()),
+            ("dpi", self.dpi.to_string()),
+            ("orient", self.orient.key().to_string()),
+            ("px", self.px.map(|[w, h]| format!("{w} {h}")).unwrap_or_default()),
+            ("top", self.top.to_string()),
+            ("yaw", self.yaw.to_string()),
+            ("ss", self.ss.to_string()),
+            ("layout", self.layout.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "paper" if crate::poster::paper_mm(v).is_some() => self.paper = v.trim().to_string(),
+            "dpi" => put(&mut self.dpi, v),
+            "orient" => self.orient = Orient::parse(v).unwrap_or(self.orient),
+            "px" => {
+                let p: Vec<u32> = v.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+                self.px = (p.len() == 2).then(|| [p[0], p[1]]);
+            }
+            "top" => put(&mut self.top, v),
+            "yaw" => put(&mut self.yaw, v),
+            "ss" => put(&mut self.ss, v),
+            "layout" => put(&mut self.layout, v),
+            _ => {}
+        }
+    }
+}
+
 impl Cfg for Look {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
@@ -415,7 +448,7 @@ impl App {
             format!("log_open={}", self.log_open),
             format!("cam_export={}", self.cam_export),
         ];
-        let sections: [(&str, &dyn Cfg); 13] = [
+        let sections: [(&str, &dyn Cfg); 14] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
@@ -429,6 +462,7 @@ impl App {
             ("stl", &self.stl),
             ("cam", &self.cam),
             ("gltf", &self.gltf),
+            ("poster", &self.poster),
         ];
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
@@ -456,6 +490,7 @@ impl App {
                 Some(("stl", k)) => self.stl.set(k, v),
                 Some(("cam", k)) => Cfg::set(&mut self.cam, k, v),
                 Some(("gltf", k)) => self.gltf.set(k, v),
+                Some(("poster", k)) => self.poster.set(k, v),
                 Some(_) => {}
                 None => match k {
                     "game" => self.game = v.to_string(),

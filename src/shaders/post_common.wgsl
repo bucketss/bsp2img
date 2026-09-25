@@ -3,6 +3,7 @@ struct Post {
     cam: vec4<f32>,
     a: vec4<f32>,
     b: vec4<f32>,
+    tile: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> pu: Post;

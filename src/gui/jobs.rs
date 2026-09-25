@@ -12,6 +12,7 @@ use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, export_gltf};
 use crate::health::{HealthOpts, export_health};
 use crate::paths::run_dir;
+use crate::poster::{PosterOpts, export_poster};
 use crate::render::{Cuts, Gpu};
 use crate::scene::{Report, Scene};
 use crate::spin::{AnimOpts, export_anim};
@@ -28,6 +29,7 @@ pub enum Job {
     Svg(SvgOpts),
     Stl(StlOpts),
     Gltf(GltfOpts),
+    Poster(PosterOpts),
 }
 
 impl Job {
@@ -41,6 +43,7 @@ impl Job {
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
             Job::Gltf(_) => "glTF",
+            Job::Poster(_) => "poster",
         }
     }
 }
@@ -86,6 +89,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Gltf(o) => export_gltf(s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Poster(o) => export_poster(r, &s.bsp, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }
 
@@ -107,7 +111,7 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
         let res = run_dir(&spec.out, &name).and_then(|out| {
             let mut log = |s: String| send(Msg::Log(s));
             let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log);
-            if matches!(spec.job, Job::Iso(_) | Job::Anim(_)) {
+            if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {
                 spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
             }
             let mut progress = |f: f32| {
@@ -136,7 +140,7 @@ impl App {
         if self.busy() {
             return;
         }
-        let sky = matches!(job, Job::Iso(_) | Job::Anim(_)).then(|| self.look.sky_spec()).flatten();
+        let sky = matches!(job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)).then(|| self.look.sky_spec()).flatten();
         let spec = JobSpec {
             job,
             cut_tag: self.cut_opts().tag(scene.opts.hull),
