@@ -8,14 +8,15 @@ pub const TEX_SPECIAL: i32 = 1;
 pub const CONTENTS_SOLID: i32 = -2;
 pub const CONTENTS_SKY: i32 = -6;
 
-const LUMP_ENTITIES: usize = 0;
+pub const LUMP_ENTITIES: usize = 0;
 const LUMP_PLANES: usize = 1;
-const LUMP_TEXTURES: usize = 2;
+pub const LUMP_TEXTURES: usize = 2;
 const LUMP_VERTICES: usize = 3;
+pub const LUMP_VISIBILITY: usize = 4;
 const LUMP_NODES: usize = 5;
 const LUMP_TEXINFO: usize = 6;
 const LUMP_FACES: usize = 7;
-const LUMP_LIGHTING: usize = 8;
+pub const LUMP_LIGHTING: usize = 8;
 const LUMP_CLIPNODES: usize = 9;
 const LUMP_LEAVES: usize = 10;
 const LUMP_MARKSURFACES: usize = 11;
@@ -163,6 +164,7 @@ pub struct Model {
     pub mins: DVec3,
     pub maxs: DVec3,
     pub headnode: [i32; 4],
+    pub visleafs: i32,
     pub firstface: i32,
     pub numfaces: i32,
 }
@@ -219,6 +221,7 @@ pub struct Bsp {
     pub clipnodes: Vec<Node>,
     pub lighting: Vec<u8>,
     pub miptex: Vec<MipTex>,
+    pub lump_len: [usize; 15],
 }
 
 fn lump<'a, T>(r: &Rd<'a>, l: (usize, usize), size: usize, f: impl Fn(&Rd<'a>, usize) -> T) -> Result<Vec<T>> {
@@ -286,6 +289,7 @@ impl Bsp {
                 mins: DVec3::new(a[0] as f64, a[1] as f64, a[2] as f64),
                 maxs: DVec3::new(b[0] as f64, b[1] as f64, b[2] as f64),
                 headnode: [r.i32(o + 36), r.i32(o + 40), r.i32(o + 44), r.i32(o + 48)],
+                visleafs: r.i32(o + 52),
                 firstface: r.i32(o + 56),
                 numfaces: r.i32(o + 60),
             }
@@ -338,6 +342,7 @@ impl Bsp {
             clipnodes,
             lighting,
             miptex,
+            lump_len: std::array::from_fn(|i| lumps[i].1),
         };
         bsp.validate()?;
         Ok(bsp)

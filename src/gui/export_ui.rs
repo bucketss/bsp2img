@@ -12,13 +12,14 @@ pub enum Exporter {
     Slice,
     Overview,
     Timing,
+    Health,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
     ("Images", &[Exporter::Iso]),
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
-    ("Analysis", &[Exporter::Timing]),
+    ("Analysis", &[Exporter::Timing, Exporter::Health]),
 ];
 
 impl Exporter {
@@ -30,6 +31,7 @@ impl Exporter {
             Exporter::Slice => "slice",
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
+            Exporter::Health => "health",
         }
     }
 
@@ -45,6 +47,7 @@ impl Exporter {
             Exporter::Slice => "Slice",
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
+            Exporter::Health => "Health report",
         }
     }
 }
@@ -80,6 +83,7 @@ impl App {
                 Job::Overview(o)
             }
             Exporter::Timing => Job::Timing(self.timing.clone()),
+            Exporter::Health => Job::Health(self.health.clone()),
         }
     }
 
@@ -111,6 +115,7 @@ impl App {
             Exporter::Slice => self.form_slice(ui),
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
+            Exporter::Health => self.form_health(ui),
         }
         ui.add_space(6.0);
         let ready = self.scene.is_some() && !self.busy();
@@ -188,5 +193,11 @@ impl App {
         ui.add(egui::Slider::new(&mut self.timing.interval, 1.0..=10.0).text("contour s"));
         ui.add(egui::Slider::new(&mut self.timing.size, 512..=4096).text("size px"));
         ui.weak("Uses the roof and height cuts on the Scene tab.");
+    }
+
+    fn form_health(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.health.cell, 4.0..=32.0).text("walk grid units"));
+        ui.add(egui::Slider::new(&mut self.health.size, 300..=2048).text("thumbnail px"));
+        ui.weak("Missing assets, VIS and lighting, engine limits, spawns, overview files and open areas.");
     }
 }

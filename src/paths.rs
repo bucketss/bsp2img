@@ -157,3 +157,48 @@ impl Drop for Partial {
         }
     }
 }
+
+fn glob_match(p: &[u8], s: &[u8]) -> bool {
+    match (p.first(), s.first()) {
+        (None, None) => true,
+        (Some(b'*'), _) => glob_match(&p[1..], s) || (!s.is_empty() && glob_match(p, &s[1..])),
+        (Some(b'?'), Some(_)) => glob_match(&p[1..], &s[1..]),
+        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b) && glob_match(&p[1..], &s[1..]),
+        _ => false,
+    }
+}
+
+pub fn expand_maps(args: &[String], game: Option<&Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in args {
+        if !a.contains(['*', '?']) {
+            out.push(a.clone());
+            continue;
+        }
+        let p = Path::new(a);
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty());
+        let pat = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let stem_pat = pat.strip_suffix(".bsp").unwrap_or(&pat).to_string();
+        let mut found: Vec<String> = match dir {
+            Some(d) => std::fs::read_dir(d)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")))
+                .filter(|f| glob_match(stem_pat.as_bytes(), f.file_stem().unwrap_or_default().to_string_lossy().as_bytes()))
+                .map(|f| f.to_string_lossy().into_owned())
+                .collect(),
+            None => game
+                .map(list_maps)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(n, _)| glob_match(stem_pat.as_bytes(), n.as_bytes()))
+                .map(|(n, _)| n)
+                .collect(),
+        };
+        found.sort_by_key(|n| n.to_lowercase());
+        out.extend(found);
+    }
+    out
+}

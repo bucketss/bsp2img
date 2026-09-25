@@ -15,6 +15,7 @@ use egui::Pos2;
 use glam::DVec3;
 
 use crate::export::{IsoOpts, OverviewOpts};
+use crate::health::HealthOpts;
 use crate::look::Look;
 use crate::mesh::roof_zmax;
 use crate::paths::list_maps;
@@ -139,6 +140,8 @@ struct App {
     peel: PeelOpts,
     slice: SliceOpts,
     timing: TimingOpts,
+    health: HealthOpts,
+    health_text: Option<(String, String)>,
     exporter: Exporter,
     out: String,
     preview: Option<Preview>,
@@ -190,6 +193,8 @@ impl App {
             peel: PeelOpts::default(),
             slice: SliceOpts::default(),
             timing: TimingOpts::default(),
+            health: HealthOpts::default(),
+            health_text: None,
             exporter: Exporter::Iso,
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),
             preview: None,
@@ -352,6 +357,35 @@ impl App {
         }
     }
 
+    fn show_health(&mut self, out: &Path) {
+        let Ok(rd) = std::fs::read_dir(out) else { return };
+        let mut txt: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains("_health") && n.to_string_lossy().ends_with(".txt")))
+            .collect();
+        txt.sort();
+        if let Some(p) = txt.first() {
+            if let Ok(t) = std::fs::read_to_string(p) {
+                let title = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                self.health_text = Some((title, t));
+            }
+        }
+    }
+
+    fn health_window(&mut self, ctx: &egui::Context) {
+        let Some((title, text)) = &self.health_text else { return };
+        let mut open = true;
+        egui::Window::new(title.as_str()).open(&mut open).default_size([640.0, 560.0]).show(ctx, |ui| {
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text.as_str()).monospace()).extend());
+            });
+        });
+        if !open {
+            self.health_text = None;
+        }
+    }
+
     fn log_panel(&mut self, ui: &mut egui::Ui) {
         if self.log_open {
             egui::Panel::bottom("log").resizable(true).default_size(110.0).show(ui, |ui| {
@@ -382,6 +416,7 @@ impl eframe::App for App {
         self.log_panel(ui);
         egui::Panel::left("side").resizable(true).default_size(340.0).show(ui, |ui| self.side(ui));
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
+        self.health_window(&ui.ctx().clone());
         if !ui.input(|i| i.pointer.any_down()) {
             self.save_cfg();
         }
