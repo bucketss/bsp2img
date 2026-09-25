@@ -157,9 +157,10 @@ impl Scene {
             log(format!("missing textures ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
         log(format!(
-            "faces: {}, batches: {}, lightmap atlas: {}x{}",
+            "faces: {}, batches: {}, coplanar overlaps: {} faces nudged, lightmap atlas: {}x{}",
             mesh.faces,
             mesh.batches.len(),
+            mesh.nudged,
             mesh.atlas.w,
             mesh.atlas.h
         ));
