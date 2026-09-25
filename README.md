@@ -55,10 +55,12 @@ In a terminal, exports show a percentage while they run.
 
 Textures come from the map, then the WADs it lists, then any WAD in the mod and `valve` folders.
 
-### Options (both commands)
+### Options (all commands)
 
 | Option | Effect |
 |---|---|
+| `--game DIR` | Game install root or mod folder; lets you pass map names instead of paths |
+| `--wad-dir DIR` | Extra folder to search for WADs |
 | `--roofs N` | Remove the N highest roof levels (levels are printed each run) |
 | `--zmin/--zmax Z` | Cut away everything below/above a height |
 | `--xmin/--xmax/--ymin/--ymax V` | Cut away everything beyond a world coordinate |
@@ -67,11 +69,13 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--hull-pad U` | Units kept around the walkable area (default 64) |
 | `--no-auto-crop` | Keep sealed rooms that can't be reached from spawns |
 | `-o DIR` | Base output folder (default `renders`) |
-| `--grid` | Also write a top-down `<map>_grid.png` with coordinates and removed areas |
+| `--grid` | iso, overview: also write a top-down `<map>_grid.png` with coordinates and removed areas |
 | `--ss N` | Supersampling (default 3) |
 | `--brightness`, `--light-scale` | Brighten the lighting |
-| `--nearest` | Pixelated texture filtering |
-| `--no-cull` | Draw back faces (disables the cutaway) |
+| `--gamma`, `--texgamma`, `--lightgamma` | Gamma curves (default 2.5, 2, 2.5) |
+| `--all-styles` | Include switchable lights |
+| `--nearest` | Pixelated texture filtering (not svg, stl) |
+| `--no-cull` | Draw back faces, disabling the cutaway (not svg, stl, gltf) |
 
 ### iso only
 
@@ -80,9 +84,10 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--yaw A...` | View angles (default 45 135 225 315) |
 | `--pitch P` | Degrees looking down (35.264 true isometric, 30 for 2:1) |
 | `--size N` | Longest image side (default 2048) |
-| `--sky [NAME]` | Skybox backdrop; an explicit NAME is added to filenames |
+| `--sky [NAME]` | Skybox backdrop; an explicit NAME is added to filenames. `--sky-fov`, `--sky-pitch` (default 90, 10) |
 | `--bg #RRGGBB` | Solid background |
-| `--all-styles` | Include switchable lights |
+
+`--sky` and `--bg` also work for spin, peel, slice and poster.
 
 ### spin only
 
@@ -141,7 +146,7 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--keep-lights` | Keep baked lamps where the new light is in shadow, so interiors stay lit at night. An artistic control, not physically based |
 | `--shadow-res N` | Shadow map size (default 4096; posters 8192) |
 
-Files get `_relit_HHMM` (`_relit50_HHMM` when blended). Cuts and exploded floors apply to the shadows too.
+Files get `_relit_HHMM` (`_relit50_HHMM` when blended), plus `_azD`/`_elD` with sun overrides (the time is dropped when both are set). Cuts and exploded floors apply to the shadows too.
 
 ### Camera (iso, spin, peel, slice, poster)
 
@@ -161,7 +166,7 @@ A `.cam` file is `key=value` lines: `proj` (`persp` or `ortho`), `target` (`x y 
 | `--explode-gap U` | Lift per floor in units (default 256) |
 | `--explode-guides` | Guide lines at the corners of each lifted floor |
 
-Cuts use the original heights. Files get `_explodeN`. In the GUI, SVG callouts split at the same heights.
+Cuts use the original heights. Files get `_explodeN`. Poster markers are lifted with their floor. `svg` accepts `--explode`/`--explode-at` and uses the split heights for its floor bands.
 
 ### poster only
 
@@ -202,6 +207,8 @@ Cuts use the original heights. Files get `_explodeN`. In the GUI, SVG callouts s
 | `--bands N` | Most floor bands for stacked areas (default 2) |
 | `--planes Z,...` | Split floors at these heights instead |
 | `--cell U` | Walk grid spacing (default 8) |
+| `--explode N`, `--explode-at Z1,Z2` | Split floors where exploded floors would (see below) |
+
 ### stl only
 
 | Option | Effect |
@@ -218,7 +225,6 @@ Cuts use the original heights. Files get `_explodeN`. In the GUI, SVG callouts s
 |---|---|
 | `--lighting baked\|separate\|none` | How lighting is stored (default baked) |
 | `--texel U` | Units per atlas texel with baked lighting (default 2; raised automatically if the atlas would pass 8192x8192) |
-| `--nearest` | Pixelated texture filtering |
 
 ### overview only
 

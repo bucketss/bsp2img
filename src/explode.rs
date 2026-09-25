@@ -56,7 +56,7 @@ impl ExplodeOpts {
             return None;
         }
         let planes = self.planes(levels, cuts);
-        (!planes.is_empty()).then(|| Explode { planes, gap: self.gap, guides: self.guides })
+        (!planes.is_empty()).then_some(Explode { planes, gap: self.gap, guides: self.guides })
     }
 }
 

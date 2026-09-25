@@ -90,7 +90,7 @@ pub struct Common {
     pub hull: Option<String>,
     #[arg(long = "hull-pad", default_value_t = 64.0, help = "units kept around the walkable area")]
     pub hull_pad: f64,
-    #[arg(long, help = "write a top-down <map>_grid.png with world coordinates")]
+    #[arg(long, help = "iso and overview: also write a top-down <map>_grid.png with world coordinates")]
     pub grid: bool,
     #[arg(long = "no-auto-crop", help = "keep sealed rooms that can't be reached from spawns")]
     pub no_auto_crop: bool,
