@@ -325,7 +325,42 @@ fn fmt_len(m: f64) -> String {
     if m >= 1.0 { format!("{} m", crate::scene::num(m)) } else { format!("{} cm", crate::scene::num((m * 100.0).round())) }
 }
 
-pub fn today() -> String {
+#[cfg(windows)]
+fn local_ymd() -> Option<(i64, i64, i64)> {
+    #[repr(C)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        dow: u16,
+        day: u16,
+        rest: [u16; 4],
+    }
+    unsafe extern "system" {
+        fn GetLocalTime(t: *mut SystemTime);
+    }
+    let mut t = SystemTime { year: 0, month: 0, dow: 0, day: 0, rest: [0; 4] };
+    unsafe { GetLocalTime(&mut t) };
+    (t.year > 0).then_some((t.year as i64, t.month as i64, t.day as i64))
+}
+
+#[cfg(unix)]
+fn local_ymd() -> Option<(i64, i64, i64)> {
+    unsafe extern "C" {
+        fn time(t: *mut i64) -> i64;
+        fn localtime_r(t: *const i64, tm: *mut i32) -> *mut i32;
+    }
+    let mut tm = [0i32; 32];
+    let now = unsafe { time(std::ptr::null_mut()) };
+    let r = unsafe { localtime_r(&now, tm.as_mut_ptr()) };
+    (!r.is_null()).then_some((tm[5] as i64 + 1900, tm[4] as i64 + 1, tm[3] as i64))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn local_ymd() -> Option<(i64, i64, i64)> {
+    None
+}
+
+fn utc_ymd() -> (i64, i64, i64) {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let z = (secs / 86400) as i64 + 719468;
     let era = z.div_euclid(146097);
@@ -335,12 +370,16 @@ pub fn today() -> String {
     let mp = (5 * doy + 2) / 153;
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + (m <= 2) as i64;
+    (yoe + era * 400 + (m <= 2) as i64, m, d)
+}
+
+pub fn today() -> String {
+    let (y, m, d) = local_ymd().unwrap_or_else(utc_ymd);
     format!("{y:04}-{m:02}-{d:02}")
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decorate(bsp: &Bsp, name: &str, cuts: &Cuts, o: &PosterOpts, fr: &Framed, fx: u32, fy: u32, pw: u32, ph: u32) -> Deco {
+fn decorate(r: &Renderer, bsp: &Bsp, name: &str, cuts: &Cuts, o: &PosterOpts, fr: &Framed, fx: u32, fy: u32, pw: u32, ph: u32) -> Deco {
     let mut d = Deco { fonts: Vec::new(), items: Vec::new() };
     let mm = |v: f64| o.mm(v) as f32;
     let (fx, fy) = (fx as f32, fy as f32);
@@ -356,7 +395,7 @@ fn decorate(bsp: &Bsp, name: &str, cuts: &Cuts, o: &PosterOpts, fr: &Framed, fx:
     let mut shown: Vec<(&'static str, [u8; 3])> = Vec::new();
     let inside = |x: f32, y: f32| x >= fx && x <= fx1 && y >= fy && y <= fy1;
     for m in &marks {
-        let Some((x, y)) = fr.project(m.pos) else { continue };
+        let Some((x, y)) = fr.project(m.pos + DVec3::Z * r.lift(m.pos.z)) else { continue };
         let (x, y) = (fx + x as f32, fy + y as f32);
         if !inside(x, y) {
             continue;
@@ -596,7 +635,7 @@ pub fn export_poster(
     }
     let fr = Framed { view: frame_view(&pts, o, fw, fh, o.mm(PAD_MM)), w: fw, h: fh };
     let p = plan(r, &fr, &pts, o)?;
-    let deco = decorate(bsp, name, cuts, o, &fr, fx, fy, pw, ph);
+    let deco = decorate(r, bsp, name, cuts, o, &fr, fx, fy, pw, ph);
     rep.log(format!(
         "  page {pw}x{ph}, map {fw}x{fh}, {}x{} tiles of {} px (+{} margin)",
         p.cols, p.rows, p.t, p.m

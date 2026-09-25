@@ -883,6 +883,10 @@ impl Renderer {
         if sel.is_empty() { self.points.clone() } else { sel }
     }
 
+    pub fn lift(&self, z: f64) -> f64 {
+        self.explode.as_ref().map_or(0.0, |e| e.planes.partition_point(|&p| p < z) as f64 * e.gap)
+    }
+
     pub fn z_range(&self, cuts: &Cuts) -> (f64, f64) {
         let keep = self.keeps(cuts);
         let base = self.orig.as_ref().unwrap_or(&self.points);
