@@ -87,7 +87,7 @@ pub fn view(ov: &Overview) -> View {
 }
 
 pub fn render(r: &mut Renderer, ov: &Overview, ss: u32, cuts: &Cuts, cull: bool) -> Result<image::RgbaImage> {
-    r.render_view(&view(ov), IMG_W, IMG_H, ss, cuts, cull, None)
+    r.render_view(&view(ov), IMG_W, IMG_H, ss, cuts, &crate::look::Look::plain(cull, None), 0.0)
 }
 
 pub fn bmp_bytes(img: &image::RgbaImage) -> Vec<u8> {

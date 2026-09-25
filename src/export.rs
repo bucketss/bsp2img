@@ -87,7 +87,7 @@ pub fn export_iso(
     for (i, (&yaw, stem)) in o.yaws.iter().zip(&stems).enumerate() {
         rep.step((i + o.grid as usize) as f32 / total)?;
         let (view, w, h) = r.iso_view(yaw, o.pitch, upp, 16, cuts);
-        let img = r.render_view(&view, w, h, o.ss, cuts, o.look.cull, o.look.bg)?;
+        let img = r.render_view(&view, w, h, o.ss, cuts, &o.look, 0.0)?;
         let f = out.join(format!("{stem}{suffix}.png"));
         files.add(f.clone());
         img.save(&f)?;

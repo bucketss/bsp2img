@@ -11,6 +11,7 @@ use crate::camera::top_down;
 use crate::grid::{CT, T, Text, grid_frame, line, paint, rect};
 use crate::nav::{Nav, STAND_OFS};
 use crate::paths::{Partial, free_name};
+use crate::look::Look;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
 use crate::scene::{Report, Scene};
 use crate::sky::find_sky;
@@ -632,7 +633,7 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
         sky_yaw: None,
     };
     let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
-    let thumb = r.render_view(&view, g.wpx, g.hpx, 2, &rc, true, Some([0x1c, 0x1c, 0x1c]))?;
+    let thumb = r.render_view(&view, g.wpx, g.hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?;
     let title = Text::new(18.0);
     let text = Text::new(13.0);
     let pw = 560u32;

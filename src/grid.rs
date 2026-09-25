@@ -7,6 +7,7 @@ use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 use crate::bsp::Bsp;
 use crate::camera::top_down;
+use crate::look::Look;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
 
 pub struct Marker {
@@ -165,7 +166,7 @@ pub fn grid_preview(r: &mut Renderer, bsp: &Bsp, path: &Path, cuts: &Cuts) -> Re
         sky_yaw: None,
     };
     let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
-    let img = r.render_view(&view, wpx, hpx, 2, &rc, true, Some([0x1c, 0x1c, 0x1c]))?;
+    let img = r.render_view(&view, wpx, hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?;
     let mut pm = Pixmap::from_vec(img.into_raw(), tiny_skia::IntSize::from_wh(wpx, hpx).context("bad size")?)
         .context("pixmap")?;
 

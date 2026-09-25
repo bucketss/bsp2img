@@ -375,7 +375,9 @@ pub fn export_anim(
         plan.extend((0..views.len()).map(|i| (i, end_z)));
     }
     let cuts_at = |z: f64| Cuts { zmax: z, ..*cuts };
-    let (cull, bg) = (o.look.cull, o.look.bg);
+    let bg = o.look.bg;
+    let look = &o.look;
+    let at = |i: usize| i as f64 / o.fps;
     let flat = |mut img: image::RgbaImage| {
         if bg.is_none() {
             composite_bg(&mut img, DEFAULT_BG);
@@ -414,7 +416,7 @@ pub fn export_anim(
         for &i in &picks {
             rep.step(done as f32 / total)?;
             let (v, z) = plan[i];
-            cache.insert(i, r.render_view(&views[v], w, h, o.ss, &cuts_at(z), cull, bg)?);
+            cache.insert(i, r.render_view(&views[v], w, h, o.ss, &cuts_at(z), look, at(i))?);
             done += 1;
         }
         let samples: Vec<image::RgbaImage> = picks.iter().map(|i| flat(cache[i].clone())).collect();
@@ -439,9 +441,9 @@ pub fn export_anim(
         let img = match (cache.remove(&i), prev.take()) {
             (Some(img), _) => img,
             (None, Some(img)) => img,
-            (None, None) => r.render_view(&views[v], w, h, o.ss, &cuts_at(z), cull, bg)?,
+            (None, None) => r.render_view(&views[v], w, h, o.ss, &cuts_at(z), look, at(i))?,
         };
-        if plan.get(i + 1) == Some(&(v, z)) {
+        if !look.anim_textures && plan.get(i + 1) == Some(&(v, z)) {
             prev = Some(img.clone());
         }
         done += 1;

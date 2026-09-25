@@ -4,7 +4,9 @@ use glam::DVec3;
 use wgpu::util::DeviceExt;
 
 use crate::camera::{Basis, camera_basis, extents, ortho};
+use crate::look::Look;
 use crate::mesh::{Mesh, Mode, Vertex};
+use crate::post::{Cam, NORMAL_FORMAT, Post, PostTargets};
 use crate::reach::HullMask;
 
 pub use egui_wgpu::wgpu;
@@ -12,6 +14,7 @@ pub use egui_wgpu::wgpu;
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub const NO_CLIP: [f64; 4] = [-1e9, -1e9, 1e9, 1e9];
+pub const ANIM_FPS: f64 = 10.0;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -58,6 +61,8 @@ struct FrameU {
     mask_rect: [f32; 4],
     zr: [f32; 4],
     view_dir: [f32; 4],
+    view_r: [f32; 4],
+    view_u: [f32; 4],
 }
 
 #[repr(C)]
@@ -74,10 +79,11 @@ struct GpuBatch {
     vbuf: wgpu::Buffer,
     count: u32,
     bind: wgpu::BindGroup,
+    frames: Vec<wgpu::BindGroup>,
 }
 
 struct SkyRes {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [wgpu::RenderPipeline; 2],
     ubuf: wgpu::Buffer,
     bind: wgpu::BindGroup,
     fov: f64,
@@ -108,6 +114,21 @@ pub struct View {
     pub sky_yaw: Option<f64>,
 }
 
+pub struct Targets {
+    pub w: u32,
+    pub h: u32,
+    pub color: wgpu::Texture,
+    pub color_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
+    post: Option<PostTargets>,
+}
+
+impl Targets {
+    pub fn has_post(&self) -> bool {
+        self.post.is_some()
+    }
+}
+
 pub struct Renderer {
     pub gpu: Gpu,
     pub points: Vec<DVec3>,
@@ -122,6 +143,7 @@ pub struct Renderer {
     pipelines: Vec<wgpu::RenderPipeline>,
     batches: Vec<GpuBatch>,
     sky: Option<SkyRes>,
+    post: Post,
 }
 
 fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
@@ -228,13 +250,43 @@ fn samp_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn ubuf_entry(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+pub fn ubuf_entry(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: vis,
         ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
         count: None,
     }
+}
+
+fn color_targets(blend: Option<wgpu::BlendState>, normals: bool, normal_write: bool) -> Vec<Option<wgpu::ColorTargetState>> {
+    let mut t = vec![Some(wgpu::ColorTargetState { format: COLOR_FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })];
+    if normals {
+        t.push(Some(wgpu::ColorTargetState {
+            format: NORMAL_FORMAT,
+            blend: None,
+            write_mask: if normal_write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() },
+        }));
+    }
+    t
+}
+
+fn texture(dev: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> wgpu::Texture {
+    dev.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
+}
+
+pub fn attachment_view(dev: &wgpu::Device, w: u32, h: u32, format: wgpu::TextureFormat) -> wgpu::TextureView {
+    texture(dev, w, h, format, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
+        .create_view(&Default::default())
 }
 
 impl Renderer {
@@ -279,52 +331,51 @@ impl Renderer {
             operation: wgpu::BlendOperation::Add,
         };
         let mut pipelines = Vec::new();
-        for cull in [true, false] {
-            for (blend, depth_write) in [
-                (None, true),
-                (Some(wgpu::BlendState { color: premul, alpha: premul }), false),
-                (Some(wgpu::BlendState { color: add, alpha: add }), false),
-            ] {
-                pipelines.push(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: None,
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some("vs"),
-                        compilation_options: Default::default(),
-                        buffers: &[Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<Vertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32],
-                        })],
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode: if cull { Some(wgpu::Face::Back) } else { None },
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(depth_write),
-                        depth_compare: Some(wgpu::CompareFunction::Less),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some("fs"),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: COLOR_FORMAT,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                }));
+        for normals in [false, true] {
+            for cull in [true, false] {
+                for (blend, depth_write) in [
+                    (None, true),
+                    (Some(wgpu::BlendState { color: premul, alpha: premul }), false),
+                    (Some(wgpu::BlendState { color: add, alpha: add }), false),
+                ] {
+                    let targets = color_targets(blend, normals, depth_write);
+                    pipelines.push(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                        label: None,
+                        layout: Some(&layout),
+                        vertex: wgpu::VertexState {
+                            module: &shader,
+                            entry_point: Some("vs"),
+                            compilation_options: Default::default(),
+                            buffers: &[Some(wgpu::VertexBufferLayout {
+                                array_stride: std::mem::size_of::<Vertex>() as u64,
+                                step_mode: wgpu::VertexStepMode::Vertex,
+                                attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3],
+                            })],
+                        },
+                        primitive: wgpu::PrimitiveState {
+                            topology: wgpu::PrimitiveTopology::TriangleList,
+                            front_face: wgpu::FrontFace::Ccw,
+                            cull_mode: if cull { Some(wgpu::Face::Back) } else { None },
+                            ..Default::default()
+                        },
+                        depth_stencil: Some(wgpu::DepthStencilState {
+                            format: DEPTH_FORMAT,
+                            depth_write_enabled: Some(depth_write),
+                            depth_compare: Some(wgpu::CompareFunction::Less),
+                            stencil: Default::default(),
+                            bias: Default::default(),
+                        }),
+                        multisample: Default::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: &shader,
+                            entry_point: Some(if normals { "fs_n" } else { "fs" }),
+                            compilation_options: Default::default(),
+                            targets: &targets,
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    }));
+                }
             }
         }
 
@@ -356,21 +407,31 @@ impl Renderer {
                 contents: bytemuck::cast_slice(&b.verts),
                 usage: wgpu::BufferUsages::VERTEX,
             });
+            let (water, warp) = match b.warp {
+                Some(w) => (1.0, w),
+                None => (0.0, [0.0; 4]),
+            };
             let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::cast_slice(&[b.mode as u32 as f32, b.alpha, 0.0, 0.0]),
+                contents: bytemuck::cast_slice(&[b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3]]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &batch_layout,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&tex_sampler) },
-                    wgpu::BindGroupEntry { binding: 2, resource: ub.as_entire_binding() },
-                ],
-            });
-            batches.push(GpuBatch { mode: b.mode, vbuf, count: b.verts.len() as u32, bind });
+            let make = |v: &wgpu::TextureView| {
+                dev.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &batch_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&tex_sampler) },
+                        wgpu::BindGroupEntry { binding: 2, resource: ub.as_entire_binding() },
+                    ],
+                })
+            };
+            let frames = match mesh.anim.get(b.tex) {
+                Some(Some(seq)) => seq.iter().filter_map(|&i| tex_views.get(i).and_then(|v| v.as_ref())).map(make).collect(),
+                _ => Vec::new(),
+            };
+            batches.push(GpuBatch { mode: b.mode, vbuf, count: b.verts.len() as u32, bind: make(view), frames });
         }
 
         let frame_buf = dev.create_buffer(&wgpu::BufferDescriptor {
@@ -395,6 +456,7 @@ impl Renderer {
             pipelines,
             batches,
             sky: None,
+            post: Post::new(dev),
         }
     }
 
@@ -444,6 +506,10 @@ impl Renderer {
         );
     }
 
+    pub fn animated(&self) -> bool {
+        self.batches.iter().any(|b| b.frames.len() > 1)
+    }
+
     pub fn set_sky(&mut self, faces: Option<(u32, Vec<u8>)>, fov: f64, pitch: f64) {
         let Some((size, data)) = faces else {
             self.sky = None;
@@ -475,37 +541,36 @@ impl Renderer {
             bind_group_layouts: &[Some(&bl)],
             immediate_size: 0,
         });
-        let pipeline = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            primitive: Default::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = |normals: bool| {
+            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(if normals { "fs_n" } else { "fs" }),
+                    compilation_options: Default::default(),
+                    targets: &color_targets(None, normals, true),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipelines = [pipeline(false), pipeline(true)];
         let ubuf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
             size: std::mem::size_of::<SkyU>() as u64,
@@ -521,7 +586,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.linear_clamp) },
             ],
         });
-        self.sky = Some(SkyRes { pipeline, ubuf, bind, fov, pitch });
+        self.sky = Some(SkyRes { pipelines, ubuf, bind, fov, pitch });
     }
 
     pub fn set_sky_angles(&mut self, fov: f64, pitch: f64) {
@@ -566,53 +631,77 @@ impl Renderer {
         (view, wpx, hpx)
     }
 
-    pub fn encode(
+    fn depth_range(&self, b: &Basis) -> (f64, f64) {
+        self.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
+            let d = p.dot(b.f);
+            (a.min(d), c.max(d))
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_world(
         &self,
         enc: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
+        normal: Option<&wgpu::TextureView>,
         depth: &wgpu::TextureView,
         view: &View,
         aspect: f64,
         cuts: &Cuts,
         cull: bool,
         clear: [f64; 4],
+        anim: bool,
+        time: f64,
     ) {
         let b = &view.basis;
-        let (d0, d1) = self.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
-            let d = p.dot(b.f);
-            (a.min(d), c.max(d))
-        });
+        let (d0, d1) = self.depth_range(b);
         let m = ortho(b, view.cx, view.cy, view.w, view.h, d0, d1);
         let mask_on = cuts.use_mask && self.mask.is_some();
         let rect = self.mask.as_ref().map(|m| m.rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let v4 = |v: DVec3, w: f32| [v.x as f32, v.y as f32, v.z as f32, w];
         let fu = FrameU {
             mvp: m.as_mat4().to_cols_array(),
             clip_xy: cuts.clip.map(|v| v as f32),
             mask_rect: rect.map(|v| v as f32),
-            zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, 0.0],
-            view_dir: [b.f.x as f32, b.f.y as f32, b.f.z as f32, 0.0],
+            zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, if anim { time as f32 } else { 0.0 }],
+            view_dir: v4(b.f, if anim { 1.0 } else { 0.0 }),
+            view_r: v4(b.r, 0.0),
+            view_u: v4(b.u, 0.0),
         };
         let q = &self.gpu.queue;
         q.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         if let (Some(sky), Some(yaw)) = (&self.sky, view.sky_yaw) {
             let sb = camera_basis(yaw, -sky.pitch);
             let tx = (sky.fov.to_radians() / 2.0).tan();
-            let v4 = |v: DVec3| [v.x as f32, v.y as f32, v.z as f32, 0.0];
-            let su = SkyU { r: v4(sb.r), u: v4(sb.u), f: v4(sb.f), tanfov: [tx as f32, (tx * aspect) as f32, 0.0, 0.0] };
+            let su = SkyU {
+                r: v4(sb.r, 0.0),
+                u: v4(sb.u, 0.0),
+                f: v4(sb.f, 0.0),
+                tanfov: [tx as f32, (tx * aspect) as f32, 0.0, 0.0],
+            };
             q.write_buffer(&sky.ubuf, 0, bytemuck::bytes_of(&su));
         }
 
-        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
+        let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
+            view: color,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
+                store: wgpu::StoreOp::Store,
+            },
+        })];
+        if let Some(n) = normal {
+            attachments.push(Some(wgpu::RenderPassColorAttachment {
+                view: n,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: clear[0], g: clear[1], b: clear[2], a: clear[3] }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            }));
+        }
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &attachments,
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,
                 depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
@@ -622,54 +711,67 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        let ni = normal.is_some() as usize;
         if let (Some(sky), Some(_)) = (&self.sky, view.sky_yaw) {
-            pass.set_pipeline(&sky.pipeline);
+            pass.set_pipeline(&sky.pipelines[ni]);
             pass.set_bind_group(0, &sky.bind, &[]);
             pass.draw(0..3, 0..1);
         }
         pass.set_bind_group(0, &self.frame_bind, &[]);
-        let base = if cull { 0 } else { 3 };
+        let base = ni * 6 + if cull { 0 } else { 3 };
+        let tick = (time * ANIM_FPS).floor().max(0.0) as usize;
         for (pi, modes) in [(0, &[Mode::Opaque, Mode::AlphaTest][..]), (1, &[Mode::Blend][..]), (2, &[Mode::Additive][..])] {
             pass.set_pipeline(&self.pipelines[base + pi]);
             for b in self.batches.iter().filter(|b| modes.contains(&b.mode)) {
-                pass.set_bind_group(1, &b.bind, &[]);
+                let bind = if anim && !b.frames.is_empty() { &b.frames[tick % b.frames.len()] } else { &b.bind };
+                pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, b.vbuf.slice(..));
                 pass.draw(0..b.count, 0..1);
             }
         }
     }
 
-    pub fn make_targets(&self, w: u32, h: u32, sampled: bool) -> (wgpu::Texture, wgpu::TextureView, wgpu::TextureView) {
-        let dev = &self.gpu.device;
-        let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
-        if sampled {
-            usage |= wgpu::TextureUsages::TEXTURE_BINDING;
-        }
-        let color = dev.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: COLOR_FORMAT,
-            usage,
-            view_formats: &[],
-        });
-        let depth = dev.create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let cv = color.create_view(&Default::default());
-        let dv = depth.create_view(&Default::default());
-        (color, cv, dv)
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        t: &Targets,
+        view: &View,
+        cuts: &Cuts,
+        look: &Look,
+        ss: u32,
+        time: f64,
+        clear: [f64; 4],
+    ) {
+        let aspect = t.h as f64 / t.w as f64;
+        let anim = look.anim_textures;
+        let Some(pt) = t.post.as_ref().filter(|_| crate::post::needed(look)) else {
+            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, aspect, cuts, look.cull, clear, anim, time);
+            return;
+        };
+        let scene = pt.scene();
+        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, aspect, cuts, look.cull, clear, anim, time);
+        let (d0, d1) = self.depth_range(&view.basis);
+        let cam = Cam { w: t.w, h: t.h, upp: view.w / t.w as f64, ss, dm: (d0 + d1) / 2.0, depth: d1 - d0 + 64.0 };
+        self.post.run(&self.gpu, enc, look, &cam, pt, &t.depth_view, &t.color_view);
     }
 
+    pub fn make_targets(&self, w: u32, h: u32, post: bool) -> Targets {
+        let dev = &self.gpu.device;
+        let color = texture(
+            dev,
+            w,
+            h,
+            COLOR_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let depth = texture(dev, w, h, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+        let color_view = color.create_view(&Default::default());
+        let depth_view = depth.create_view(&Default::default());
+        Targets { w, h, color, color_view, depth_view, post: post.then(|| PostTargets::new(dev, w, h)) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn render_view(
         &mut self,
         view: &View,
@@ -677,17 +779,17 @@ impl Renderer {
         hpx: u32,
         ss: u32,
         cuts: &Cuts,
-        cull: bool,
-        bg: Option<[u8; 3]>,
+        look: &Look,
+        time: f64,
     ) -> Result<image::RgbaImage> {
         let (w, h) = (wpx * ss, hpx * ss);
         if w.max(h) > self.gpu.max_dim {
             bail!("render target {w}x{h} exceeds GPU max {}; lower --size or --ss", self.gpu.max_dim);
         }
-        let (color, cv, dv) = self.make_targets(w, h, false);
+        let t = self.make_targets(w, h, crate::post::needed(look));
         let dev = self.gpu.device.clone();
         let mut enc = dev.create_command_encoder(&Default::default());
-        self.encode(&mut enc, &cv, &dv, view, hpx as f64 / wpx as f64, cuts, cull, [0.0; 4]);
+        self.draw(&mut enc, &t, view, cuts, look, ss, time, [0.0; 4]);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -696,7 +798,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
         enc.copy_texture_to_buffer(
-            color.as_image_copy(),
+            t.color.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &buf,
                 layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(h) },
@@ -722,7 +824,7 @@ impl Renderer {
         buf.unmap();
         let mut px = if ss > 1 { downsample(&px, w, h, wpx, hpx)? } else { px };
         unpremultiply(&mut px);
-        if let Some(bg) = bg {
+        if let Some(bg) = look.bg {
             composite_bg(&mut px, bg);
         }
         Ok(image::RgbaImage::from_raw(wpx, hpx, px).unwrap())

@@ -164,6 +164,11 @@ impl Scene {
             mesh.atlas.w,
             mesh.atlas.h
         ));
+        let seqs: std::collections::BTreeSet<&Vec<usize>> = mesh.anim.iter().flatten().collect();
+        let warps = mesh.batches.iter().filter(|b| b.warp.is_some()).count();
+        if !seqs.is_empty() || warps > 0 {
+            log(format!("animated textures: {} sequences, {} water batches", seqs.len(), warps));
+        }
         let levels = roof_levels(&mesh);
         log(format!(
             "roof levels: {}",

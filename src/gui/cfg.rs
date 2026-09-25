@@ -211,6 +211,16 @@ impl Cfg for Look {
             ("sky_pitch", self.sky_pitch.to_string()),
             ("cull", self.cull.to_string()),
             ("nearest", self.nearest.to_string()),
+            ("anim_textures", self.anim_textures.to_string()),
+            ("ao", self.ao.to_string()),
+            ("ao_strength", self.ao_strength.to_string()),
+            ("ao_radius", self.ao_radius.to_string()),
+            ("ink", self.ink.to_string()),
+            ("ink_width", self.ink_width.to_string()),
+            ("ink_color", hex(self.ink_color)),
+            ("saturation", self.saturation.to_string()),
+            ("tint", hex(self.tint)),
+            ("tint_amount", self.tint_amount.to_string()),
         ])
     }
 
@@ -223,6 +233,16 @@ impl Cfg for Look {
             "sky_pitch" => put(&mut self.sky_pitch, v),
             "cull" => put(&mut self.cull, v),
             "nearest" => put(&mut self.nearest, v),
+            "anim_textures" => put(&mut self.anim_textures, v),
+            "ao" => put(&mut self.ao, v),
+            "ao_strength" => put(&mut self.ao_strength, v),
+            "ao_radius" => put(&mut self.ao_radius, v),
+            "ink" => put(&mut self.ink, v),
+            "ink_width" => put(&mut self.ink_width, v),
+            "ink_color" => self.ink_color = parse_color(v).unwrap_or(self.ink_color),
+            "saturation" => put(&mut self.saturation, v),
+            "tint" => self.tint = parse_color(v).unwrap_or(self.tint),
+            "tint_amount" => put(&mut self.tint_amount, v),
             _ => {}
         }
     }

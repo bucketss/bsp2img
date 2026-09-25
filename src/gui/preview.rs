@@ -7,7 +7,8 @@ use crate::camera::{camera_basis, extents, top_down};
 use crate::export::overview_params;
 use crate::grid::{entity_marks, nice_step};
 use crate::overview;
-use crate::render::{Cuts, NO_CLIP, View, wgpu};
+use crate::post;
+use crate::render::{Cuts, NO_CLIP, Targets, View, wgpu};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -17,9 +18,7 @@ pub enum Mode {
 }
 
 pub struct Preview {
-    _tex: wgpu::Texture,
-    view: wgpu::TextureView,
-    depth: wgpu::TextureView,
+    t: Targets,
     id: egui::TextureId,
     size: [u32; 2],
 }
@@ -61,21 +60,22 @@ impl App {
     }
 
     pub(super) fn ensure_preview(&mut self, w: u32, h: u32) {
-        if self.preview.as_ref().is_some_and(|p| p.size == [w, h]) {
+        let fx = post::needed(&self.look);
+        if self.preview.as_ref().is_some_and(|p| p.size == [w, h] && p.t.has_post() == fx) {
             return;
         }
         let Some(r) = &self.renderer else { return };
-        let (tex, view, depth) = r.make_targets(w, h, true);
+        let t = r.make_targets(w, h, fx);
         let mut er = self.egui_rend.write();
         let id = match &self.preview {
             Some(p) => {
-                er.update_egui_texture_from_wgpu_texture(&self.gpu.device, &view, wgpu::FilterMode::Linear, p.id);
+                er.update_egui_texture_from_wgpu_texture(&self.gpu.device, &t.color_view, wgpu::FilterMode::Linear, p.id);
                 p.id
             }
-            None => er.register_native_texture(&self.gpu.device, &view, wgpu::FilterMode::Linear),
+            None => er.register_native_texture(&self.gpu.device, &t.color_view, wgpu::FilterMode::Linear),
         };
         drop(er);
-        self.preview = Some(Preview { _tex: tex, view, depth, id, size: [w, h] });
+        self.preview = Some(Preview { t, id, size: [w, h] });
         self.last_key.clear();
     }
 
@@ -127,8 +127,14 @@ impl App {
 
         self.handle_input(ui, &resp, rect);
 
+        let time = if self.look.anim_textures {
+            ui.ctx().request_repaint();
+            (ui.input(|i| i.time) * 30.0).round() / 30.0
+        } else {
+            0.0
+        };
         let key = format!(
-            "{:?}{:?}{}{:?}{}{}{:?}{}{}",
+            "{:?}{:?}{}{:?}{}{}{:?}{}{}{}",
             cuts,
             (self.mode as u8, self.yaw, self.zoom, self.pan.to_array()),
             self.iso.pitch,
@@ -137,11 +143,11 @@ impl App {
             hpx,
             self.sky_loaded,
             self.ov.margin,
-            self.renderer.as_ref().map(|r| r.points.len()).unwrap_or(0)
+            self.renderer.as_ref().map(|r| r.points.len()).unwrap_or(0),
+            time
         );
         self.ensure_preview(wpx, hpx);
         let Some(r) = &self.renderer else { return };
-        let aspect = rect.height() as f64 / rect.width() as f64;
         let (view, upp, rcuts, clear) = match self.mode {
             Mode::Iso => {
                 let b = camera_basis(self.yaw, self.iso.pitch);
@@ -189,7 +195,7 @@ impl App {
         if key != self.last_key {
             let p = self.preview.as_ref().unwrap();
             let mut enc = self.gpu.device.create_command_encoder(&Default::default());
-            r.encode(&mut enc, &p.view, &p.depth, &view, aspect, &rcuts, self.look.cull, clear);
+            r.draw(&mut enc, &p.t, &view, &rcuts, &self.look, 1, time, clear);
             self.gpu.queue.submit([enc.finish()]);
             self.last_key = key;
         }

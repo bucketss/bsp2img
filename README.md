@@ -9,7 +9,7 @@ Requires opengl, dx12, or vulkan.
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
 - Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
-- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, pixelated textures, cutaway), **Camera** (pitch, yaw), **Export** (output folder, exporter picker and its settings).
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles), **Camera** (pitch, yaw), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
 - Overview view: the exact 1024x768 overview framing.
@@ -100,6 +100,17 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--size`, `--fps`, `--pitch`, `--sky`, `--bg`, `--gif`, `--apng`, `--no-mp4` | As for spin |
 
 `--roofs` and `--zmax` set the starting cut. The camera stays fixed while geometry is removed.
+
+### Effects (iso, spin, peel, slice)
+
+| Option | Effect |
+|---|---|
+| `--animate-textures` | Animations play `+0`..`+9` texture sequences (10 frames/s) and warp `!` water as GoldSrc does. Stills use time 0 |
+| `--ao` | Ambient occlusion; `--ao-strength` (default 1), `--ao-radius` in units (default 48) |
+| `--ink` | Outlines; `--ink-width` in output pixels (default 1.5), `--ink-color` (default #000000) |
+| `--saturation F` | 1 = unchanged, 0 = grey |
+| `--tint #RRGGBB`, `--tint-amount F` | Blend towards a colour (default amount 0.25) |
+| `--style blueprint\|comic` | blueprint: blue background, grey-blue geometry, white ink. comic: AO, black ink width 2, saturation 1.2. Other options override it |
 
 ### timing only
 

@@ -23,8 +23,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> SOut {
     return o;
 }
 
-@fragment
-fn fs(i: SOut) -> @location(0) vec4<f32> {
+fn sky_color(i: SOut) -> vec4<f32> {
     let d = normalize(sk.f.xyz + i.ndc.x * sk.tanfov.x * sk.r.xyz + i.ndc.y * sk.tanfov.y * sk.u.xyz);
     let a = abs(d);
     var s = 0.0;
@@ -42,4 +41,22 @@ fn fs(i: SOut) -> @location(0) vec4<f32> {
     }
     let c = textureSampleLevel(sky, ssamp, vec2<f32>((s + 1.0) * 0.5, (1.0 - t) * 0.5), layer, 0.0);
     return vec4<f32>(c.rgb, 1.0);
+}
+
+@fragment
+fn fs(i: SOut) -> @location(0) vec4<f32> {
+    return sky_color(i);
+}
+
+struct SkyN {
+    @location(0) color: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+};
+
+@fragment
+fn fs_n(i: SOut) -> SkyN {
+    var o: SkyN;
+    o.color = sky_color(i);
+    o.normal = vec4<f32>(0.0);
+    return o;
 }

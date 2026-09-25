@@ -11,6 +11,7 @@ use crate::camera::top_down;
 use crate::grid::{CT, T, Text, grid_frame, line, outline, paint, rect};
 use crate::nav::{JUMP_COST, LADDER_SPEED, NONE, Nav, STAND_OFS, STEP};
 use crate::paths::{Partial, free_name};
+use crate::look::Look;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
 use crate::scene::Report;
 
@@ -305,7 +306,7 @@ pub fn export_timing(
         sky_yaw: None,
     };
     let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
-    let mut base = r.render_view(&view, g.wpx, g.hpx, 2, &rc, true, Some([0x1c, 0x1c, 0x1c]))?.into_raw();
+    let mut base = r.render_view(&view, g.wpx, g.hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?.into_raw();
     for p in base.chunks_exact_mut(4) {
         let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
         for k in 0..3 {

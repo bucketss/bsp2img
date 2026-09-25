@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use super::{App, Tab};
+use crate::look::{BLUEPRINT_BG, Style};
 
 impl App {
     pub(super) fn side(&mut self, ui: &mut egui::Ui) {
@@ -144,9 +145,42 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
         if ui.checkbox(&mut app.look.nearest, "Pixelated textures").changed() {
             app.rebuild_renderer();
         }
+        ui.checkbox(&mut app.look.anim_textures, "Animated textures and water");
+        if app.look.anim_textures && app.renderer.as_ref().is_some_and(|r| !r.animated()) {
+            ui.weak("no +0..+9 sequences in this map; water still warps");
+        }
     });
     egui::CollapsingHeader::new("Effects").default_open(true).show(ui, |ui| {
-        ui.checkbox(&mut app.look.cull, "Cutaway (back-face cull)");
+        let l = &mut app.look;
+        ui.checkbox(&mut l.cull, "Cutaway (back-face cull)");
+        ui.horizontal(|ui| {
+            ui.label("Style");
+            if ui.button("None").clicked() {
+                l.clear_effects();
+                if l.bg == Some(BLUEPRINT_BG) {
+                    l.bg = None;
+                }
+            }
+            if ui.button("Blueprint").clicked() {
+                l.apply_style(Style::Blueprint);
+            }
+            if ui.button("Comic").clicked() {
+                l.apply_style(Style::Comic);
+            }
+        });
+        ui.checkbox(&mut l.ao, "Ambient occlusion");
+        ui.add_enabled(l.ao, egui::Slider::new(&mut l.ao_strength, 0.0..=3.0).text("AO strength"));
+        ui.add_enabled(l.ao, egui::Slider::new(&mut l.ao_radius, 8.0..=256.0).text("AO radius (units)"));
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut l.ink, "Ink outlines");
+            ui.add_enabled_ui(l.ink, |ui| ui.color_edit_button_srgb(&mut l.ink_color).on_hover_text("ink colour"));
+        });
+        ui.add_enabled(l.ink, egui::Slider::new(&mut l.ink_width, 0.5..=6.0).text("ink width px"));
+        ui.add(egui::Slider::new(&mut l.saturation, 0.0..=2.0).text("saturation"));
+        ui.horizontal(|ui| {
+            ui.add(egui::Slider::new(&mut l.tint_amount, 0.0..=1.0).text("tint"));
+            ui.color_edit_button_srgb(&mut l.tint);
+        });
     });
 }
 

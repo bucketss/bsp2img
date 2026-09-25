@@ -11,6 +11,7 @@ mod mesh;
 mod nav;
 mod overview;
 mod paths;
+mod post;
 mod quant;
 mod reach;
 mod render;

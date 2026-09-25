@@ -35,12 +35,14 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub lm: [f32; 2],
     pub bias: f32,
+    pub normal: [f32; 3],
 }
 
 pub struct Batch {
     pub tex: usize,
     pub mode: Mode,
     pub alpha: f32,
+    pub warp: Option<[f32; 4]>,
     pub verts: Vec<Vertex>,
 }
 
@@ -54,6 +56,7 @@ pub struct Image {
 pub struct Mesh {
     pub batches: Vec<Batch>,
     pub textures: Vec<Option<Image>>,
+    pub anim: Vec<Option<Vec<usize>>>,
     pub atlas: Image,
     pub faces: usize,
     pub missing: Vec<String>,
@@ -147,6 +150,55 @@ struct Record {
     lm: Option<(Vec<f64>, Vec<f64>)>,
     normal: DVec3,
     model: usize,
+    warp: Option<[f32; 4]>,
+}
+
+fn apply_lut(im: &mut Image, lut: &[u8]) {
+    for px in im.rgba.chunks_exact_mut(4) {
+        for c in &mut px[..3] {
+            *c = lut[*c as usize];
+        }
+    }
+}
+
+fn anim_sequences(bsp: &Bsp, textures: &mut TextureSource, images: &mut Vec<Option<Image>>, lut: &[u8]) -> Vec<Option<Vec<usize>>> {
+    let lower: Vec<String> = bsp.miptex.iter().map(|m| m.name.to_lowercase()).collect();
+    let mut seqs: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut anim = vec![None; images.len()];
+    for (i, n) in lower.iter().enumerate() {
+        let b = n.as_bytes();
+        if b.len() < 3 || b[0] != b'+' || !b[1].is_ascii_digit() {
+            continue;
+        }
+        let rest = n[2..].to_string();
+        if !seqs.contains_key(&rest) {
+            let mut frames = Vec::new();
+            for d in 0..10 {
+                let name = format!("+{d}{rest}");
+                let found = lower.iter().position(|x| *x == name).filter(|&k| images[k].is_some());
+                let k = match found {
+                    Some(k) => k,
+                    None => match textures.find(&name) {
+                        Some((w, h, rgba)) => {
+                            let mut im = Image { w, h, rgba };
+                            apply_lut(&mut im, lut);
+                            images.push(Some(im));
+                            images.len() - 1
+                        }
+                        None => break,
+                    },
+                };
+                frames.push(k);
+            }
+            seqs.insert(rest.clone(), frames);
+        }
+        let seq = &seqs[&rest];
+        if seq.len() > 1 {
+            anim[i] = Some(seq.clone());
+        }
+    }
+    anim.resize(images.len(), None);
+    anim
 }
 
 pub fn build_mesh(
@@ -171,14 +223,11 @@ pub fn build_mesh(
             });
         }
         if let Some(im) = img.as_mut() {
-            for px in im.rgba.chunks_exact_mut(4) {
-                for c in &mut px[..3] {
-                    *c = lut[*c as usize];
-                }
-            }
+            apply_lut(im, &lut);
         }
         tex_images.push(img);
     }
+    let anim = anim_sequences(bsp, textures, &mut tex_images, &lut);
 
     let mut draw: Vec<(usize, DVec3, Mode, f32)> = vec![(0, DVec3::ZERO, Mode::Opaque, 1.0)];
     for ent in bsp.entities.iter().skip(1) {
@@ -301,6 +350,7 @@ pub fn build_mesh(
                 lm,
                 normal,
                 model: mi,
+                warp: mt.name.starts_with('!').then(|| [ti.s[3], ti.t[3], tw as f32, th as f32]),
             });
         }
     }
@@ -308,7 +358,7 @@ pub fn build_mesh(
     let levels = overlap_levels(&records);
     let atlas_img = atlas.pack(max_dim);
     let (aw, ah) = (atlas_img.w as f64, atlas_img.h as f64);
-    let mut index: HashMap<(usize, Mode, u32), usize> = HashMap::new();
+    let mut index: HashMap<(usize, Mode, u32, Option<[u32; 4]>), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut points = Vec::new();
     for (r, &level) in records.iter().zip(&levels) {
@@ -326,10 +376,11 @@ pub fn build_mesh(
             uv: [r.u[i] as f32, r.v[i] as f32],
             lm: lmuv(i),
             bias: level as f32,
+            normal: [r.normal.x as f32, r.normal.y as f32, r.normal.z as f32],
         };
-        let key = (r.tex, r.mode, r.alpha.to_bits());
+        let key = (r.tex, r.mode, r.alpha.to_bits(), r.warp.map(|w| w.map(f32::to_bits)));
         let bi = *index.entry(key).or_insert_with(|| {
-            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, verts: Vec::new() });
+            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, verts: Vec::new() });
             batches.len() - 1
         });
         let out = &mut batches[bi].verts;
@@ -346,6 +397,7 @@ pub fn build_mesh(
     Mesh {
         batches,
         textures: tex_images,
+        anim,
         atlas: atlas_img,
         faces: records.len(),
         missing: missing.into_iter().collect(),
