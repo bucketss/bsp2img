@@ -14,6 +14,8 @@ use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
 use crate::spin::{Anim, AnimOpts, PeelOpts, SliceOpts, export_anim};
+use crate::svg::{SvgOpts, export_svg};
+use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
@@ -39,6 +41,10 @@ pub enum Cmd {
     Timing(TimingArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
+    #[command(about = "Write editable SVG line art of the walkable floors, walls, objectives and spawns")]
+    Svg(SvgArgs),
+    #[command(about = "Write a watertight 3D-printable STL of the playable area")]
+    Stl(StlArgs),
     #[command(about = "Open the GUI")]
     Gui(GuiArgs),
 }
@@ -229,6 +235,38 @@ pub struct HealthArgs {
     pub size: u32,
     #[command(flatten)]
     pub f: FaceArgs,
+}
+
+#[derive(Args)]
+pub struct SvgArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value_t = 8.0, help = "walk grid spacing in units")]
+    pub cell: f64,
+    #[arg(long, default_value_t = 6.0, help = "outline simplification tolerance in units")]
+    pub simplify: f64,
+    #[arg(long, default_value = "1:100", help = "print scale; 1 unit = 1 inch")]
+    pub scale: String,
+    #[arg(long, default_value_t = 2, help = "most floor bands to split stacked areas into")]
+    pub bands: usize,
+    #[arg(long, value_delimiter = ',', allow_negative_numbers = true, help = "split floors at these heights instead")]
+    pub planes: Option<Vec<f64>>,
+}
+
+#[derive(Args)]
+pub struct StlArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value_t = 8.0, help = "voxel size in units")]
+    pub voxel: f64,
+    #[arg(long, default_value_t = 32.0, help = "units kept around the walkable area")]
+    pub wall: f64,
+    #[arg(long, default_value_t = 16.0, help = "base plate thickness below the lowest floor in units")]
+    pub base: f64,
+    #[arg(long = "print-width", default_value_t = 200.0, help = "longest side of the print in mm")]
+    pub print_width: f64,
+    #[arg(long, help = "smooth surface (surface nets) instead of blocky voxels")]
+    pub smooth: bool,
 }
 
 #[derive(Args)]
@@ -453,6 +491,60 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         let cuts = scene.cuts(&co, &mut log);
         let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut log);
         reported(|rep| export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, rep))?;
+    }
+    Ok(())
+}
+
+pub fn parse_scale(s: &str) -> Result<f64> {
+    let d = s.rsplit(':').next().unwrap_or(s).trim().parse::<f64>()?;
+    if d <= 0.0 {
+        anyhow::bail!("bad scale: {s}");
+    }
+    Ok(d)
+}
+
+pub fn run_svg(a: &SvgArgs) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = SvgOpts { cell: a.cell, simplify: a.simplify, scale: parse_scale(&a.scale)?, bands: a.bands, planes: a.planes.clone() };
+    for m in &a.c.maps {
+        let t0 = Instant::now();
+        let path = resolve_map(m, a.c.game.as_deref())?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let out = run_dir(&a.c.out, &name)?;
+        println!("== {name}");
+        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
+        let cuts = scene.cuts(&co, &mut say);
+        let (mut r, _) = scene.job_renderer(&gpu, false, None, &mut say);
+        let res = reported(|rep| export_svg(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
+        if res.is_err() {
+            let _ = std::fs::remove_dir(&out);
+        }
+        res?;
+        println!("  {:.1}s", t0.elapsed().as_secs_f64());
+    }
+    Ok(())
+}
+
+pub fn run_stl(a: &StlArgs) -> Result<()> {
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = StlOpts { voxel: a.voxel, wall: a.wall, base: a.base, print_width: a.print_width, smooth: a.smooth };
+    for m in &a.c.maps {
+        let t0 = Instant::now();
+        let path = resolve_map(m, a.c.game.as_deref())?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let out = run_dir(&a.c.out, &name)?;
+        println!("== {name}");
+        let scene = Scene::load(&path, &lo, 8192, &mut say)?;
+        let cuts = scene.cuts(&co, &mut say);
+        let res = reported(|rep| export_stl(&scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
+        if res.is_err() {
+            let _ = std::fs::remove_dir(&out);
+        }
+        res?;
+        println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())
 }

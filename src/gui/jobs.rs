@@ -13,6 +13,8 @@ use crate::paths::run_dir;
 use crate::render::{Cuts, Gpu};
 use crate::scene::{Report, Scene};
 use crate::spin::{AnimOpts, export_anim};
+use crate::svg::{SvgOpts, export_svg};
+use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 pub enum Job {
@@ -21,6 +23,8 @@ pub enum Job {
     Overview(OverviewOpts),
     Timing(TimingOpts),
     Health(HealthOpts),
+    Svg(SvgOpts),
+    Stl(StlOpts),
 }
 
 impl Job {
@@ -31,6 +35,8 @@ impl Job {
             Job::Overview(_) => "overview",
             Job::Timing(_) => "rush timings",
             Job::Health(_) => "health report",
+            Job::Svg(_) => "SVG callouts",
+            Job::Stl(_) => "STL diorama",
         }
     }
 }
@@ -72,6 +78,8 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Overview(o) => export_overview(r, &s.bsp, &name, &spec.cuts, o, out, rep).map(drop),
         Job::Timing(o) => export_timing(r, &s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Health(o) => export_health(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }
 

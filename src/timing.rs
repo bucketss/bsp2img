@@ -9,7 +9,7 @@ use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 use crate::bsp::Bsp;
 use crate::camera::top_down;
 use crate::grid::{CT, T, Text, grid_frame, line, outline, paint, rect};
-use crate::nav::{JUMP_COST, LADDER_SPEED, NONE, Nav, STAND_OFS, STEP};
+use crate::nav::{JUMP_COST, LADDER_SPEED, NONE, Nav, STAND_OFS, STEP, Zone, zones};
 use crate::paths::{Partial, free_name};
 use crate::look::Look;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
@@ -28,41 +28,6 @@ impl Default for TimingOpts {
         TimingOpts { speed: 250.0, cell: 8.0, interval: 5.0, size: 1600 }
     }
 }
-struct Zone {
-    label: String,
-    lo: DVec3,
-    hi: DVec3,
-    color: [u8; 3],
-    boxed: bool,
-}
-
-fn zones(bsp: &Bsp) -> Vec<Zone> {
-    let kinds: [(&[&str], &str, [u8; 3]); 4] = [
-        (&["func_bomb_target", "info_bomb_target"], "bombsite", [255, 140, 0]),
-        (&["func_hostage_rescue", "info_hostage_rescue"], "rescue", [0, 220, 220]),
-        (&["hostage_entity"], "hostage", [255, 220, 0]),
-        (&["func_vip_safetyzone"], "escape", [0, 220, 220]),
-    ];
-    let mut out = Vec::new();
-    for (classes, name, color) in kinds {
-        let mut n = 0;
-        for e in bsp.entities.iter().filter(|e| classes.contains(&e.class())) {
-            let o = e.origin().unwrap_or(DVec3::ZERO);
-            let (lo, hi, boxed) = match e.model().and_then(|m| bsp.models.get(m)).filter(|_| e.model() != Some(0)) {
-                Some(m) => (m.mins + o, m.maxs + o, true),
-                None if e.origin().is_some() => {
-                    let r = if name == "bombsite" { 128.0 } else { 48.0 };
-                    (o - DVec3::new(r, r, 0.0), o + DVec3::new(r, r, 0.0), false)
-                }
-                None => continue,
-            };
-            n += 1;
-            out.push(Zone { label: format!("{name} {n}"), lo, hi, color, boxed });
-        }
-    }
-    out
-}
-
 fn zone_time(nav: &Nav, z: &Zone, d: &[f32]) -> f32 {
     if z.boxed {
         return nav.nodes_in(z.lo - DVec3::new(0.0, 0.0, 72.0), z.hi).into_iter().map(|n| d[n]).fold(f32::INFINITY, f32::min);

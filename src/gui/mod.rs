@@ -22,6 +22,8 @@ use crate::paths::list_maps;
 use crate::render::{Cuts, Gpu, Renderer, wgpu};
 use crate::scene::{CutOpts, LoadOpts, Scene};
 use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
+use crate::svg::SvgOpts;
+use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
 
 use export_ui::Exporter;
@@ -141,6 +143,8 @@ struct App {
     slice: SliceOpts,
     timing: TimingOpts,
     health: HealthOpts,
+    svg: SvgOpts,
+    stl: StlOpts,
     health_text: Option<(String, String)>,
     exporter: Exporter,
     out: String,
@@ -194,6 +198,8 @@ impl App {
             slice: SliceOpts::default(),
             timing: TimingOpts::default(),
             health: HealthOpts::default(),
+            svg: SvgOpts::default(),
+            stl: StlOpts::default(),
             health_text: None,
             exporter: Exporter::Iso,
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),

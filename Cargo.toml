@@ -20,6 +20,7 @@ rfd = "0.17"
 anyhow = "1"
 gif = "0.13"
 png = "0.18"
+fast-surface-nets = "0.2.1"
 
 [profile.dev.package."*"]
 opt-level = 3

@@ -16,7 +16,7 @@ const CROUCH_OFS: f64 = 18.0;
 pub const STAND_OFS: f64 = 36.0;
 const DZ: f64 = 8.0;
 pub const NONE: u32 = u32::MAX;
-const BLOCKERS: &[&str] = &["func_wall", "func_wall_toggle", "func_pushable"];
+pub const BLOCKERS: &[&str] = &["func_wall", "func_wall_toggle", "func_pushable"];
 
 #[derive(Clone, Copy)]
 pub struct Node {
@@ -70,6 +70,41 @@ fn boundary(op: &impl Fn(f64) -> bool, mut a: f64, mut b: f64) -> (f64, f64) {
         }
     }
     (a, b)
+}
+
+pub struct Zone {
+    pub label: String,
+    pub lo: DVec3,
+    pub hi: DVec3,
+    pub color: [u8; 3],
+    pub boxed: bool,
+}
+
+pub fn zones(bsp: &Bsp) -> Vec<Zone> {
+    let kinds: [(&[&str], &str, [u8; 3]); 4] = [
+        (&["func_bomb_target", "info_bomb_target"], "bombsite", [255, 140, 0]),
+        (&["func_hostage_rescue", "info_hostage_rescue"], "rescue", [0, 220, 220]),
+        (&["hostage_entity"], "hostage", [255, 220, 0]),
+        (&["func_vip_safetyzone"], "escape", [0, 220, 220]),
+    ];
+    let mut out = Vec::new();
+    for (classes, name, color) in kinds {
+        let mut n = 0;
+        for e in bsp.entities.iter().filter(|e| classes.contains(&e.class())) {
+            let o = e.origin().unwrap_or(DVec3::ZERO);
+            let (lo, hi, boxed) = match e.model().and_then(|m| bsp.models.get(m)).filter(|_| e.model() != Some(0)) {
+                Some(m) => (m.mins + o, m.maxs + o, true),
+                None if e.origin().is_some() => {
+                    let r = if name == "bombsite" { 128.0 } else { 48.0 };
+                    (o - DVec3::new(r, r, 0.0), o + DVec3::new(r, r, 0.0), false)
+                }
+                None => continue,
+            };
+            n += 1;
+            out.push(Zone { label: format!("{name} {n}"), lo, hi, color, boxed });
+        }
+    }
+    out
 }
 
 pub struct Nav {
@@ -224,6 +259,10 @@ impl Nav {
                 self.ladders += 1;
             }
         }
+    }
+
+    pub fn links(&self, u: usize) -> [u32; 4] {
+        self.orth[u]
     }
 
     fn hop(&self, u: usize, d: usize) -> Option<(usize, bool, bool)> {
