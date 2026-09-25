@@ -1,6 +1,7 @@
 mod bsp;
 mod camera;
 mod cli;
+mod clip;
 mod export;
 mod grid;
 mod gui;
