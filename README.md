@@ -29,6 +29,7 @@ bsp2img timing de_dust2 --game C:\HLDS
 bsp2img health "de_*" "cs_*" --game C:\HLDS
 bsp2img svg de_nuke --game C:\HLDS --scale 1:200
 bsp2img stl de_dust2 --game C:\HLDS --roofs 1 --print-width 200
+bsp2img gltf de_dust2 --game C:\HLDS --roofs 1
 ```
 
 In a terminal, exports show a percentage while they run.
@@ -42,6 +43,7 @@ In a terminal, exports show a percentage while they run.
 `health` writes `<map>_health.txt` and `<map>_health.png`: missing WADs, textures, sky, models and sounds; whether VIS and RAD ran; counts against engine and compiler limits (HLSDK and VHLT 34; percentages use the engine limit where known, else VHLT); spawns per team and any not on walkable ground; objectives and buy zones; overview files, BMP palette index 255 and the `.res`; walkable area and the 3 largest open spots. With several maps it also writes `<out>/health_summary.csv`. Map names accept `*` and `?`. Stock maps often have overviews that their `.res` doesn't list; that's normal.
 `svg` writes `<map>_callouts.svg`: vector line art of the floor players can reach from spawns, in world units and printable to scale. Layers: `floors-N` (tinted floor per height band, lowest first; parts under a higher band get a dashed outline instead), `walls`, `objectives`, `spawns`, `grid` (hidden) and an empty `labels` layer for your own callouts. Stacked areas are split into bands at roof levels. Framing matches the `timing` and `--grid` images.
 `stl` writes `<map>.stl`, a watertight binary STL of the playable area for 3D printing: walls around every spot reachable from the spawns, a base plate below the lowest floor, nothing above `--roofs`/`--zmax`. Closed doors and solid brush entities are included; sealed pockets are filled and floating parts removed.
+`gltf` writes `<map>_baked.glb` (or `_separate`, `_none`) for Blender, web viewers and Sketchfab: Y up, metres (1 unit = 1 inch), with the same cuts as the images. `--lighting baked` bakes textures times lightmap into one atlas with an unlit material, so it looks the same everywhere. `separate` keeps tiled textures and puts the full-colour lightmap on UV 2 as the occlusion texture; most viewers show it greyscale, in Blender multiply it with the base colour instead. `none` writes textures only. Additive surfaces become alpha blended.
 
 Textures come from the map, then the WADs it lists, then any WAD in the mod and `valve` folders.
 
@@ -152,6 +154,14 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--base U` | Base plate below the lowest floor (default 16) |
 | `--print-width MM` | Longest side of the print (default 200) |
 | `--smooth` | Smooth surface (surface nets) instead of blocky voxels; much larger files |
+
+### gltf only
+
+| Option | Effect |
+|---|---|
+| `--lighting baked\|separate\|none` | How lighting is stored (default baked) |
+| `--texel U` | Units per atlas texel with baked lighting (default 2; raised automatically if the atlas would pass 8192x8192) |
+| `--nearest` | Pixelated texture filtering |
 
 ### overview only
 

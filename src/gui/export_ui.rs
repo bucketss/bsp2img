@@ -2,6 +2,7 @@ use eframe::egui;
 
 use super::App;
 use super::jobs::Job;
+use crate::gltf::Lighting;
 use crate::spin::Anim;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -15,6 +16,7 @@ pub enum Exporter {
     Health,
     Svg,
     Stl,
+    Gltf,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
@@ -22,7 +24,7 @@ const GROUPS: &[(&str, &[Exporter])] = &[
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing, Exporter::Health]),
-    ("3D and vector", &[Exporter::Svg, Exporter::Stl]),
+    ("3D and vector", &[Exporter::Svg, Exporter::Stl, Exporter::Gltf]),
 ];
 
 impl Exporter {
@@ -37,6 +39,7 @@ impl Exporter {
             Exporter::Health => "health",
             Exporter::Svg => "svg",
             Exporter::Stl => "stl",
+            Exporter::Gltf => "gltf",
         }
     }
 
@@ -55,6 +58,7 @@ impl Exporter {
             Exporter::Health => "Health report",
             Exporter::Svg => "SVG callouts",
             Exporter::Stl => "STL diorama",
+            Exporter::Gltf => "glTF",
         }
     }
 }
@@ -93,6 +97,7 @@ impl App {
             Exporter::Health => Job::Health(self.health.clone()),
             Exporter::Svg => Job::Svg(self.svg.clone()),
             Exporter::Stl => Job::Stl(self.stl.clone()),
+            Exporter::Gltf => Job::Gltf(self.gltf.clone()),
         }
     }
 
@@ -127,6 +132,7 @@ impl App {
             Exporter::Health => self.form_health(ui),
             Exporter::Svg => self.form_svg(ui),
             Exporter::Stl => self.form_stl(ui),
+            Exporter::Gltf => self.form_gltf(ui),
         }
         ui.add_space(6.0);
         let ready = self.scene.is_some() && !self.busy();
@@ -248,5 +254,19 @@ impl App {
         ui.add(egui::Slider::new(&mut self.stl.print_width, 50.0..=500.0).text("print width mm"));
         ui.checkbox(&mut self.stl.smooth, "Smooth surface");
         ui.weak("Uses the roof and height cuts on the Scene tab. Smaller voxels need much more memory.");
+    }
+
+    fn form_gltf(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("lighting");
+            for l in Lighting::ALL {
+                ui.selectable_value(&mut self.gltf.lighting, l, l.key());
+            }
+        });
+        if self.gltf.lighting == Lighting::Baked {
+            ui.add(egui::Slider::new(&mut self.gltf.texel, 0.5..=16.0).text("units per texel"));
+        }
+        ui.checkbox(&mut self.gltf.nearest, "Pixelated textures");
+        ui.weak("Uses the roof, height, XY and hull cuts on the Scene tab.");
     }
 }

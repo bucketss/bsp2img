@@ -8,6 +8,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
+use crate::gltf::{GltfOpts, Lighting, export_gltf};
 use crate::health::{HealthOpts, csv_quote, export_health};
 use crate::look::{FaceArgs, LookArgs};
 use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
@@ -45,6 +46,8 @@ pub enum Cmd {
     Svg(SvgArgs),
     #[command(about = "Write a watertight 3D-printable STL of the playable area")]
     Stl(StlArgs),
+    #[command(about = "Write a textured glTF (.glb) of the map for 3D viewers and Blender")]
+    Gltf(GltfArgs),
     #[command(about = "Open the GUI")]
     Gui(GuiArgs),
 }
@@ -267,6 +270,19 @@ pub struct StlArgs {
     pub print_width: f64,
     #[arg(long, help = "smooth surface (surface nets) instead of blocky voxels")]
     pub smooth: bool,
+}
+
+#[derive(Args)]
+pub struct GltfArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value = "baked", value_parser = ["baked", "separate", "none"],
+          help = "baked: lightmap baked into one atlas; separate: tiled textures plus lightmap on UV 2; none: textures only")]
+    pub lighting: String,
+    #[arg(long, default_value_t = 2.0, help = "units per atlas texel with --lighting baked")]
+    pub texel: f64,
+    #[arg(long, help = "pixelated texture filtering")]
+    pub nearest: bool,
 }
 
 #[derive(Args)]
@@ -540,6 +556,28 @@ pub fn run_stl(a: &StlArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let res = reported(|rep| export_stl(&scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
+        if res.is_err() {
+            let _ = std::fs::remove_dir(&out);
+        }
+        res?;
+        println!("  {:.1}s", t0.elapsed().as_secs_f64());
+    }
+    Ok(())
+}
+
+pub fn run_gltf(a: &GltfArgs) -> Result<()> {
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = GltfOpts { lighting: Lighting::parse(&a.lighting).unwrap_or(Lighting::Baked), texel: a.texel, nearest: a.nearest };
+    for m in &a.c.maps {
+        let t0 = Instant::now();
+        let path = resolve_map(m, a.c.game.as_deref())?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let out = run_dir(&a.c.out, &name)?;
+        println!("== {name}");
+        let scene = Scene::load(&path, &lo, 8192, &mut say)?;
+        let cuts = scene.cuts(&co, &mut say);
+        let res = reported(|rep| export_gltf(&scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);
         }
