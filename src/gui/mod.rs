@@ -42,7 +42,13 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
         _ => Mode::Iso,
     };
     let mut opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 950.0]).with_title("bsp2img"),
+        viewport: {
+            let mut v = egui::ViewportBuilder::default().with_inner_size([1500.0, 950.0]).with_title("bsp2img");
+            if let Some(icon) = ico_icon(include_bytes!("../../arctic.ico")) {
+                v = v.with_icon(icon);
+            }
+            v
+        },
         ..Default::default()
     };
     let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut opts.wgpu_options.wgpu_setup else {
@@ -470,4 +476,30 @@ impl eframe::App for App {
         }
         self.save_cfg();
     }
+}
+
+fn ico_icon(d: &[u8]) -> Option<egui::IconData> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(d.get(o..o + 2)?.try_into().ok()?));
+    let u32_at = |o: usize| Some(u32::from_le_bytes(d.get(o..o + 4)?.try_into().ok()?));
+    let off = u32_at(18)? as usize;
+    let (w, h2, bpp) = (u32_at(off + 4)? as usize, u32_at(off + 8)? as usize, u16_at(off + 14)? as usize);
+    let h = h2 / 2;
+    if !(bpp == 24 || bpp == 32) || w == 0 || h == 0 || u32_at(off + 16)? != 0 {
+        return None;
+    }
+    let px = off + u32_at(off)? as usize;
+    let stride = (w * bpp / 8).div_ceil(4) * 4;
+    let mask = px + stride * h;
+    let mstride = w.div_ceil(32) * 4;
+    let mut rgba = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let row = h - 1 - y;
+        for x in 0..w {
+            let p = d.get(px + row * stride + x * bpp / 8..px + row * stride + x * bpp / 8 + bpp / 8)?;
+            let hidden = d.get(mask + row * mstride + x / 8).is_some_and(|b| b & (0x80 >> (x % 8)) != 0);
+            let a = if bpp == 32 { p[3] } else if hidden { 0 } else { 255 };
+            rgba[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&[p[2], p[1], p[0], a]);
+        }
+    }
+    Some(egui::IconData { rgba, width: w as u32, height: h as u32 })
 }

@@ -53,12 +53,33 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     let filter = app.filter.to_lowercase();
+    let shown: Vec<_> = app.maps.iter().filter(|(n, _)| n.to_lowercase().contains(&filter)).collect();
     let mut pick = None;
+    let mut keyed = false;
+    if !shown.is_empty() && !ctx.egui_wants_keyboard_input() {
+        let step = ctx.input(|i| i.key_pressed(egui::Key::ArrowDown) as i32 - i.key_pressed(egui::Key::ArrowUp) as i32);
+        if step != 0 {
+            let cur = shown.iter().position(|(_, p)| app.current.as_ref() == Some(p));
+            let next = match cur {
+                Some(c) => (c as i32 + step).clamp(0, shown.len() as i32 - 1) as usize,
+                None if step > 0 => 0,
+                None => shown.len() - 1,
+            };
+            if cur != Some(next) {
+                pick = Some(shown[next].1.clone());
+                keyed = true;
+            }
+        }
+    }
     egui::ScrollArea::vertical().id_salt("maps").auto_shrink([false, false]).show(ui, |ui| {
-        for (n, p) in app.maps.iter().filter(|(n, _)| n.to_lowercase().contains(&filter)) {
+        for (n, p) in &shown {
             let sel = app.current.as_ref() == Some(p);
-            if ui.selectable_label(sel, n).clicked() {
+            let r = ui.selectable_label(sel, n.as_str());
+            if r.clicked() {
                 pick = Some(p.clone());
+            }
+            if keyed && pick.as_ref() == Some(p) {
+                r.scroll_to_me(None);
             }
         }
         if app.maps.is_empty() {
