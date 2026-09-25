@@ -83,7 +83,6 @@ pub fn fan(poly: &[Vertex], out: &mut Vec<Vertex>) {
     }
 }
 
-#[allow(dead_code)]
 pub fn clip_tris_z(verts: &[Vertex], planes: &[f64]) -> Vec<(usize, Vec<Vertex>)> {
     let mut planes = planes.to_vec();
     planes.sort_by(f64::total_cmp);

@@ -303,7 +303,7 @@ fn hold(zs: &mut Vec<f64>, z: f64, n: usize) {
 }
 
 fn z_span(r: &Renderer, cuts: &Cuts) -> (f64, f64) {
-    r.points_in(cuts).iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.z), b.max(p.z)))
+    r.z_range(cuts)
 }
 
 fn peel_zs(

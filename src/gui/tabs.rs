@@ -126,6 +126,47 @@ pub fn tab_scene(app: &mut App, ui: &mut egui::Ui) {
         app.z_on = [false; 2];
         app.xy_on = [false; 4];
     }
+    explode_ui(app, ui);
+}
+
+fn explode_ui(app: &mut App, ui: &mut egui::Ui) {
+    ui.separator();
+    ui.heading("Exploded floors");
+    ui.checkbox(&mut app.explode.on, "Explode floors");
+    let planes = app.explode_planes();
+    let e = &mut app.explode;
+    ui.add_enabled_ui(e.on, |ui| {
+        ui.add(egui::Slider::new(&mut e.gap, 32.0..=1024.0).text("gap units"));
+        let mut pick = e.at.is_some();
+        if ui.checkbox(&mut pick, "Pick split levels").changed() {
+            e.at = pick.then(|| planes.as_ref().map(|p| p.planes.clone()).unwrap_or_default());
+        }
+        match (&mut e.at, &app.scene) {
+            (None, s) => {
+                let max = s.as_ref().map_or(4, |s| s.levels.len().saturating_sub(1).max(1));
+                ui.add(egui::Slider::new(&mut e.count, 1..=max).text("splits (largest gaps)"));
+            }
+            (Some(at), Some(s)) => {
+                for (lo, _, _) in s.levels.iter().rev().skip(1) {
+                    let z = lo - 1.0;
+                    let mut on = at.contains(&z);
+                    if ui.checkbox(&mut on, format!("split below z {lo:.0}")).changed() {
+                        at.retain(|&p| p != z);
+                        if on {
+                            at.push(z);
+                        }
+                    }
+                }
+            }
+            (Some(_), None) => {}
+        }
+        ui.checkbox(&mut e.guides, "Corner guide lines");
+        match &planes {
+            Some(p) => ui.weak(format!("split at z {}", p.planes.iter().map(|z| format!("{z:.0}")).collect::<Vec<_>>().join(", "))),
+            None => ui.weak("no level boundaries inside the cuts"),
+        };
+    });
+    ui.weak("Isometric and Free views, isometric and animation exports. SVG callouts split at the same heights.");
 }
 
 pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {

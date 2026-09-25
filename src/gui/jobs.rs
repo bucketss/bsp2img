@@ -7,6 +7,7 @@ use anyhow::Result;
 use eframe::egui;
 
 use super::{App, Msg};
+use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, export_gltf};
 use crate::health::{HealthOpts, export_health};
@@ -53,6 +54,7 @@ pub struct JobSpec {
     pub nearest: bool,
     pub sky: Option<(String, f64, f64)>,
     pub out: PathBuf,
+    pub explode: ExplodeOpts,
 }
 
 pub struct Running {
@@ -95,6 +97,7 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
     let label = format!("Exporting {}", spec.job.label());
     let tag = label.clone();
     std::thread::spawn(move || {
+        let mut spec = spec;
         let send = |m: Msg| {
             let _ = tx.send(m);
             ctx.request_repaint();
@@ -104,6 +107,9 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
         let res = run_dir(&spec.out, &name).and_then(|out| {
             let mut log = |s: String| send(Msg::Log(s));
             let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log);
+            if matches!(spec.job, Job::Iso(_) | Job::Anim(_)) {
+                spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
+            }
             let mut progress = |f: f32| {
                 send(Msg::Progress(f, tag.clone()));
                 !flag.load(Ordering::Relaxed)
@@ -140,6 +146,7 @@ impl App {
             nearest: self.look.nearest,
             sky,
             out: PathBuf::from(&self.out),
+            explode: self.explode.clone(),
         };
         self.status.clear();
         self.job = Some(start(spec, ctx));

@@ -97,7 +97,13 @@ impl App {
             }
             Exporter::Timing => Job::Timing(self.timing.clone()),
             Exporter::Health => Job::Health(self.health.clone()),
-            Exporter::Svg => Job::Svg(self.svg.clone()),
+            Exporter::Svg => {
+                let mut o = self.svg.clone();
+                if let Some(e) = self.explode_planes() {
+                    o.planes = Some(e.planes);
+                }
+                Job::Svg(o)
+            }
             Exporter::Stl => Job::Stl(self.stl.clone()),
             Exporter::Gltf => Job::Gltf(self.gltf.clone()),
         }
@@ -253,6 +259,9 @@ impl App {
             (Some(_), None) => {}
         }
         ui.weak("Uses the roof, height and XY cuts on the Scene tab.");
+        if self.explode.on {
+            ui.weak("Exploded floors are on (Scene tab): floors split at the same heights.");
+        }
     }
 
     fn form_stl(&mut self, ui: &mut egui::Ui) {

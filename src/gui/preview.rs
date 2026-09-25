@@ -210,6 +210,10 @@ impl App {
         if wpx > self.gpu.max_dim || hpx > self.gpu.max_dim {
             return;
         }
+        let want = matches!(self.mode, Mode::Iso | Mode::Free).then(|| self.explode_planes()).flatten();
+        if let (Some(r), Some(s)) = (&mut self.renderer, &self.scene) {
+            r.set_explode(&s.mesh, want.as_ref());
+        }
         if self.mode == Mode::Free {
             self.cam.aspect = wpx as f64 / hpx as f64;
             if self.frame_cam {
@@ -227,7 +231,8 @@ impl App {
             0.0
         };
         let key = format!(
-            "{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{}",
+            "{:?}{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{}",
+            want,
             cuts,
             (self.mode as u8, self.yaw, self.zoom, self.pan.to_array()),
             (self.mode == Mode::Free).then_some(self.cam),

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use super::{App, Exporter, Tab};
 use crate::camera::Camera;
+use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts};
 use crate::gltf::{GltfOpts, Lighting};
 use crate::health::HealthOpts;
@@ -337,6 +338,37 @@ impl Cfg for Look {
     }
 }
 
+impl Cfg for ExplodeOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        let at: Vec<String> = self.at.iter().flatten().map(|z| z.to_string()).collect();
+        kvs(&[
+            ("on", self.on.to_string()),
+            ("count", self.count.to_string()),
+            ("pick", self.at.is_some().to_string()),
+            ("at", at.join(" ")),
+            ("gap", self.gap.to_string()),
+            ("guides", self.guides.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "on" => put(&mut self.on, v),
+            "count" => put(&mut self.count, v),
+            "pick" => self.at = (v.trim() == "true").then(|| self.at.clone().unwrap_or_default()),
+            "at" => {
+                let zs: Vec<f64> = v.split_whitespace().filter_map(|z| z.parse().ok()).collect();
+                if self.at.is_some() || !zs.is_empty() {
+                    self.at = Some(zs);
+                }
+            }
+            "gap" => put(&mut self.gap, v),
+            "guides" => put(&mut self.guides, v),
+            _ => {}
+        }
+    }
+}
+
 impl Cfg for LoadOpts {
     fn kv(&self) -> Vec<(String, String)> {
         let l = &self.light;
@@ -401,6 +433,7 @@ impl App {
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
         }
+        lines.extend(self.explode.kv().into_iter().map(|(k, v)| format!("explode.{k}={v}")));
         lines.iter().map(|l| format!("{l}\n")).collect()
     }
 
@@ -409,6 +442,7 @@ impl App {
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
             match k.split_once('.') {
+                Some(("explode", k)) => self.explode.set(k, v),
                 Some(("load", k)) => self.load.set(k, v),
                 Some(("look", k)) => self.look.set(k, v),
                 Some(("iso", k)) => self.iso.set(k, v),

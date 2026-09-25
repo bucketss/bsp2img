@@ -2,6 +2,7 @@ mod bsp;
 mod camera;
 mod cli;
 mod clip;
+mod explode;
 mod export;
 mod gltf;
 mod grid;

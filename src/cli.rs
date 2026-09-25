@@ -7,6 +7,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use crate::camera::{Camera, Framing};
+use crate::explode::ExplodeArgs;
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, Lighting, export_gltf};
@@ -129,6 +130,8 @@ pub struct IsoArgs {
     pub l: LookArgs,
     #[command(flatten)]
     pub cam: CamArgs,
+    #[command(flatten)]
+    pub ex: ExplodeArgs,
 }
 
 #[derive(Args, Clone)]
@@ -155,6 +158,8 @@ pub struct SpinArgs {
     pub l: LookArgs,
     #[command(flatten)]
     pub cam: CamArgs,
+    #[command(flatten)]
+    pub ex: ExplodeArgs,
     #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
@@ -199,6 +204,8 @@ pub struct AnimArgs {
     pub no_mp4: bool,
     #[command(flatten)]
     pub cam: CamArgs,
+    #[command(flatten)]
+    pub ex: ExplodeArgs,
 }
 
 #[derive(Args)]
@@ -401,7 +408,7 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         kind: Anim::Spin,
         framing: a.cam.framing()?,
     };
-    run_anim(&a.c, &o)
+    run_anim(&a.c, &o, &a.ex)
 }
 
 impl AnimArgs {
@@ -432,18 +439,19 @@ pub fn run_peel(a: &PeelArgs) -> Result<()> {
         reverse: a.reverse,
         then_spin: a.a.then_spin,
     };
-    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Peel(p))?)
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Peel(p))?, &a.a.ex)
 }
 
 pub fn run_slice(a: &SliceArgs) -> Result<()> {
     let s = SliceOpts { slices: a.count, seconds: a.seconds, hold: a.hold, then_spin: a.a.then_spin };
-    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?)
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?, &a.a.ex)
 }
 
-fn run_anim(c: &Common, o: &AnimOpts) -> Result<()> {
+fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = c.load_opts();
     let co = c.cut_opts();
+    let ex = ex.opts();
     for m in &c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, c.game.as_deref())?;
@@ -453,7 +461,8 @@ fn run_anim(c: &Common, o: &AnimOpts) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        let res = reported(|rep| export_anim(&mut r, &scene.levels, &name, &sky_tag, &co.tag(lo.hull), &cuts, o, &out, rep));
+        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        let res = reported(|rep| export_anim(&mut r, &scene.levels, &name, &sky_tag, &tag, &cuts, o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);
         }
@@ -496,6 +505,7 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         look: a.l.look()?,
         framing: a.cam.framing()?,
     };
+    let ex = a.ex.opts();
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
@@ -505,7 +515,8 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
+        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+        reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())

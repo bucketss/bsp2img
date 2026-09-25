@@ -15,6 +15,7 @@ use egui::Pos2;
 use glam::DVec3;
 
 use crate::camera::Camera;
+use crate::explode::{Explode, ExplodeOpts};
 use crate::export::{IsoOpts, OverviewOpts};
 use crate::gltf::GltfOpts;
 use crate::health::HealthOpts;
@@ -125,6 +126,7 @@ struct App {
     z_val: [f64; 2],
     xy_on: [bool; 4],
     xy_val: [f64; 4],
+    explode: ExplodeOpts,
     scene: Option<Arc<Scene>>,
     renderer: Option<Renderer>,
     load_rx: Option<Receiver<Msg>>,
@@ -187,6 +189,7 @@ impl App {
             z_val: [0.0; 2],
             xy_on: [false; 4],
             xy_val: [0.0; 4],
+            explode: ExplodeOpts::default(),
             scene: None,
             renderer: None,
             load_rx: None,
@@ -327,6 +330,11 @@ impl App {
         let levels = self.scene.as_ref().map(|s| s.levels.as_slice()).unwrap_or(&[]);
         let zmax = c.zmax.unwrap_or(1e9).min(roof_zmax(levels, c.roofs, &mut |_| {}));
         Cuts { zmin: c.zmin.unwrap_or(-1e9), zmax, clip: c.clip_box(), use_mask: true }
+    }
+
+    fn explode_planes(&self) -> Option<Explode> {
+        let s = self.scene.as_ref()?;
+        self.explode.resolve(&s.levels, &self.cuts())
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {

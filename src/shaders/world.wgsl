@@ -12,6 +12,7 @@ struct Frame {
 struct BatchU {
     a: vec4<f32>,
     warp: vec4<f32>,
+    e: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fr: Frame;
@@ -34,13 +35,14 @@ struct VOut {
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32, @location(4) normal: vec3<f32>) -> VOut {
     var o: VOut;
+    let lp = pos + vec3<f32>(0.0, 0.0, bu.e.x * fr.view_r.w);
     var off = fr.view_dir.xyz * (bias * 0.25);
     if (fr.eye.w > 0.5) {
-        let d = pos - fr.eye.xyz;
+        let d = lp - fr.eye.xyz;
         let l = max(length(d), 1e-3);
         off = d / l * (bias * max(0.25, l * 2e-4));
     }
-    o.pos = fr.mvp * vec4<f32>(pos - off, 1.0);
+    o.pos = fr.mvp * vec4<f32>(lp - off, 1.0);
     o.uv = uv;
     o.lm = lm;
     o.world = pos;
@@ -58,15 +60,19 @@ fn tex_uv(uv: vec2<f32>) -> vec2<f32> {
 
 fn shade(i: VOut) -> vec4<f32> {
     let t = textureSample(tex, tsamp, tex_uv(i.uv));
-    let l = textureSampleLevel(lmap, lsamp, i.lm, 0.0);
+    var l = textureSampleLevel(lmap, lsamp, i.lm, 0.0);
     let p = i.world;
-    if (p.z < fr.zr.x || p.z > fr.zr.y) {
+    let unlit = bu.e.y > 0.5;
+    if (unlit) {
+        l = vec4<f32>(1.0);
+    }
+    if (!unlit && (p.z < fr.zr.x || p.z > fr.zr.y)) {
         discard;
     }
-    if (p.x < fr.clip_xy.x || p.y < fr.clip_xy.y || p.x > fr.clip_xy.z || p.y > fr.clip_xy.w) {
+    if (!unlit && (p.x < fr.clip_xy.x || p.y < fr.clip_xy.y || p.x > fr.clip_xy.z || p.y > fr.clip_xy.w)) {
         discard;
     }
-    if (fr.zr.z > 0.5) {
+    if (!unlit && fr.zr.z > 0.5) {
         let m = (p.xy - fr.mask_rect.xy) / (fr.mask_rect.zw - fr.mask_rect.xy);
         if (m.x < 0.0 || m.y < 0.0 || m.x > 1.0 || m.y > 1.0) {
             discard;

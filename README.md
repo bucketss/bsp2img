@@ -9,7 +9,7 @@ Requires opengl, dx12, or vulkan.
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
 - Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
-- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts, exploded floors), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Free view: perspective or orthographic. Drag to orbit, right- or middle-drag to pan, wheel to dolly, double-click to orbit around the point under the cursor, hold right button + WASD/QE to fly (shift for faster), ctrl+click to set the focus for tilt-shift and depth of field.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
@@ -133,6 +133,17 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--camera FILE` | Use a `.cam` saved from the GUI Camera tab. `--size` is the longest side and the shape comes from the file. Animations orbit its target at its pitch and distance, starting at its yaw |
 
 A `.cam` file is `key=value` lines: `proj` (`persp` or `ortho`), `target` (`x y z`), `yaw`, `pitch`, `roll`, `dist`, `fov`, `aspect`. Orthographic cameras show a view `2 * dist * tan(fov / 2)` units high.
+
+### Exploded floors (iso, spin, peel, slice)
+
+| Option | Effect |
+|---|---|
+| `--explode N` | Split the map at the N largest gaps between roof levels and lift each floor above the one below |
+| `--explode-at Z1,Z2` | Split at these heights instead |
+| `--explode-gap U` | Lift per floor in units (default 256) |
+| `--explode-guides` | Guide lines at the corners of each lifted floor |
+
+Cuts use the original heights. Files get `_explodeN`. In the GUI, SVG callouts split at the same heights.
 
 ### timing only
 
