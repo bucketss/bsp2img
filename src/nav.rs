@@ -16,7 +16,7 @@ const CROUCH_OFS: f64 = 18.0;
 pub const STAND_OFS: f64 = 36.0;
 const DZ: f64 = 8.0;
 pub const NONE: u32 = u32::MAX;
-const BLOCKERS: &[&str] = &["func_wall", "func_wall_toggle", "func_pushable"];
+pub const BLOCKERS: &[&str] = &["func_wall", "func_wall_toggle", "func_pushable"];
 
 #[derive(Clone, Copy)]
 pub struct Node {

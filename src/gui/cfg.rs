@@ -8,6 +8,7 @@ use crate::look::Look;
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
 use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
+use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
 
 #[cfg(windows)]
@@ -201,6 +202,29 @@ impl Cfg for HealthOpts {
     }
 }
 
+impl Cfg for StlOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("voxel", self.voxel.to_string()),
+            ("wall", self.wall.to_string()),
+            ("base", self.base.to_string()),
+            ("print_width", self.print_width.to_string()),
+            ("smooth", self.smooth.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "voxel" => put(&mut self.voxel, v),
+            "wall" => put(&mut self.wall, v),
+            "base" => put(&mut self.base, v),
+            "print_width" => put(&mut self.print_width, v),
+            "smooth" => put(&mut self.smooth, v),
+            _ => {}
+        }
+    }
+}
+
 impl Cfg for Look {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
@@ -273,7 +297,7 @@ impl App {
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
         ];
-        let sections: [(&str, &dyn Cfg); 9] = [
+        let sections: [(&str, &dyn Cfg); 10] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
@@ -283,6 +307,7 @@ impl App {
             ("overview", &self.ov),
             ("timing", &self.timing),
             ("health", &self.health),
+            ("stl", &self.stl),
         ];
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
@@ -304,6 +329,7 @@ impl App {
                 Some(("overview", k)) => self.ov.set(k, v),
                 Some(("timing", k)) => self.timing.set(k, v),
                 Some(("health", k)) => self.health.set(k, v),
+                Some(("stl", k)) => self.stl.set(k, v),
                 Some(_) => {}
                 None => match k {
                     "game" => self.game = v.to_string(),

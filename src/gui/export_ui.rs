@@ -13,6 +13,7 @@ pub enum Exporter {
     Overview,
     Timing,
     Health,
+    Stl,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
@@ -20,6 +21,7 @@ const GROUPS: &[(&str, &[Exporter])] = &[
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing, Exporter::Health]),
+    ("3D and vector", &[Exporter::Stl]),
 ];
 
 impl Exporter {
@@ -32,6 +34,7 @@ impl Exporter {
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
             Exporter::Health => "health",
+            Exporter::Stl => "stl",
         }
     }
 
@@ -48,6 +51,7 @@ impl Exporter {
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
             Exporter::Health => "Health report",
+            Exporter::Stl => "STL diorama",
         }
     }
 }
@@ -84,6 +88,7 @@ impl App {
             }
             Exporter::Timing => Job::Timing(self.timing.clone()),
             Exporter::Health => Job::Health(self.health.clone()),
+            Exporter::Stl => Job::Stl(self.stl.clone()),
         }
     }
 
@@ -116,6 +121,7 @@ impl App {
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
             Exporter::Health => self.form_health(ui),
+            Exporter::Stl => self.form_stl(ui),
         }
         ui.add_space(6.0);
         let ready = self.scene.is_some() && !self.busy();
@@ -199,5 +205,14 @@ impl App {
         ui.add(egui::Slider::new(&mut self.health.cell, 4.0..=32.0).text("walk grid units"));
         ui.add(egui::Slider::new(&mut self.health.size, 300..=2048).text("thumbnail px"));
         ui.weak("Missing assets, VIS and lighting, engine limits, spawns, overview files and open areas.");
+    }
+
+    fn form_stl(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.stl.voxel, 2.0..=32.0).text("voxel units"));
+        ui.add(egui::Slider::new(&mut self.stl.wall, 0.0..=128.0).text("wall units"));
+        ui.add(egui::Slider::new(&mut self.stl.base, 0.0..=128.0).text("base units"));
+        ui.add(egui::Slider::new(&mut self.stl.print_width, 50.0..=500.0).text("print width mm"));
+        ui.checkbox(&mut self.stl.smooth, "Smooth surface");
+        ui.weak("Uses the roof and height cuts on the Scene tab. Smaller voxels need much more memory.");
     }
 }

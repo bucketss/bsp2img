@@ -453,6 +453,19 @@ impl Bsp {
         0
     }
 
+    pub fn leaf_contents(&self, model: usize, p: DVec3) -> i32 {
+        let mut n = self.models[model].headnode[0];
+        for _ in 0..1 << 16 {
+            if n < 0 {
+                return self.leaves.get((-(n + 1)) as usize).map_or(CONTENTS_SOLID, |l| l.contents);
+            }
+            let Some(node) = self.nodes.get(n as usize) else { return CONTENTS_SOLID };
+            let pl = &self.planes[node.plane as usize];
+            n = node.children[if p.dot(pl.normal) - pl.dist >= 0.0 { 0 } else { 1 }] as i32;
+        }
+        CONTENTS_SOLID
+    }
+
     pub fn leaf_open(&self, leaf: usize) -> bool {
         let c = self.leaves[leaf].contents;
         c != CONTENTS_SOLID && c != CONTENTS_SKY

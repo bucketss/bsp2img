@@ -27,6 +27,7 @@ bsp2img peel cs_assault --game C:\HLDS --count 3 --then-spin
 bsp2img slice de_dust2 --game C:\HLDS --count 8
 bsp2img timing de_dust2 --game C:\HLDS
 bsp2img health "de_*" "cs_*" --game C:\HLDS
+bsp2img stl de_dust2 --game C:\HLDS --roofs 1 --print-width 200
 ```
 
 In a terminal, exports show a percentage while they run.
@@ -38,6 +39,7 @@ In a terminal, exports show a percentage while they run.
 `timing` writes `<map>_timing.png` (which team reaches each spot first, with a white line where both arrive together), `_timing_t.png` and `_timing_ct.png` (arrival times per team), and `<map>_timing.txt` (seconds to each bombsite, hostage and rescue zone). Times are for the first player of each team after freeze time, at `--speed` units/s. Movement model: steps up to 18 units, crouch-jumps up to 63, drops of any height, crouch-only areas at 1/3 speed, ladders at 200 units/s; doors and breakables are treated as open. (EXPERIMENTAL)
 `overview` writes `<map>.bmp`, `<map>.tga` and `<map>.txt`.
 `health` writes `<map>_health.txt` and `<map>_health.png`: missing WADs, textures, sky, models and sounds; whether VIS and RAD ran; counts against engine and compiler limits (HLSDK and VHLT 34; percentages use the engine limit where known, else VHLT); spawns per team and any not on walkable ground; objectives and buy zones; overview files, BMP palette index 255 and the `.res`; walkable area and the 3 largest open spots. With several maps it also writes `<out>/health_summary.csv`. Map names accept `*` and `?`. Stock maps often have overviews that their `.res` doesn't list; that's normal.
+`stl` writes `<map>.stl`, a watertight binary STL of the playable area for 3D printing: walls around every spot reachable from the spawns, a base plate below the lowest floor, nothing above `--roofs`/`--zmax`. Closed doors and solid brush entities are included; sealed pockets are filled and floating parts removed.
 
 Textures come from the map, then the WADs it lists, then any WAD in the mod and `valve` folders.
 
@@ -118,6 +120,16 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 |---|---|
 | `--cell U` | Walk grid spacing (default 8) |
 | `--size N` | Longest side of the map thumbnail (default 600) |
+
+### stl only
+
+| Option | Effect |
+|---|---|
+| `--voxel U` | Voxel size in units (default 8) |
+| `--wall U` | Wall kept around the walkable area (default 32) |
+| `--base U` | Base plate below the lowest floor (default 16) |
+| `--print-width MM` | Longest side of the print (default 200) |
+| `--smooth` | Smooth surface (surface nets) instead of blocky voxels; much larger files |
 
 ### overview only
 
