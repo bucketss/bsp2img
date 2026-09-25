@@ -4,6 +4,8 @@ Renders GoldSrc (Half-Life / CS 1.6) maps straight from the `.bsp`: isometric di
 
 Requires opengl, dx12, or vulkan.
 
+MP4 output requires ffmpeg on PATH.
+
 ## Build
 
 - Rust 1.85+
