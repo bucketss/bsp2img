@@ -49,11 +49,12 @@ pub struct GltfOpts {
     pub lighting: Lighting,
     pub texel: f64,
     pub nearest: bool,
+    pub obj: bool,
 }
 
 impl Default for GltfOpts {
     fn default() -> Self {
-        GltfOpts { lighting: Lighting::Baked, texel: 2.0, nearest: false }
+        GltfOpts { lighting: Lighting::Baked, texel: 2.0, nearest: false, obj: false }
     }
 }
 
@@ -470,9 +471,18 @@ fn to_gltf(p: DVec3) -> [f32; 3] {
     [(p.x * METRES) as f32, (p.z * METRES) as f32, (-p.y * METRES) as f32]
 }
 
-fn add_prim(doc: &mut Doc, verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool, material: usize) {
+#[derive(Default)]
+struct Indexed {
+    pos: Vec<f32>,
+    nrm: Vec<f32>,
+    t0: Vec<f32>,
+    t1: Vec<f32>,
+    idx: Vec<u32>,
+}
+
+fn indexed(verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool) -> Indexed {
     let mut map: HashMap<[u32; 10], u32> = HashMap::new();
-    let (mut pos, mut nrm, mut t0, mut t1, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut o = Indexed::default();
     for (ti, tri) in verts.chunks_exact(3).enumerate() {
         let conv: Vec<([f32; 3], [f32; 3], [f32; 2], [f32; 2])> = tri
             .iter()
@@ -490,28 +500,16 @@ fn add_prim(doc: &mut Doc, verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f3
         for (p, n, a, b) in conv {
             let key = [p[0], p[1], p[2], n[0], n[1], n[2], a[0], a[1], b[0], b[1]].map(f32::to_bits);
             let i = *map.entry(key).or_insert_with(|| {
-                pos.extend(p);
-                nrm.extend(n);
-                t0.extend(a);
-                t1.extend(b);
-                (pos.len() / 3 - 1) as u32
+                o.pos.extend(p);
+                o.nrm.extend(n);
+                o.t0.extend(a);
+                o.t1.extend(b);
+                (o.pos.len() / 3 - 1) as u32
             });
-            idx.push(i);
+            o.idx.push(i);
         }
     }
-    if idx.is_empty() {
-        return;
-    }
-    let mut attrs = json!({
-        "POSITION": doc.floats(&pos, 3, true),
-        "NORMAL": doc.floats(&nrm, 3, false),
-        "TEXCOORD_0": doc.floats(&t0, 2, false),
-    });
-    if uv1 {
-        attrs["TEXCOORD_1"] = json!(doc.floats(&t1, 2, false));
-    }
-    let indices = doc.indices(&idx);
-    doc.prims.push(json!({"attributes": attrs, "indices": indices, "material": material, "mode": 4}));
+    o
 }
 
 fn material(name: &str, mode: Mode, alpha: f32, tex: Option<usize>, unlit: bool) -> Value {
@@ -546,6 +544,173 @@ fn mode_key(m: Mode) -> &'static str {
     }
 }
 
+enum Pixels<'a> {
+    Owned(Image),
+    Shared(&'a Image),
+}
+
+impl Pixels<'_> {
+    fn get(&self) -> &Image {
+        match self {
+            Pixels::Owned(i) => i,
+            Pixels::Shared(i) => i,
+        }
+    }
+}
+
+struct Tex<'a> {
+    name: String,
+    img: Pixels<'a>,
+    repeat: bool,
+}
+
+struct Mat {
+    name: String,
+    mode: Mode,
+    alpha: f32,
+    tex: Option<usize>,
+    occlusion: Option<usize>,
+}
+
+struct Prim<'a> {
+    verts: &'a [Vertex],
+    uv: Option<Vec<[f32; 2]>>,
+    mat: usize,
+}
+
+impl Prim<'_> {
+    fn indexed(&self, uv1: bool) -> Indexed {
+        match &self.uv {
+            Some(uv) => indexed(self.verts, &|i, _| uv[i], uv1),
+            None => indexed(self.verts, &|_, v| v.uv, uv1),
+        }
+    }
+}
+
+struct Model<'a> {
+    texs: Vec<Tex<'a>>,
+    mats: Vec<Mat>,
+    prims: Vec<Prim<'a>>,
+    unlit: bool,
+}
+
+fn write_glb(m: &Model, name: &str, nearest: bool, rep: &mut Report) -> Result<Vec<u8>> {
+    let mut doc = Doc::default();
+    let (mut tiled, mut clamped) = (None, None);
+    if !m.unlit {
+        tiled = Some(doc.sampler(true, nearest));
+    }
+    let mut texs = Vec::with_capacity(m.texs.len());
+    for t in &m.texs {
+        let s = if t.repeat {
+            *tiled.get_or_insert_with(|| doc.sampler(true, nearest))
+        } else {
+            *clamped.get_or_insert_with(|| doc.sampler(false, nearest && m.unlit))
+        };
+        texs.push(doc.texture(t.img.get(), &t.name, s)?);
+    }
+    for mat in &m.mats {
+        let mut v = material(&mat.name, mat.mode, mat.alpha, mat.tex.map(|t| texs[t]), m.unlit);
+        if let Some(o) = mat.occlusion {
+            v["occlusionTexture"] = json!({"index": texs[o], "texCoord": 1});
+        }
+        doc.materials.push(v);
+    }
+    let uv1 = m.mats.iter().any(|x| x.occlusion.is_some());
+    for (i, p) in m.prims.iter().enumerate() {
+        rep.step(0.8 + 0.1 * i as f32 / m.prims.len() as f32)?;
+        let ix = p.indexed(uv1);
+        if ix.idx.is_empty() {
+            continue;
+        }
+        let mut attrs = json!({
+            "POSITION": doc.floats(&ix.pos, 3, true),
+            "NORMAL": doc.floats(&ix.nrm, 3, false),
+            "TEXCOORD_0": doc.floats(&ix.t0, 2, false),
+        });
+        if uv1 {
+            attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false));
+        }
+        let indices = doc.indices(&ix.idx);
+        doc.prims.push(json!({"attributes": attrs, "indices": indices, "material": p.mat, "mode": 4}));
+    }
+    doc.glb(name, m.unlit)
+}
+
+fn file_safe(s: &str) -> String {
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || "+-_{}!~.".contains(c) { c } else { '_' }).collect()
+}
+
+fn write_obj(m: &Model, obj: &Path, files: &mut Partial, rep: &mut Report) -> Result<()> {
+    use std::io::Write;
+    let stem = obj.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let dir = obj.parent().unwrap_or(Path::new("."));
+    let mtl = dir.join(format!("{stem}.mtl"));
+    let mut used = std::collections::HashSet::new();
+    let mut tex_files = Vec::with_capacity(m.texs.len());
+    for t in &m.texs {
+        let base = file_safe(&format!("{stem}_{}", t.name));
+        let mut f = format!("{base}.png");
+        let mut i = 1;
+        while !used.insert(f.to_lowercase()) {
+            f = format!("{base}_{i}.png");
+            i += 1;
+        }
+        let path = dir.join(&f);
+        files.add(path.clone());
+        std::fs::write(&path, png(t.img.get())?)?;
+        tex_files.push((f, t.img.get().rgba.chunks_exact(4).any(|p| p[3] < 255)));
+    }
+    files.add(mtl.clone());
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&mtl)?);
+    for (i, mat) in m.mats.iter().enumerate() {
+        writeln!(w, "newmtl m{i}_{}", file_safe(&mat.name))?;
+        writeln!(w, "Ka 0 0 0\nKd 1 1 1\nKs 0 0 0\nillum {}", if m.unlit { 0 } else { 1 })?;
+        if matches!(mat.mode, Mode::Blend | Mode::Additive) && mat.alpha < 1.0 {
+            writeln!(w, "d {:.4}", mat.alpha)?;
+        }
+        if let Some(t) = mat.tex {
+            let (f, alpha) = &tex_files[t];
+            writeln!(w, "map_Kd {f}")?;
+            if *alpha && mat.mode != Mode::Opaque {
+                writeln!(w, "map_d {f}")?;
+            }
+        }
+        writeln!(w)?;
+    }
+    w.flush()?;
+    drop(w);
+    files.add(obj.to_path_buf());
+    let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(obj)?);
+    writeln!(w, "mtllib {stem}.mtl")?;
+    let mut base = 1u32;
+    for (pi, p) in m.prims.iter().enumerate() {
+        rep.step(0.8 + 0.1 * pi as f32 / m.prims.len() as f32)?;
+        let ix = p.indexed(false);
+        if ix.idx.is_empty() {
+            continue;
+        }
+        writeln!(w, "o part{pi}")?;
+        for v in ix.pos.chunks_exact(3) {
+            writeln!(w, "v {:.5} {:.5} {:.5}", v[0], v[1], v[2])?;
+        }
+        for v in ix.t0.chunks_exact(2) {
+            writeln!(w, "vt {:.6} {:.6}", v[0], 1.0 - v[1])?;
+        }
+        for v in ix.nrm.chunks_exact(3) {
+            writeln!(w, "vn {:.4} {:.4} {:.4}", v[0], v[1], v[2])?;
+        }
+        writeln!(w, "usemtl m{}_{}", p.mat, file_safe(&m.mats[p.mat].name))?;
+        for t in ix.idx.chunks_exact(3) {
+            let (a, b, c) = (t[0] + base, t[1] + base, t[2] + base);
+            writeln!(w, "f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}")?;
+        }
+        base += (ix.pos.len() / 3) as u32;
+    }
+    w.flush()?;
+    Ok(())
+}
+
 pub fn export_gltf(
     scene: &Scene,
     name: &str,
@@ -557,6 +722,9 @@ pub fn export_gltf(
 ) -> Result<Vec<PathBuf>> {
     if !(o.texel > 0.0) {
         bail!("texel must be above 0");
+    }
+    if o.obj && o.lighting == Lighting::Separate {
+        bail!("OBJ has one UV set; use --lighting baked or none");
     }
     let t0 = Instant::now();
     rep.step(0.0)?;
@@ -582,8 +750,7 @@ pub fn export_gltf(
     let tex_name = |t: usize| {
         scene.bsp.miptex.get(t).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("tex{t}"))
     };
-    let mut doc = Doc::default();
-    let unlit = o.lighting == Lighting::Baked;
+    let mut model = Model { texs: Vec::new(), mats: Vec::new(), prims: Vec::new(), unlit: o.lighting == Lighting::Baked };
     match o.lighting {
         Lighting::Baked => {
             let mut log = |s: String| rep.log(s);
@@ -618,68 +785,61 @@ pub fn export_gltf(
                 }
             }
             drop(baked);
-            let s = doc.sampler(false, o.nearest);
-            let tex = doc.texture(&atlas, "atlas", s)?;
-            drop(atlas);
-            rep.step(0.8)?;
+            model.texs.push(Tex { name: "atlas".into(), img: Pixels::Owned(atlas), repeat: false });
             let mut mats: HashMap<(Mode, u32), usize> = HashMap::new();
-            for (pi, p) in parts.iter().enumerate() {
+            for (p, uv) in parts.iter().zip(uvs) {
                 let m = *mats.entry((p.mode, p.alpha.to_bits())).or_insert_with(|| {
                     let label = format!("{}_{:.0}", mode_key(p.mode), p.alpha * 255.0);
-                    doc.materials.push(material(&label, p.mode, p.alpha, Some(tex), true));
-                    doc.materials.len() - 1
+                    model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tex: Some(0), occlusion: None });
+                    model.mats.len() - 1
                 });
-                let uv = &uvs[pi];
-                add_prim(&mut doc, &p.verts, &|i, _| uv[i], false, m);
+                model.prims.push(Prim { verts: &p.verts, uv: Some(uv), mat: m });
             }
         }
         Lighting::Separate | Lighting::None => {
-            let rs = doc.sampler(true, o.nearest);
-            let lm_tex = if o.lighting == Lighting::Separate {
-                let ls = doc.sampler(false, false);
-                Some(doc.texture(&mesh.atlas, "lightmap", ls)?)
-            } else {
-                None
-            };
+            let lm = (o.lighting == Lighting::Separate).then(|| {
+                model.texs.push(Tex { name: "lightmap".into(), img: Pixels::Shared(&mesh.atlas), repeat: false });
+                model.texs.len() - 1
+            });
             let mut texs: HashMap<usize, usize> = HashMap::new();
             let mut mats: HashMap<(usize, Mode, u32), usize> = HashMap::new();
-            for (i, p) in parts.iter().enumerate() {
-                rep.step(0.1 + 0.7 * i as f32 / parts.len() as f32)?;
-                let t = match p.image {
-                    Some(img) => Some(match texs.get(&p.tex) {
-                        Some(&t) => t,
-                        None => {
-                            let t = doc.texture(img, &tex_name(p.tex), rs)?;
-                            texs.insert(p.tex, t);
-                            t
-                        }
-                    }),
-                    None => None,
-                };
-                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits())).or_insert_with(|| {
-                    let mut m = material(&tex_name(p.tex), p.mode, p.alpha, t, false);
-                    if let Some(l) = lm_tex {
-                        m["occlusionTexture"] = json!({"index": l, "texCoord": 1});
-                    }
-                    doc.materials.push(m);
-                    doc.materials.len() - 1
+            for p in &parts {
+                let t = p.image.map(|img| {
+                    *texs.entry(p.tex).or_insert_with(|| {
+                        model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
+                        model.texs.len() - 1
+                    })
                 });
-                add_prim(&mut doc, &p.verts, &|_, v: &Vertex| v.uv, lm_tex.is_some(), m);
+                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits())).or_insert_with(|| {
+                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tex: t, occlusion: lm });
+                    model.mats.len() - 1
+                });
+                model.prims.push(Prim { verts: &p.verts, uv: None, mat: m });
             }
         }
     }
-    rep.step(0.9)?;
-    let (prims, mats, imgs) = (doc.prims.len(), doc.materials.len(), doc.images.len());
-    let data = doc.glb(name, unlit)?;
+    rep.step(0.8)?;
+    let (mats, imgs) = (model.mats.len(), model.texs.len());
+    let stem = format!("{name}{cut_tag}_{}", o.lighting.key());
     let mut files = Partial::default();
-    let f = free_name(out, &format!("{name}{cut_tag}_{}", o.lighting.key()), ".glb");
-    files.add(f.clone());
-    std::fs::write(&f, &data)?;
+    let (f, bytes) = if o.obj {
+        let f = free_name(out, &stem, ".obj");
+        write_obj(&model, &f, &mut files, rep)?;
+        let bytes = files.paths().iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum::<u64>();
+        (f, bytes)
+    } else {
+        let data = write_glb(&model, name, o.nearest, rep)?;
+        let f = free_name(out, &stem, ".glb");
+        files.add(f.clone());
+        std::fs::write(&f, &data)?;
+        (f, data.len() as u64)
+    };
     let _ = rep.step(1.0);
     rep.log(format!(
-        "  {} {:.1} MB, {prims} primitives, {mats} materials, {imgs} images ({:.1}s)",
+        "  {} {:.1} MB, {} parts, {mats} materials, {imgs} images ({:.1}s)",
         f.display(),
-        data.len() as f64 / 1048576.0,
+        bytes as f64 / 1048576.0,
+        model.prims.len(),
         t0.elapsed().as_secs_f64()
     ));
     Ok(files.keep())

@@ -23,6 +23,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp`. Needs OpenGL, DX12 or
 | `svg` | Vector callout map of reachable floors, walls, objectives and spawns |
 | `stl` | Watertight 3D-printable diorama |
 | `gltf` | `.glb` with textures and lighting, Y up, metres |
+| `obj` | `.obj`, `.mtl` and PNGs, same options as `gltf` (no `separate` lighting) |
 | `gui` | Open the GUI |
 
 ## Options
@@ -182,7 +183,7 @@ Also the spin output options.
 | `--print-width MM` | Longest side (200) |
 | `--smooth` | Smooth surface |
 
-### gltf
+### gltf, obj
 
 | Option | Effect |
 |---|---|

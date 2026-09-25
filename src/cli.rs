@@ -52,6 +52,8 @@ pub enum Cmd {
     Stl(StlArgs),
     #[command(about = "Write a textured glTF (.glb) of the map for 3D viewers and Blender")]
     Gltf(GltfArgs),
+    #[command(about = "Write a textured Wavefront OBJ (.obj, .mtl and PNGs) of the map")]
+    Obj(GltfArgs),
     #[command(about = "Render a print-size poster with title, coordinate border, legend and scale bar")]
     Poster(PosterArgs),
     #[command(about = "Open the GUI")]
@@ -659,10 +661,10 @@ pub fn run_stl(a: &StlArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn run_gltf(a: &GltfArgs) -> Result<()> {
+pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = GltfOpts { lighting: Lighting::parse(&a.lighting).unwrap_or(Lighting::Baked), texel: a.texel, nearest: a.nearest };
+    let o = GltfOpts { lighting: Lighting::parse(&a.lighting).unwrap_or(Lighting::Baked), texel: a.texel, nearest: a.nearest, obj };
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;

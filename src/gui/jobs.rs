@@ -51,7 +51,7 @@ impl Job {
             Job::Health(_) => "health report",
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
-            Job::Gltf(_) => "glTF",
+            Job::Gltf(o) => if o.obj { "OBJ" } else { "glTF" },
             Job::Poster(_) => "poster",
         }
     }

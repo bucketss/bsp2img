@@ -142,6 +142,10 @@ impl Partial {
         self.files.push(p);
     }
 
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.files
+    }
+
     pub fn keep(mut self) -> Vec<PathBuf> {
         self.keep = true;
         std::mem::take(&mut self.files)

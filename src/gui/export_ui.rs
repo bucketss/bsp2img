@@ -65,7 +65,7 @@ impl Exporter {
             Exporter::Health => "Health report",
             Exporter::Svg => "SVG callouts",
             Exporter::Stl => "STL diorama",
-            Exporter::Gltf => "glTF",
+            Exporter::Gltf => "glTF / OBJ",
             Exporter::Poster => "Poster",
         }
     }
@@ -318,9 +318,17 @@ impl App {
 
     fn form_gltf(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            ui.label("format");
+            ui.selectable_value(&mut self.gltf.obj, false, "glb");
+            ui.selectable_value(&mut self.gltf.obj, true, "obj");
+        });
+        if self.gltf.obj && self.gltf.lighting == Lighting::Separate {
+            self.gltf.lighting = Lighting::Baked;
+        }
+        ui.horizontal(|ui| {
             ui.label("lighting");
             for l in Lighting::ALL {
-                ui.selectable_value(&mut self.gltf.lighting, l, l.key());
+                ui.add_enabled_ui(!(self.gltf.obj && l == Lighting::Separate), |ui| ui.selectable_value(&mut self.gltf.lighting, l, l.key()));
             }
         });
         if self.gltf.lighting == Lighting::Baked {

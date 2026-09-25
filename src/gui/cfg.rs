@@ -282,11 +282,13 @@ impl Cfg for GltfOpts {
             ("lighting", self.lighting.key().to_string()),
             ("texel", self.texel.to_string()),
             ("nearest", self.nearest.to_string()),
+            ("obj", self.obj.to_string()),
         ])
     }
 
     fn set(&mut self, k: &str, v: &str) {
         match k {
+            "obj" => put(&mut self.obj, v),
             "lighting" => self.lighting = Lighting::parse(v).unwrap_or(self.lighting),
             "texel" => put(&mut self.texel, v),
             "nearest" => put(&mut self.nearest, v),
