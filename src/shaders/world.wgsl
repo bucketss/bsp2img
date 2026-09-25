@@ -6,6 +6,7 @@ struct Frame {
     view_dir: vec4<f32>,
     view_r: vec4<f32>,
     view_u: vec4<f32>,
+    eye: vec4<f32>,
 };
 
 struct BatchU {
@@ -33,7 +34,13 @@ struct VOut {
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32, @location(4) normal: vec3<f32>) -> VOut {
     var o: VOut;
-    o.pos = fr.mvp * vec4<f32>(pos - fr.view_dir.xyz * (bias * 0.25), 1.0);
+    var off = fr.view_dir.xyz * (bias * 0.25);
+    if (fr.eye.w > 0.5) {
+        let d = pos - fr.eye.xyz;
+        let l = max(length(d), 1e-3);
+        off = d / l * (bias * max(0.25, l * 2e-4));
+    }
+    o.pos = fr.mvp * vec4<f32>(pos - off, 1.0);
     o.uv = uv;
     o.lm = lm;
     o.world = pos;

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::bsp::Bsp;
-use crate::camera::{camera_basis, extents};
+use crate::camera::{Framing, auto_persp, camera_basis, extents};
 use crate::grid::grid_preview;
 use crate::look::Look;
 use crate::overview::{self, Overview};
@@ -19,6 +19,7 @@ pub struct IsoOpts {
     pub yaws: Vec<f64>,
     pub grid: bool,
     pub look: Look,
+    pub framing: Framing,
 }
 
 impl Default for IsoOpts {
@@ -30,6 +31,7 @@ impl Default for IsoOpts {
             yaws: vec![45.0, 135.0, 225.0, 315.0],
             grid: false,
             look: Look::default(),
+            framing: Framing::default(),
         }
     }
 }
@@ -72,7 +74,8 @@ pub fn export_iso(
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Partial::default();
-    let total = (o.yaws.len() + o.grid as usize).max(1) as f32;
+    let yaws = if o.framing.camera.is_some() { &[0.0][..] } else { &o.yaws[..] };
+    let total = (yaws.len() + o.grid as usize).max(1) as f32;
     if o.grid {
         rep.step(0.0)?;
         let f = free_name(out, &format!("{name}{cut_tag}_grid"), ".png");
@@ -80,13 +83,24 @@ pub fn export_iso(
         grid_preview(r, bsp, &f, cuts)?;
         rep.log(format!("  {}", f.display()));
     }
-    let upp = iso_upp(r, cuts, &o.yaws, o.pitch, o.size);
-    let stems: Vec<String> =
-        o.yaws.iter().map(|y| format!("{name}{sky_tag}{cut_tag}_{:03}", (*y as i64).rem_euclid(360))).collect();
+    let ftag = o.framing.tag();
+    let stems: Vec<String> = match &o.framing.camera {
+        Some(_) => vec![format!("{name}{sky_tag}{cut_tag}{ftag}")],
+        None => yaws.iter().map(|y| format!("{name}{sky_tag}{cut_tag}{ftag}_{:03}", (*y as i64).rem_euclid(360))).collect(),
+    };
     let suffix = set_suffix(out, &stems, ".png");
-    for (i, (&yaw, stem)) in o.yaws.iter().zip(&stems).enumerate() {
+    let upp = if o.framing == Framing::default() { iso_upp(r, cuts, &o.yaws, o.pitch, o.size) } else { 1.0 };
+    let pts = if o.framing.persp.is_some() { r.points_in(cuts) } else { Vec::new() };
+    for (i, (&yaw, stem)) in yaws.iter().zip(&stems).enumerate() {
         rep.step((i + o.grid as usize) as f32 / total)?;
-        let (view, w, h) = r.iso_view(yaw, o.pitch, upp, 16, cuts);
+        let (view, w, h) = match (&o.framing.camera, o.framing.persp) {
+            (Some(c), _) => {
+                let (w, h) = c.size(o.size);
+                (c.view(w, h), w, h)
+            }
+            (None, Some(fov)) => auto_persp(&pts, yaw, o.pitch, fov, o.size, 16),
+            (None, None) => r.iso_view(yaw, o.pitch, upp, 16, cuts),
+        };
         let img = r.render_view(&view, w, h, o.ss, cuts, &o.look, 0.0)?;
         let f = out.join(format!("{stem}{suffix}.png"));
         files.add(f.clone());

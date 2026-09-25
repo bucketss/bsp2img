@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, bail};
 use bytemuck::{Pod, Zeroable};
-use glam::DVec3;
+use glam::{DMat4, DVec3};
 use wgpu::util::DeviceExt;
 
-use crate::camera::{Basis, camera_basis, extents, ortho};
+use crate::camera::{Basis, camera_basis, extents, ortho, persp};
 use crate::look::Look;
 use crate::mesh::{Mesh, Mode, Vertex};
 use crate::post::{Cam, NORMAL_FORMAT, Post, PostTargets};
@@ -15,6 +15,8 @@ pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 pub const NO_CLIP: [f64; 4] = [-1e9, -1e9, 1e9, 1e9];
 pub const ANIM_FPS: f64 = 10.0;
+const PERSP_NEAR: f64 = 4.0;
+const PERSP_MARGIN: f64 = 32.0;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -63,6 +65,7 @@ struct FrameU {
     view_dir: [f32; 4],
     view_r: [f32; 4],
     view_u: [f32; 4],
+    eye: [f32; 4],
 }
 
 #[repr(C)]
@@ -112,6 +115,14 @@ pub struct View {
     pub w: f64,
     pub h: f64,
     pub sky_yaw: Option<f64>,
+    pub persp: Option<Persp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Persp {
+    pub eye: DVec3,
+    pub fov_y: f64,
+    pub focus: f64,
 }
 
 pub struct Targets {
@@ -119,6 +130,7 @@ pub struct Targets {
     pub h: u32,
     pub color: wgpu::Texture,
     pub color_view: wgpu::TextureView,
+    depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
     post: Option<PostTargets>,
 }
@@ -627,6 +639,7 @@ impl Renderer {
             w: wpx as f64 * upp,
             h: hpx as f64 * upp,
             sky_yaw: Some(yaw),
+            persp: None,
         };
         (view, wpx, hpx)
     }
@@ -638,6 +651,98 @@ impl Renderer {
         })
     }
 
+    fn persp_range(&self, b: &Basis, eye: DVec3) -> (f64, f64) {
+        let (z0, z1) = self.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
+            let d = (*p - eye).dot(b.f);
+            (a.min(d), c.max(d))
+        });
+        let near = (z0 - PERSP_MARGIN).max(PERSP_NEAR);
+        let far = (z1 + PERSP_MARGIN).max(near + PERSP_MARGIN);
+        (near, far)
+    }
+
+    fn projection(&self, view: &View, w: u32, h: u32) -> (DMat4, [f64; 4]) {
+        let b = &view.basis;
+        match view.persp {
+            None => {
+                let (d0, d1) = self.depth_range(b);
+                (ortho(b, view.cx, view.cy, view.w, view.h, d0, d1), [(d0 + d1) / 2.0, d1 - d0 + 64.0, 0.0, 0.0])
+            }
+            Some(p) => {
+                let (near, far) = self.persp_range(b, p.eye);
+                let k = 2.0 * (p.fov_y.to_radians() / 2.0).tan() / h as f64;
+                (persp(b, p.eye, p.fov_y, w as f64 / h as f64, near, far), [near, far, k, 1.0])
+            }
+        }
+    }
+
+    pub fn unproject(&self, view: &View, w: u32, h: u32, x: f64, y: f64, d: f64) -> Option<(DVec3, f64)> {
+        if !(0.0..1.0).contains(&d) {
+            return None;
+        }
+        let b = &view.basis;
+        let nx = (x + 0.5) / w as f64 * 2.0 - 1.0;
+        let ny = 1.0 - (y + 0.5) / h as f64 * 2.0;
+        match view.persp {
+            Some(p) => {
+                let (near, far) = self.persp_range(b, p.eye);
+                let z = near * far / (far - d * (far - near));
+                let ty = (p.fov_y.to_radians() / 2.0).tan();
+                let ray = b.f + b.r * (nx * ty * w as f64 / h as f64) + b.u * (ny * ty);
+                Some((p.eye + ray * z, z))
+            }
+            None => {
+                let (d0, d1) = self.depth_range(b);
+                let pf = (d - 0.5) * (d1 - d0 + 64.0) + (d0 + d1) / 2.0;
+                let pt = b.r * (view.cx + nx * view.w / 2.0) + b.u * (view.cy + ny * view.h / 2.0) + b.f * pf;
+                Some((pt, pf))
+            }
+        }
+    }
+
+    pub fn read_depth(&self, t: &Targets, x: u32, y: u32) -> Option<f64> {
+        if x >= t.w || y >= t.h {
+            return None;
+        }
+        let dev = &self.gpu.device;
+        let row = (t.w * 4).div_ceil(256) * 256;
+        let buf = dev.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: (row * t.h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = dev.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.depth,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::DepthOnly,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(t.h) },
+            },
+            wgpu::Extent3d { width: t.w, height: t.h, depth_or_array_layers: 1 },
+        );
+        self.gpu.queue.submit([enc.finish()]);
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        dev.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+        rx.recv().ok()?.ok()?;
+        let d = {
+            let data = slice.get_mapped_range().ok()?;
+            let i = (y * row + x * 4) as usize;
+            f32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as f64
+        };
+        buf.unmap();
+        Some(d)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn encode_world(
         &self,
@@ -646,6 +751,7 @@ impl Renderer {
         normal: Option<&wgpu::TextureView>,
         depth: &wgpu::TextureView,
         view: &View,
+        m: &DMat4,
         aspect: f64,
         cuts: &Cuts,
         cull: bool,
@@ -654,8 +760,6 @@ impl Renderer {
         time: f64,
     ) {
         let b = &view.basis;
-        let (d0, d1) = self.depth_range(b);
-        let m = ortho(b, view.cx, view.cy, view.w, view.h, d0, d1);
         let mask_on = cuts.use_mask && self.mask.is_some();
         let rect = self.mask.as_ref().map(|m| m.rect).unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let v4 = |v: DVec3, w: f32| [v.x as f32, v.y as f32, v.z as f32, w];
@@ -667,18 +771,25 @@ impl Renderer {
             view_dir: v4(b.f, if anim { 1.0 } else { 0.0 }),
             view_r: v4(b.r, 0.0),
             view_u: v4(b.u, 0.0),
+            eye: match view.persp {
+                Some(p) => v4(p.eye, 1.0),
+                None => [0.0; 4],
+            },
         };
         let q = &self.gpu.queue;
         q.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
         if let (Some(sky), Some(yaw)) = (&self.sky, view.sky_yaw) {
-            let sb = camera_basis(yaw, -sky.pitch);
-            let tx = (sky.fov.to_radians() / 2.0).tan();
-            let su = SkyU {
-                r: v4(sb.r, 0.0),
-                u: v4(sb.u, 0.0),
-                f: v4(sb.f, 0.0),
-                tanfov: [tx as f32, (tx * aspect) as f32, 0.0, 0.0],
+            let (sb, tanfov) = match view.persp {
+                Some(p) => {
+                    let ty = (p.fov_y.to_radians() / 2.0).tan();
+                    (*b, [(ty / aspect) as f32, ty as f32, 0.0, 0.0])
+                }
+                None => {
+                    let tx = (sky.fov.to_radians() / 2.0).tan();
+                    (camera_basis(yaw, -sky.pitch), [tx as f32, (tx * aspect) as f32, 0.0, 0.0])
+                }
             };
+            let su = SkyU { r: v4(sb.r, 0.0), u: v4(sb.u, 0.0), f: v4(sb.f, 0.0), tanfov };
             q.write_buffer(&sky.ubuf, 0, bytemuck::bytes_of(&su));
         }
 
@@ -745,14 +856,15 @@ impl Renderer {
     ) {
         let aspect = t.h as f64 / t.w as f64;
         let anim = look.anim_textures;
+        let (m, depth) = self.projection(view, t.w, t.h);
         let Some(pt) = t.post.as_ref().filter(|_| crate::post::needed(look)) else {
-            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, aspect, cuts, look.cull, clear, anim, time);
+            self.encode_world(enc, &t.color_view, None, &t.depth_view, view, &m, aspect, cuts, look.cull, clear, anim, time);
             return;
         };
         let scene = pt.scene();
-        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, aspect, cuts, look.cull, clear, anim, time);
-        let (d0, d1) = self.depth_range(&view.basis);
-        let cam = Cam { w: t.w, h: t.h, upp: view.w / t.w as f64, ss, dm: (d0 + d1) / 2.0, depth: d1 - d0 + 64.0 };
+        self.encode_world(enc, scene, Some(&pt.normal), &t.depth_view, view, &m, aspect, cuts, look.cull, clear, anim, time);
+        let focus = view.persp.map(|p| p.focus);
+        let cam = Cam { w: t.w, h: t.h, upp: view.w / t.w as f64, ss, depth, focus };
         self.post.run(&self.gpu, enc, look, &cam, pt, &t.depth_view, &t.color_view);
     }
 
@@ -765,10 +877,16 @@ impl Renderer {
             COLOR_FORMAT,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
         );
-        let depth = texture(dev, w, h, DEPTH_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING);
+        let depth = texture(
+            dev,
+            w,
+            h,
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        );
         let color_view = color.create_view(&Default::default());
         let depth_view = depth.create_view(&Default::default());
-        Targets { w, h, color, color_view, depth_view, post: post.then(|| PostTargets::new(dev, w, h)) }
+        Targets { w, h, color, color_view, depth, depth_view, post: post.then(|| PostTargets::new(dev, w, h)) }
     }
 
     #[allow(clippy::too_many_arguments)]

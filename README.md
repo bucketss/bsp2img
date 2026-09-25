@@ -9,8 +9,9 @@ Requires opengl, dx12, or vulkan.
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
 - Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
-- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles), **Camera** (pitch, yaw), **Export** (output folder, exporter picker and its settings).
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts), **Look** (sky, background, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
+- Free view: perspective or orthographic. Drag to orbit, right- or middle-drag to pan, wheel to dolly, double-click to orbit around the point under the cursor, hold right button + WASD/QE to fly (shift for faster), ctrl+click to set the focus for tilt-shift and depth of field.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
 - Overview view: the exact 1024x768 overview framing.
 - Exports run in the background and write the same files as the CLI into `<output>/<map>NN/`. Cancel deletes the partial files. A health report also opens in a window.
@@ -21,6 +22,8 @@ Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 ```
 bsp2img iso de_dust2 --game C:\HLDS
 bsp2img iso path\to\map.bsp --sky --hull --roofs 1
+bsp2img iso de_dust2 --game C:\HLDS --persp 50 --miniature
+bsp2img spin de_dust2 --game C:\HLDS --camera view.cam
 bsp2img overview de_dust2 --game C:\HLDS
 bsp2img spin de_dust2 --game C:\HLDS --gif
 bsp2img peel cs_assault --game C:\HLDS --count 3 --then-spin
@@ -33,7 +36,7 @@ bsp2img stl de_dust2 --game C:\HLDS --roofs 1 --print-width 200
 
 In a terminal, exports show a percentage while they run.
 
-`iso` writes `renders/<map>NN/<map>_045.png`, `_135`, `_225`, `_315` (transparent PNG).
+`iso` writes `renders/<map>NN/<map>_045.png`, `_135`, `_225`, `_315` (transparent PNG). With `--persp` the names get `_persp<FOV>`; with `--camera` it writes one `<map>_cam.png`.
 `spin` writes `<map>_spin.mp4`, a seamless loop of the map turning a full circle (needs `ffmpeg` on PATH). `--gif` and `--apng` add `<map>_spin.gif` and `<map>_spin.png`.
 `peel` writes `<map>_peel.mp4`: roof levels lift off one at a time, from the top.
 `slice` writes `<map>_slice.mp4`: a height cut rises from the floor so the map builds itself. Sliced walls show their hollow interiors.
@@ -115,6 +118,19 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--saturation F` | 1 = unchanged, 0 = grey |
 | `--tint #RRGGBB`, `--tint-amount F` | Blend towards a colour (default amount 0.25) |
 | `--style blueprint\|comic` | blueprint: blue background, grey-blue geometry, white ink. comic: AO, black ink width 2, saturation 1.2. Other options override it |
+| `--contrast F` | 1 = unchanged |
+| `--tilt-shift` | Blur above and below a horizontal band; `--focus-y` (band centre, 0 top to 1 bottom, default 0.5), `--band` (sharp fraction of the height, default 0.2), `--blur` (largest radius in output pixels, default 12) |
+| `--dof` | Depth of field around `--focus-dist` (default: the camera target). `--band` is then the sharp fraction of that distance. Perspective only; otherwise it falls back to `--tilt-shift` |
+| `--miniature` | Tilt-shift with saturation +25% and contrast +10% |
+
+### Camera (iso, spin, peel, slice)
+
+| Option | Effect |
+|---|---|
+| `--persp FOV` | Perspective with automatic framing, vertical field of view in degrees |
+| `--camera FILE` | Use a `.cam` saved from the GUI Camera tab. `--size` is the longest side and the shape comes from the file. Animations orbit its target at its pitch and distance, starting at its yaw |
+
+A `.cam` file is `key=value` lines: `proj` (`persp` or `ortho`), `target` (`x y z`), `yaw`, `pitch`, `roll`, `dist`, `fov`, `aspect`. Orthographic cameras show a view `2 * dist * tan(fov / 2)` units high.
 
 ### timing only
 

@@ -14,6 +14,7 @@ use egui::mutex::RwLock;
 use egui::Pos2;
 use glam::DVec3;
 
+use crate::camera::Camera;
 use crate::export::{IsoOpts, OverviewOpts};
 use crate::health::HealthOpts;
 use crate::look::Look;
@@ -34,6 +35,7 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
     let mode = match view {
         "top" => Mode::Top,
         "overview" => Mode::Overview,
+        "free" => Mode::Free,
         _ => Mode::Iso,
     };
     let mut opts = eframe::NativeOptions {
@@ -132,6 +134,12 @@ struct App {
     yaw: f64,
     zoom: f64,
     pan: DVec3,
+    cam: Camera,
+    cam_export: bool,
+    frame_cam: bool,
+    cam_map: Option<PathBuf>,
+    map_span: f64,
+    band_drag: bool,
     look: Look,
     bg_last: [u8; 3],
     sky_loaded: Option<String>,
@@ -187,6 +195,12 @@ impl App {
             yaw: 45.0,
             zoom: 1.0,
             pan: DVec3::ZERO,
+            cam: Camera::default(),
+            cam_export: false,
+            frame_cam: true,
+            cam_map: None,
+            map_span: 1024.0,
+            band_drag: false,
             look: Look::default(),
             bg_last: [0x20, 0x20, 0x20],
             sky_loaded: None,
@@ -265,6 +279,12 @@ impl App {
                 self.load_rx = None;
                 match r {
                     Ok(scene) => {
+                        let (lo, hi) = scene.mesh.points.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(a, b), p| (a.min(*p), b.max(*p)));
+                        self.map_span = (hi - lo).length().clamp(256.0, 1e6);
+                        if self.cam_map != self.current {
+                            self.frame_cam = true;
+                            self.cam_map = self.current.clone();
+                        }
                         self.renderer = Some(scene.renderer(&self.gpu, self.look.nearest));
                         self.scene = Some(Arc::new(scene));
                         self.sky_loaded = None;

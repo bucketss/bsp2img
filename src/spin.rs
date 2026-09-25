@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use glam::DVec3;
 use rayon::prelude::*;
 
-use crate::camera::camera_basis;
+use crate::camera::{Camera, Framing, camera_basis};
 use crate::look::Look;
 use crate::paths::{Partial, free_name};
 use crate::quant::{median_cut, nearest};
@@ -70,6 +70,7 @@ pub struct AnimOpts {
     pub apng: bool,
     pub look: Look,
     pub kind: Anim,
+    pub framing: Framing,
 }
 
 impl Default for AnimOpts {
@@ -87,6 +88,7 @@ impl Default for AnimOpts {
             apng: false,
             look: Look::default(),
             kind: Anim::Spin,
+            framing: Framing::default(),
         }
     }
 }
@@ -133,9 +135,31 @@ pub fn spin_views(r: &Renderer, cuts: &Cuts, yaws: &[f64], pitch: f64, size: u32
             w: wpx as f64 * upp,
             h: hpx as f64 * upp,
             sky_yaw: Some(yaw),
+            persp: None,
         })
         .collect();
     (views, wpx, hpx)
+}
+
+pub fn anim_views(r: &Renderer, cuts: &Cuts, yaws: &[f64], o: &AnimOpts) -> (Vec<View>, u32, u32) {
+    match (&o.framing.camera, o.framing.persp) {
+        (Some(c), _) => {
+            let (w, h) = c.size(o.size);
+            let views = yaws.iter().map(|&y| Camera { yaw: c.yaw + y - o.start, ..*c }.view(w, h)).collect();
+            (views, w, h)
+        }
+        (None, Some(fov)) => {
+            let (_, w, h) = spin_views(r, cuts, yaws, o.pitch, o.size);
+            let pts = r.points_in(cuts);
+            let (lo, hi) = pts.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(a, b), p| (a.min(*p), b.max(*p)));
+            let aspect = w as f64 / h as f64;
+            let mut c = Camera { target: (lo + hi) / 2.0, pitch: o.pitch, fov, aspect, ..Camera::default() };
+            c.dist = c.orbit_dist(&pts, yaws, aspect, 1.0 - 2.0 * PAD as f64 / o.size.max(64) as f64);
+            let views = yaws.iter().map(|&y| Camera { yaw: y, ..c }.view(w, h)).collect();
+            (views, w, h)
+        }
+        (None, None) => spin_views(r, cuts, yaws, o.pitch, o.size),
+    }
 }
 
 fn spin_radius(r: &Renderer, cuts: &Cuts, v: &View, wpx: u32) -> f64 {
@@ -368,7 +392,7 @@ pub fn export_anim(
         Anim::Slice(s) => (slice_zs(r, cuts, s, o.fps, rep), s.then_spin, "_slice"),
     };
     let yaws = if then_spin { o.yaws() } else { vec![o.start] };
-    let (views, w, h) = spin_views(r, cuts, &yaws, o.pitch, o.size);
+    let (views, w, h) = anim_views(r, cuts, &yaws, o);
     let end_z = intro.last().copied().unwrap_or(cuts.zmax);
     let mut plan: Vec<(usize, f64)> = intro.iter().map(|&z| (0, z)).collect();
     if then_spin {
@@ -385,7 +409,7 @@ pub fn export_anim(
         img
     };
     let spin_tag = if then_spin { "_spin" } else { "" };
-    let stem = format!("{name}{sky_tag}{cut_tag}{kind_tag}{spin_tag}");
+    let stem = format!("{name}{sky_tag}{cut_tag}{}{kind_tag}{spin_tag}", o.framing.tag());
     let mut files = Partial::default();
 
     let mut ff = None;

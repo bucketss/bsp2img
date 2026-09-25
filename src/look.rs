@@ -19,7 +19,30 @@ impl Style {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tilt {
+    Off,
+    Shift,
+    Dof,
+}
+
+impl Tilt {
+    pub fn key(self) -> &'static str {
+        match self {
+            Tilt::Off => "off",
+            Tilt::Shift => "tilt-shift",
+            Tilt::Dof => "dof",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Tilt> {
+        [Tilt::Off, Tilt::Shift, Tilt::Dof].into_iter().find(|t| t.key() == s.trim())
+    }
+}
+
 pub const BLUEPRINT_BG: [u8; 3] = [0x1d, 0x3b, 0x6e];
+pub const MINI_SATURATION: f64 = 1.25;
+pub const MINI_CONTRAST: f64 = 1.1;
 pub const INK_WIDTH: f64 = 1.5;
 pub const AO_RADIUS: f64 = 48.0;
 
@@ -42,6 +65,12 @@ pub struct Look {
     pub saturation: f64,
     pub tint: [u8; 3],
     pub tint_amount: f64,
+    pub contrast: f64,
+    pub tilt: Tilt,
+    pub focus_y: f64,
+    pub band: f64,
+    pub blur: f64,
+    pub focus_dist: f64,
 }
 
 impl Default for Look {
@@ -64,6 +93,12 @@ impl Default for Look {
             saturation: 1.0,
             tint: BLUEPRINT_BG,
             tint_amount: 0.0,
+            contrast: 1.0,
+            tilt: Tilt::Off,
+            focus_y: 0.5,
+            band: 0.2,
+            blur: 12.0,
+            focus_dist: 0.0,
         }
     }
 }
@@ -80,7 +115,15 @@ impl Look {
     pub fn clear_effects(&mut self) {
         let d = Look::default();
         (self.ao, self.ink, self.ink_width, self.ink_color) = (d.ao, d.ink, d.ink_width, d.ink_color);
-        (self.saturation, self.tint, self.tint_amount) = (d.saturation, d.tint, d.tint_amount);
+        (self.saturation, self.tint, self.tint_amount, self.contrast) = (d.saturation, d.tint, d.tint_amount, d.contrast);
+    }
+
+    pub fn miniature(&mut self) {
+        if self.tilt == Tilt::Off {
+            self.tilt = Tilt::Shift;
+        }
+        self.saturation *= MINI_SATURATION;
+        self.contrast *= MINI_CONTRAST;
     }
 
     pub fn apply_style(&mut self, s: Style) {
@@ -149,6 +192,22 @@ pub struct LookArgs {
     pub tint: Option<String>,
     #[arg(long = "tint-amount", help = "0..1")]
     pub tint_amount: Option<f64>,
+    #[arg(long, help = "contrast, 1 = unchanged")]
+    pub contrast: Option<f64>,
+    #[arg(long = "tilt-shift", help = "blur above and below a horizontal focus band")]
+    pub tilt_shift: bool,
+    #[arg(long, help = "depth of field blur around the focus distance (perspective only)")]
+    pub dof: bool,
+    #[arg(long, help = "tilt-shift with saturation +25% and contrast +10%")]
+    pub miniature: bool,
+    #[arg(long = "focus-y", default_value_t = 0.5, help = "centre of the focus band, 0 = top, 1 = bottom")]
+    pub focus_y: f64,
+    #[arg(long, default_value_t = 0.2, help = "sharp band height as a fraction of the image (tilt-shift) or of the focus distance (dof)")]
+    pub band: f64,
+    #[arg(long, default_value_t = 12.0, help = "largest blur radius in output pixels")]
+    pub blur: f64,
+    #[arg(long = "focus-dist", help = "dof focus distance in units [default: camera target]")]
+    pub focus_dist: Option<f64>,
 }
 
 impl LookArgs {
@@ -164,10 +223,25 @@ impl LookArgs {
             anim_textures: self.animate_textures,
             ao_strength: self.ao_strength,
             ao_radius: self.ao_radius,
+            focus_y: self.focus_y.clamp(0.0, 1.0),
+            band: self.band.max(0.0),
+            blur: self.blur.max(0.0),
+            focus_dist: self.focus_dist.unwrap_or(0.0).max(0.0),
             ..Look::default()
         };
         if let Some(s) = self.style.as_deref().and_then(Style::parse) {
             l.apply_style(s);
+        }
+        if self.dof {
+            l.tilt = Tilt::Dof;
+        } else if self.tilt_shift {
+            l.tilt = Tilt::Shift;
+        }
+        if self.miniature {
+            l.miniature();
+        }
+        if let Some(c) = self.contrast {
+            l.contrast = c;
         }
         if let Some(bg) = &self.bg {
             l.bg = Some(parse_color(bg)?);

@@ -71,12 +71,14 @@ impl App {
                 let mut o = self.iso.clone();
                 o.yaws = self.yaws();
                 o.look = self.look.clone();
+                o.framing.camera = self.cam_export.then_some(self.cam);
                 Job::Iso(o)
             }
             Exporter::Spin | Exporter::Peel | Exporter::Slice => {
                 let mut o = self.spin.clone();
                 o.pitch = self.iso.pitch;
                 o.look = self.look.clone();
+                o.framing.camera = self.cam_export.then_some(self.cam);
                 o.kind = match e {
                     Exporter::Peel => Anim::Peel(self.peel.clone()),
                     Exporter::Slice => Anim::Slice(self.slice.clone()),
@@ -149,6 +151,9 @@ impl App {
         ui.add(egui::Slider::new(&mut self.iso.ss, 1..=4).text("supersample"));
         ui.checkbox(&mut self.iso.grid, "Also write grid preview");
         ui.weak("Pitch is on the Camera tab, sky and background on the Look tab.");
+        if self.cam_export {
+            ui.weak("Using the free camera (Camera tab): one image, yaws ignored.");
+        }
     }
 
     fn form_anim(&mut self, ui: &mut egui::Ui, turn: bool) {
@@ -168,6 +173,9 @@ impl App {
             ui.checkbox(&mut self.spin.apng, "APNG");
         });
         ui.weak("Pitch is on the Camera tab.");
+        if self.cam_export {
+            ui.weak("Using the free camera (Camera tab): orbits its target, start yaw ignored.");
+        }
     }
 
     fn form_peel(&mut self, ui: &mut egui::Ui) {

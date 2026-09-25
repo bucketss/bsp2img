@@ -631,6 +631,7 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
         w: g.x1 - g.x0,
         h: g.y1 - g.y0,
         sky_yaw: None,
+        persp: None,
     };
     let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
     let thumb = r.render_view(&view, g.wpx, g.hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?;

@@ -83,7 +83,7 @@ pub fn fit(points: &[DVec3], margin: f64) -> Overview {
 pub fn view(ov: &Overview) -> View {
     let (r, u) = axes(ov.rotated);
     let o = DVec3::from_array(ov.origin);
-    View { basis: top_down(r, u), cx: o.dot(r), cy: o.dot(u), w: 8192.0 / ov.zoom, h: 6144.0 / ov.zoom, sky_yaw: None }
+    View { basis: top_down(r, u), cx: o.dot(r), cy: o.dot(u), w: 8192.0 / ov.zoom, h: 6144.0 / ov.zoom, sky_yaw: None, persp: None }
 }
 
 pub fn render(r: &mut Renderer, ov: &Overview, ss: u32, cuts: &Cuts, cull: bool) -> Result<image::RgbaImage> {

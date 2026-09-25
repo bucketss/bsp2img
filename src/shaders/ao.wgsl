@@ -7,10 +7,13 @@ fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
     }
     let z = lin(d);
     let n = normal_at(c);
-    let upp = pu.px.z;
+    let upp = upp_at(z);
     let radius = pu.a.x;
     let count = u32(pu.a.z);
-    let bias = pu.a.w;
+    var bias = pu.a.w;
+    if (persp()) {
+        bias = max(1.0, 2.0 * upp);
+    }
     let cell = u32(c.x & 3) + 4u * u32(c.y & 3);
     let ang = f32((cell * 7u) % 16u) * 0.39269908;
     var rv = vec3<f32>(cos(ang), sin(ang), 0.0);

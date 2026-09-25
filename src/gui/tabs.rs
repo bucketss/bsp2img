@@ -1,7 +1,11 @@
 use eframe::egui;
 
+use super::preview::Mode;
 use super::{App, Tab};
-use crate::look::{BLUEPRINT_BG, Style};
+use crate::camera::{Camera, ISO_PITCH};
+use crate::export::overview_params;
+use crate::look::{BLUEPRINT_BG, Style, Tilt};
+use crate::overview;
 
 impl App {
     pub(super) fn side(&mut self, ui: &mut egui::Ui) {
@@ -181,10 +185,36 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::Slider::new(&mut l.tint_amount, 0.0..=1.0).text("tint"));
             ui.color_edit_button_srgb(&mut l.tint);
         });
+        ui.add(egui::Slider::new(&mut l.contrast, 0.5..=2.0).text("contrast"));
+    });
+    egui::CollapsingHeader::new("Tilt-shift").default_open(true).show(ui, |ui| {
+        let l = &mut app.look;
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut l.tilt, Tilt::Off, "Off");
+            ui.radio_value(&mut l.tilt, Tilt::Shift, "Tilt-shift");
+            ui.radio_value(&mut l.tilt, Tilt::Dof, "Depth of field");
+        });
+        let on = l.tilt != Tilt::Off;
+        let a = ui.add_enabled(on, egui::Slider::new(&mut l.focus_y, 0.0..=1.0).text("focus y"));
+        let b = ui.add_enabled(on, egui::Slider::new(&mut l.band, 0.0..=1.0).text("sharp band"));
+        app.band_drag = a.dragged() || b.dragged();
+        ui.add_enabled(on, egui::Slider::new(&mut l.blur, 1.0..=32.0).text("blur px"));
+        ui.add_enabled_ui(l.tilt == Tilt::Dof, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("focus distance");
+                ui.add(egui::DragValue::new(&mut l.focus_dist).speed(8.0).range(0.0..=1e6));
+                ui.weak("0 = camera target");
+            });
+        });
+        if ui.button("Miniature").on_hover_text("tilt-shift, saturation +25%, contrast +10%").clicked() {
+            l.miniature();
+        }
+        ui.weak("Depth of field needs the Free view in perspective; elsewhere it uses the band. Free view: ctrl+click sets the focus.");
     });
 }
 
 pub fn tab_camera(app: &mut App, ui: &mut egui::Ui) {
+    ui.heading("Isometric");
     ui.add(egui::Slider::new(&mut app.iso.pitch, 5.0..=89.0).text("pitch"));
     ui.horizontal(|ui| {
         if ui.button("true iso").clicked() {
@@ -208,4 +238,103 @@ pub fn tab_camera(app: &mut App, ui: &mut egui::Ui) {
         app.pan = glam::DVec3::ZERO;
     }
     ui.weak("Pitch applies to the preview, isometric and animation exports.");
+    ui.separator();
+    free_camera(app, ui);
+}
+
+fn free_camera(app: &mut App, ui: &mut egui::Ui) {
+    ui.heading("Free camera");
+    let before = app.cam;
+    let c = &mut app.cam;
+    ui.horizontal(|ui| {
+        ui.radio_value(&mut c.ortho, false, "Perspective");
+        ui.radio_value(&mut c.ortho, true, "Orthographic");
+    });
+    egui::Grid::new("cam").num_columns(2).show(ui, |ui| {
+        ui.label("yaw");
+        ui.add(egui::DragValue::new(&mut c.yaw).speed(1.0).range(-360.0..=720.0));
+        ui.end_row();
+        ui.label("pitch");
+        ui.add(egui::DragValue::new(&mut c.pitch).speed(0.5).range(-90.0..=90.0));
+        ui.end_row();
+        ui.label("roll");
+        ui.add(egui::DragValue::new(&mut c.roll).speed(0.5).range(-180.0..=180.0));
+        ui.end_row();
+        ui.label("distance");
+        ui.add(egui::DragValue::new(&mut c.dist).speed(8.0).range(1.0..=1e6));
+        ui.end_row();
+        ui.label("fov");
+        ui.add(egui::DragValue::new(&mut c.fov).speed(0.5).range(1.0..=170.0).suffix("°"));
+        ui.end_row();
+        ui.label("target");
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut c.target.x).speed(8.0).prefix("x "));
+            ui.add(egui::DragValue::new(&mut c.target.y).speed(8.0).prefix("y "));
+            ui.add(egui::DragValue::new(&mut c.target.z).speed(8.0).prefix("z "));
+        });
+        ui.end_row();
+    });
+    let mut frame = false;
+    ui.horizontal_wrapped(|ui| {
+        for y in [45.0, 135.0, 225.0, 315.0] {
+            if ui.button(format!("iso {y:.0}")).clicked() {
+                (c.yaw, c.pitch, c.roll) = (y, ISO_PITCH, 0.0);
+                frame = true;
+            }
+        }
+        if ui.button("top").clicked() {
+            (c.yaw, c.pitch, c.roll) = (90.0, 90.0, 0.0);
+            frame = true;
+        }
+        if ui.button("frame map").clicked() {
+            frame = true;
+        }
+    });
+    let mut ov_preset = false;
+    ui.horizontal(|ui| {
+        ov_preset = ui.button("overview framing").clicked();
+        if ui.button("Save camera...").clicked() {
+            if let Some(f) = rfd::FileDialog::new().add_filter("camera", &["cam"]).set_file_name("view.cam").save_file() {
+                match app.cam.save(&f) {
+                    Ok(()) => app.log.push(format!("camera saved to {}", f.display())),
+                    Err(e) => app.log.push(format!("error: {e:#}")),
+                }
+            }
+        }
+        if ui.button("Load camera...").clicked() {
+            if let Some(f) = rfd::FileDialog::new().add_filter("camera", &["cam"]).pick_file() {
+                match Camera::load(&f) {
+                    Ok(c) => {
+                        app.cam = c;
+                        app.mode = Mode::Free;
+                    }
+                    Err(e) => app.log.push(format!("error: {e:#}")),
+                }
+            }
+        }
+    });
+    if ov_preset {
+        overview_camera(app);
+    }
+    if frame {
+        app.frame_free();
+    }
+    if app.cam != before {
+        app.mode = Mode::Free;
+    }
+    ui.checkbox(&mut app.cam_export, "Use this camera for exports");
+    ui.weak("When on, isometric exports write one image from this camera, and animations orbit its target at its pitch and distance. Size sets the longest side; the shape follows the preview.");
+}
+
+fn overview_camera(app: &mut App) {
+    let cuts = app.cuts();
+    let Some(r) = &app.renderer else { return };
+    let Ok(ov) = overview_params(r, &cuts, &app.ov) else { return };
+    let (rr, _) = overview::axes(ov.rotated);
+    let c = &mut app.cam;
+    c.yaw = rr.x.atan2(-rr.y).to_degrees().rem_euclid(360.0);
+    (c.pitch, c.roll, c.ortho) = (90.0, 0.0, true);
+    c.target = glam::DVec3::from_array(ov.origin);
+    c.set_height(6144.0 / ov.zoom);
+    app.mode = Mode::Free;
 }

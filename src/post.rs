@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::look::Look;
+use crate::look::{Look, Tilt};
 use crate::render::{COLOR_FORMAT, Gpu, attachment_view, ubuf_entry, wgpu};
 
 pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -10,6 +10,8 @@ const AO_KERNEL: u32 = 16;
 const INK_DEPTH_STEP: f64 = 6.0;
 const INK_NORMAL_DOT: f64 = 0.8;
 const MAX_INK_RADIUS: f64 = 12.0;
+const BLUR_RAMP: f64 = 0.3;
+const MAX_BLUR_RADIUS: f64 = 64.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -26,8 +28,8 @@ pub struct Cam {
     pub h: u32,
     pub upp: f64,
     pub ss: u32,
-    pub dm: f64,
-    pub depth: f64,
+    pub depth: [f64; 4],
+    pub focus: Option<f64>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -36,21 +38,37 @@ enum Kind {
     AoApply = 1,
     Grade = 2,
     Ink = 3,
+    Coc = 4,
+    BlurH = 5,
+    BlurV = 6,
 }
 
-const KINDS: [(Kind, &str); 4] = [
+impl Kind {
+    fn writes_aux(self) -> bool {
+        matches!(self, Kind::Ao | Kind::Coc)
+    }
+}
+
+const KINDS: [(Kind, &str); 7] = [
     (Kind::Ao, include_str!("shaders/ao.wgsl")),
     (Kind::AoApply, include_str!("shaders/ao_apply.wgsl")),
     (Kind::Grade, include_str!("shaders/grade.wgsl")),
     (Kind::Ink, include_str!("shaders/ink.wgsl")),
+    (Kind::Coc, include_str!("shaders/coc.wgsl")),
+    (Kind::BlurH, include_str!("shaders/blur.wgsl")),
+    (Kind::BlurV, include_str!("shaders/blur.wgsl")),
 ];
 
 fn grade_on(l: &Look) -> bool {
-    (l.saturation - 1.0).abs() > 1e-6 || l.tint_amount > 0.0
+    (l.saturation - 1.0).abs() > 1e-6 || l.tint_amount > 0.0 || (l.contrast - 1.0).abs() > 1e-6
+}
+
+fn tilt_on(l: &Look) -> bool {
+    l.tilt != Tilt::Off && l.blur > 0.0
 }
 
 pub fn needed(l: &Look) -> bool {
-    l.ao || l.ink || grade_on(l)
+    l.ao || l.ink || grade_on(l) || tilt_on(l)
 }
 
 pub fn ao_samples(ss: u32) -> u32 {
@@ -69,11 +87,22 @@ fn steps(l: &Look, cam: &Cam) -> Vec<(Kind, [f32; 4], [f32; 4])> {
         s.push((Kind::AoApply, [0.0; 4], [0.0; 4]));
     }
     if grade_on(l) {
-        s.push((Kind::Grade, [l.saturation as f32, l.tint_amount as f32, 1.0, 0.0], rgb(l.tint, 1.0)));
+        s.push((Kind::Grade, [l.saturation as f32, l.tint_amount as f32, l.contrast as f32, 0.0], rgb(l.tint, 1.0)));
     }
     if l.ink {
         let r = (l.ink_width * cam.ss as f64 / 2.0).clamp(0.5, MAX_INK_RADIUS);
         s.push((Kind::Ink, [r as f32, INK_DEPTH_STEP as f32, INK_NORMAL_DOT as f32, 0.0], rgb(l.ink_color, 1.0)));
+    }
+    if tilt_on(l) {
+        let (mode, focus) = match (l.tilt, cam.focus) {
+            (Tilt::Dof, Some(f)) => (2.0, if l.focus_dist > 0.0 { l.focus_dist } else { f }),
+            _ => (1.0, 0.0),
+        };
+        let a = [mode, l.focus_y as f32, l.band as f32, BLUR_RAMP as f32];
+        s.push((Kind::Coc, a, [focus as f32, 0.0, 0.0, 0.0]));
+        let r = (l.blur * cam.ss as f64).clamp(1.0, MAX_BLUR_RADIUS) as f32;
+        s.push((Kind::BlurH, [r, 1.0, 0.0, 0.0], [0.0; 4]));
+        s.push((Kind::BlurV, [r, 0.0, 1.0, 0.0], [0.0; 4]));
     }
     s
 }
@@ -139,7 +168,7 @@ impl Post {
                     label: Some("post"),
                     source: wgpu::ShaderSource::Wgsl(format!("{common}\n{src}").into()),
                 });
-                let format = if *k == Kind::Ao { AO_FORMAT } else { COLOR_FORMAT };
+                let format = if k.writes_aux() { AO_FORMAT } else { COLOR_FORMAT };
                 dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: None,
                     layout: Some(&pl),
@@ -180,12 +209,12 @@ impl Post {
     ) {
         let dev = &gpu.device;
         let steps = steps(look, cam);
-        let last_color = steps.iter().rposition(|s| s.0 != Kind::Ao);
+        let last_color = steps.iter().rposition(|s| !s.0.writes_aux());
         let mut cur = 0usize;
         for (i, (kind, a, b)) in steps.iter().enumerate() {
             let u = PostU {
                 px: [cam.w as f32, cam.h as f32, cam.upp as f32, cam.ss as f32],
-                cam: [cam.dm as f32, cam.depth as f32, 0.0, 0.0],
+                cam: cam.depth.map(|v| v as f32),
                 a: *a,
                 b: *b,
             };
@@ -194,7 +223,7 @@ impl Post {
                 contents: bytemuck::bytes_of(&u),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
-            let writes_aux = *kind == Kind::Ao;
+            let writes_aux = kind.writes_aux();
             let aux_in = if writes_aux { &self.dummy } else { &t.aux };
             let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,

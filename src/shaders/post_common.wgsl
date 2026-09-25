@@ -29,8 +29,22 @@ fn is_bg(d: f32) -> bool {
     return d >= 1.0;
 }
 
+fn persp() -> bool {
+    return pu.cam.w > 0.5;
+}
+
 fn lin(d: f32) -> f32 {
+    if (persp()) {
+        return pu.cam.x * pu.cam.y / (pu.cam.y - d * (pu.cam.y - pu.cam.x));
+    }
     return (d - 0.5) * pu.cam.y + pu.cam.x;
+}
+
+fn upp_at(z: f32) -> f32 {
+    if (persp()) {
+        return z * pu.cam.z;
+    }
+    return pu.px.z;
 }
 
 fn normal_at(c: vec2<i32>) -> vec3<f32> {

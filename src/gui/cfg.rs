@@ -2,9 +2,10 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use super::{App, Exporter, Tab};
+use crate::camera::Camera;
 use crate::export::{IsoOpts, OverviewOpts};
 use crate::health::HealthOpts;
-use crate::look::Look;
+use crate::look::{Look, Tilt};
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
 use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
@@ -247,6 +248,16 @@ impl Cfg for StlOpts {
     }
 }
 
+impl Cfg for Camera {
+    fn kv(&self) -> Vec<(String, String)> {
+        Camera::kv(self)
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        Camera::set(self, k, v)
+    }
+}
+
 impl Cfg for Look {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
@@ -267,6 +278,12 @@ impl Cfg for Look {
             ("saturation", self.saturation.to_string()),
             ("tint", hex(self.tint)),
             ("tint_amount", self.tint_amount.to_string()),
+            ("contrast", self.contrast.to_string()),
+            ("tilt", self.tilt.key().to_string()),
+            ("focus_y", self.focus_y.to_string()),
+            ("band", self.band.to_string()),
+            ("blur", self.blur.to_string()),
+            ("focus_dist", self.focus_dist.to_string()),
         ])
     }
 
@@ -289,6 +306,12 @@ impl Cfg for Look {
             "saturation" => put(&mut self.saturation, v),
             "tint" => self.tint = parse_color(v).unwrap_or(self.tint),
             "tint_amount" => put(&mut self.tint_amount, v),
+            "contrast" => put(&mut self.contrast, v),
+            "tilt" => self.tilt = Tilt::parse(v).unwrap_or(self.tilt),
+            "focus_y" => put(&mut self.focus_y, v),
+            "band" => put(&mut self.band, v),
+            "blur" => put(&mut self.blur, v),
+            "focus_dist" => put(&mut self.focus_dist, v),
             _ => {}
         }
     }
@@ -338,8 +361,9 @@ impl App {
             format!("exporter={}", self.exporter.key()),
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
+            format!("cam_export={}", self.cam_export),
         ];
-        let sections: [(&str, &dyn Cfg); 11] = [
+        let sections: [(&str, &dyn Cfg); 12] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
@@ -351,6 +375,7 @@ impl App {
             ("health", &self.health),
             ("svg", &self.svg),
             ("stl", &self.stl),
+            ("cam", &self.cam),
         ];
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
@@ -374,6 +399,7 @@ impl App {
                 Some(("health", k)) => self.health.set(k, v),
                 Some(("svg", k)) => self.svg.set(k, v),
                 Some(("stl", k)) => self.stl.set(k, v),
+                Some(("cam", k)) => Cfg::set(&mut self.cam, k, v),
                 Some(_) => {}
                 None => match k {
                     "game" => self.game = v.to_string(),
@@ -382,6 +408,7 @@ impl App {
                     "exporter" => self.exporter = Exporter::from_key(v).unwrap_or(self.exporter),
                     "bg_last" => self.bg_last = parse_color(v).unwrap_or(self.bg_last),
                     "log_open" => put(&mut self.log_open, v),
+                    "cam_export" => put(&mut self.cam_export, v),
                     _ => {}
                 },
             }

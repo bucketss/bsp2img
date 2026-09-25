@@ -6,6 +6,7 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
+use crate::camera::{Camera, Framing};
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::health::{HealthOpts, csv_quote, export_health};
@@ -107,7 +108,7 @@ pub struct GuiArgs {
     pub map: Option<String>,
     #[arg(long, help = "game install root or mod directory")]
     pub game: Option<PathBuf>,
-    #[arg(long, default_value = "iso", value_parser = ["iso", "top", "overview"], help = "starting view")]
+    #[arg(long, default_value = "iso", value_parser = ["iso", "top", "overview", "free"], help = "starting view")]
     pub view: String,
 }
 
@@ -123,6 +124,24 @@ pub struct IsoArgs {
     pub yaw: Vec<f64>,
     #[command(flatten)]
     pub l: LookArgs,
+    #[command(flatten)]
+    pub cam: CamArgs,
+}
+
+#[derive(Args, Clone)]
+pub struct CamArgs {
+    #[arg(long, value_name = "FILE", help = "use a .cam camera saved from the GUI instead of automatic framing")]
+    pub camera: Option<PathBuf>,
+    #[arg(long, value_name = "FOV", conflicts_with = "camera", help = "perspective automatic framing, vertical field of view in degrees")]
+    pub persp: Option<f64>,
+}
+
+impl CamArgs {
+    pub fn framing(&self) -> Result<Framing> {
+        let camera = self.camera.as_deref().map(Camera::load).transpose()?;
+        let persp = self.persp.map(|f| f.clamp(1.0, 170.0));
+        Ok(Framing { camera, persp })
+    }
 }
 
 #[derive(Args)]
@@ -131,6 +150,8 @@ pub struct SpinArgs {
     pub c: Common,
     #[command(flatten)]
     pub l: LookArgs,
+    #[command(flatten)]
+    pub cam: CamArgs,
     #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
@@ -173,6 +194,8 @@ pub struct AnimArgs {
     pub gif: bool,
     #[arg(long = "no-mp4", help = "skip the MP4")]
     pub no_mp4: bool,
+    #[command(flatten)]
+    pub cam: CamArgs,
 }
 
 #[derive(Args)]
@@ -360,6 +383,7 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         apng: a.apng,
         look: a.l.look()?,
         kind: Anim::Spin,
+        framing: a.cam.framing()?,
     };
     run_anim(&a.c, &o)
 }
@@ -379,6 +403,7 @@ impl AnimArgs {
             apng: self.apng,
             look: l.look()?,
             kind,
+            framing: self.cam.framing()?,
         })
     }
 }
@@ -453,6 +478,7 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         yaws: a.yaw.clone(),
         grid: a.c.grid,
         look: a.l.look()?,
+        framing: a.cam.framing()?,
     };
     for m in &a.c.maps {
         let t0 = Instant::now();
