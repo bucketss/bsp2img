@@ -8,8 +8,9 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
+use crate::health::{HealthOpts, csv_quote, export_health};
 use crate::look::{FaceArgs, LookArgs};
-use crate::paths::{resolve_map, run_dir};
+use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
 use crate::spin::{SpinOpts, export_spin};
@@ -32,6 +33,8 @@ pub enum Cmd {
     Spin(SpinArgs),
     #[command(about = "Map how fast each team reaches every spot from its spawns")]
     Timing(TimingArgs),
+    #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
+    Health(HealthArgs),
     #[command(about = "Open the GUI")]
     Gui(GuiArgs),
 }
@@ -149,6 +152,18 @@ pub struct TimingArgs {
     #[arg(long, default_value_t = 5.0, help = "seconds between contour lines")]
     pub interval: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
+    pub size: u32,
+    #[command(flatten)]
+    pub f: FaceArgs,
+}
+
+#[derive(Args)]
+pub struct HealthArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value_t = 8.0, help = "walk grid spacing in units")]
+    pub cell: f64,
+    #[arg(long, default_value_t = 600, help = "longest side of the map thumbnail in pixels")]
     pub size: u32,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -332,6 +347,68 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         let cuts = scene.cuts(&co, &mut log);
         let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut log);
         reported(|rep| export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, rep))?;
+    }
+    Ok(())
+}
+
+pub fn run_health(a: &HealthArgs) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = HealthOpts { cell: a.cell, size: a.size };
+    let maps = expand_maps(&a.c.maps, a.c.game.as_deref());
+    if maps.is_empty() {
+        anyhow::bail!("no maps match");
+    }
+    let summary = (maps.len() > 1).then(|| {
+        std::fs::create_dir_all(&a.c.out).ok();
+        free_name(&a.c.out, "health_summary", ".csv")
+    });
+    let mut header = String::new();
+    let mut rows = Vec::new();
+    let mut failed = 0;
+    for m in &maps {
+        let t0 = Instant::now();
+        println!("== {m}");
+        let res = (|| -> Result<crate::health::Health> {
+            let path = resolve_map(m, a.c.game.as_deref())?;
+            let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let out = run_dir(&a.c.out, &name)?;
+            let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say);
+            let res = reported(|rep| export_health(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
+            if res.is_err() {
+                let _ = std::fs::remove_dir(&out);
+            }
+            Ok(res?.1)
+        })();
+        match res {
+            Ok(h) => {
+                if header.is_empty() {
+                    header = h.csv_header();
+                }
+                rows.push(h.csv_row());
+            }
+            Err(e) if summary.is_some() => {
+                failed += 1;
+                println!("  error: {e:#}");
+                rows.push(format!("{m},{}", csv_quote(&format!("{e:#}"))));
+            }
+            Err(e) => return Err(e),
+        }
+        println!("  {:.1}s", t0.elapsed().as_secs_f64());
+        if let Some(f) = &summary {
+            let mut text = format!("{header}\n");
+            for r in &rows {
+                text.push_str(r);
+                text.push('\n');
+            }
+            std::fs::write(f, text)?;
+        }
+    }
+    if let Some(f) = &summary {
+        println!("{} maps, {failed} failed: {}", maps.len(), f.display());
     }
     Ok(())
 }

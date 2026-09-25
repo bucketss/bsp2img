@@ -13,7 +13,7 @@ Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
 - Overview view: the exact 1024x768 overview framing.
-- Exports run in the background and write the same files as the CLI into `<output>/<map>NN/`. Cancel deletes the partial files.
+- Exports run in the background and write the same files as the CLI into `<output>/<map>NN/`. Cancel deletes the partial files. A health report also opens in a window.
 - Settings are saved to `%APPDATA%\bsp2img\gui.cfg`.
 
 ## CLI
@@ -24,6 +24,7 @@ bsp2img iso path\to\map.bsp --sky --hull --roofs 1
 bsp2img overview de_dust2 --game C:\HLDS
 bsp2img spin de_dust2 --game C:\HLDS --gif
 bsp2img timing de_dust2 --game C:\HLDS
+bsp2img health "de_*" "cs_*" --game C:\HLDS
 ```
 
 In a terminal, exports show a percentage while they run.
@@ -32,6 +33,7 @@ In a terminal, exports show a percentage while they run.
 `spin` writes `<map>_spin.mp4`, a seamless loop of the map turning a full circle (needs `ffmpeg` on PATH). `--gif` and `--apng` add `<map>_spin.gif` and `<map>_spin.png`.
 `timing` writes `<map>_timing.png` (which team reaches each spot first, with a white line where both arrive together), `_timing_t.png` and `_timing_ct.png` (arrival times per team), and `<map>_timing.txt` (seconds to each bombsite, hostage and rescue zone). Times are for the first player of each team after freeze time, at `--speed` units/s. Movement model: steps up to 18 units, crouch-jumps up to 63, drops of any height, crouch-only areas at 1/3 speed, ladders at 200 units/s; doors and breakables are treated as open. (EXPERIMENTAL)
 `overview` writes `<map>.bmp`, `<map>.tga` and `<map>.txt`.
+`health` writes `<map>_health.txt` and `<map>_health.png`: missing WADs, textures, sky, models and sounds; whether VIS and RAD ran; counts against engine and compiler limits (HLSDK and VHLT 34; percentages use the engine limit where known, else VHLT); spawns per team and any not on walkable ground; objectives and buy zones; overview files, BMP palette index 255 and the `.res`; walkable area and the 3 largest open spots. With several maps it also writes `<out>/health_summary.csv`. Map names accept `*` and `?`. Stock maps often have overviews that their `.res` doesn't list; that's normal.
 
 Textures come from the map, then the WADs it lists, then any WAD in the mod and `valve` folders.
 
@@ -89,6 +91,13 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--size N` | Longest image side (default 1600) |
 
 `--roofs` and `--zmax` pick which floor is shown where levels overlap; the timings themselves always cover the whole map.
+
+### health only
+
+| Option | Effect |
+|---|---|
+| `--cell U` | Walk grid spacing (default 8) |
+| `--size N` | Longest side of the map thumbnail (default 600) |
 
 ### overview only
 

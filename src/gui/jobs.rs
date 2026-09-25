@@ -8,6 +8,7 @@ use eframe::egui;
 
 use super::{App, Msg};
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
+use crate::health::{HealthOpts, export_health};
 use crate::paths::run_dir;
 use crate::render::{Cuts, Gpu};
 use crate::scene::{Report, Scene};
@@ -19,6 +20,7 @@ pub enum Job {
     Spin(SpinOpts),
     Overview(OverviewOpts),
     Timing(TimingOpts),
+    Health(HealthOpts),
 }
 
 impl Job {
@@ -28,6 +30,7 @@ impl Job {
             Job::Spin(_) => "animation",
             Job::Overview(_) => "overview",
             Job::Timing(_) => "rush timings",
+            Job::Health(_) => "health report",
         }
     }
 }
@@ -68,6 +71,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Spin(o) => export_spin(r, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Overview(o) => export_overview(r, &s.bsp, &name, &spec.cuts, o, out, rep).map(drop),
         Job::Timing(o) => export_timing(r, &s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Health(o) => export_health(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }
 
@@ -150,6 +154,7 @@ impl App {
         match r {
             Ok(out) => {
                 self.status = format!("wrote {}", out.display());
+                self.show_health(&out);
                 self.last_out = Some(out);
             }
             Err(_) if cancelled => {

@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use super::{App, Exporter, Tab};
 use crate::export::{IsoOpts, OverviewOpts};
+use crate::health::HealthOpts;
 use crate::look::Look;
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
@@ -142,6 +143,20 @@ impl Cfg for TimingOpts {
     }
 }
 
+impl Cfg for HealthOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[("cell", self.cell.to_string()), ("size", self.size.to_string())])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "cell" => put(&mut self.cell, v),
+            "size" => put(&mut self.size, v),
+            _ => {}
+        }
+    }
+}
+
 impl Cfg for Look {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
@@ -214,13 +229,14 @@ impl App {
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
         ];
-        let sections: [(&str, &dyn Cfg); 6] = [
+        let sections: [(&str, &dyn Cfg); 7] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
             ("spin", &self.spin),
             ("overview", &self.ov),
             ("timing", &self.timing),
+            ("health", &self.health),
         ];
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
@@ -239,6 +255,7 @@ impl App {
                 Some(("spin", k)) => self.spin.set(k, v),
                 Some(("overview", k)) => self.ov.set(k, v),
                 Some(("timing", k)) => self.timing.set(k, v),
+                Some(("health", k)) => self.health.set(k, v),
                 Some(_) => {}
                 None => match k {
                     "game" => self.game = v.to_string(),

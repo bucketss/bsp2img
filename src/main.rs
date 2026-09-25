@@ -4,9 +4,11 @@ mod cli;
 mod export;
 mod grid;
 mod gui;
+mod health;
 mod light;
 mod look;
 mod mesh;
+mod nav;
 mod overview;
 mod paths;
 mod quant;
@@ -47,6 +49,7 @@ fn main() {
         Some(cli::Cmd::Overview(a)) => cli::run_overview(a),
         Some(cli::Cmd::Spin(a)) => cli::run_spin(a),
         Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
+        Some(cli::Cmd::Health(a)) => cli::run_health(a),
         Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
         None => gui::run(None, None, "iso"),
     };
