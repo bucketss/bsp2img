@@ -3,6 +3,7 @@ use eframe::egui;
 use super::App;
 use super::jobs::Job;
 use crate::gltf::Lighting;
+use crate::poster::{Orient, PAPERS};
 use crate::spin::Anim;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -17,10 +18,11 @@ pub enum Exporter {
     Svg,
     Stl,
     Gltf,
+    Poster,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
-    ("Images", &[Exporter::Iso]),
+    ("Images", &[Exporter::Iso, Exporter::Poster]),
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing, Exporter::Health]),
@@ -40,6 +42,7 @@ impl Exporter {
             Exporter::Svg => "svg",
             Exporter::Stl => "stl",
             Exporter::Gltf => "gltf",
+            Exporter::Poster => "poster",
         }
     }
 
@@ -59,6 +62,7 @@ impl Exporter {
             Exporter::Svg => "SVG callouts",
             Exporter::Stl => "STL diorama",
             Exporter::Gltf => "glTF",
+            Exporter::Poster => "Poster",
         }
     }
 }
@@ -100,6 +104,13 @@ impl App {
             Exporter::Svg => Job::Svg(self.svg.clone()),
             Exporter::Stl => Job::Stl(self.stl.clone()),
             Exporter::Gltf => Job::Gltf(self.gltf.clone()),
+            Exporter::Poster => {
+                let mut o = self.poster.clone();
+                o.pitch = self.iso.pitch;
+                o.look = self.look.clone();
+                o.framing.camera = self.cam_export.then_some(self.cam);
+                Job::Poster(o)
+            }
         }
     }
 
@@ -135,6 +146,7 @@ impl App {
             Exporter::Svg => self.form_svg(ui),
             Exporter::Stl => self.form_stl(ui),
             Exporter::Gltf => self.form_gltf(ui),
+            Exporter::Poster => self.form_poster(ui),
         }
         ui.add_space(6.0);
         let ready = self.scene.is_some() && !self.busy();
@@ -276,5 +288,43 @@ impl App {
         }
         ui.checkbox(&mut self.gltf.nearest, "Pixelated textures");
         ui.weak("Uses the roof, height, XY and hull cuts on the Scene tab.");
+    }
+
+    fn form_poster(&mut self, ui: &mut egui::Ui) {
+        let p = &mut self.poster;
+        let mut custom = p.px.is_some();
+        ui.checkbox(&mut custom, "Custom pixel size");
+        if custom != p.px.is_some() {
+            p.px = custom.then_some([4096, 4096]);
+        }
+        if let Some(px) = &mut p.px {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut px[0]).range(256..=65535).prefix("w "));
+                ui.add(egui::DragValue::new(&mut px[1]).range(256..=65535).prefix("h "));
+            });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for (k, _, _) in PAPERS {
+                    ui.selectable_value(&mut p.paper, k.to_string(), k.to_uppercase());
+                }
+            });
+            ui.horizontal(|ui| {
+                for o in Orient::ALL {
+                    ui.selectable_value(&mut p.orient, o, o.key());
+                }
+            });
+        }
+        ui.add(egui::Slider::new(&mut p.dpi, 72.0..=600.0).text("dpi"));
+        ui.add(egui::Slider::new(&mut p.ss, 1..=4).text("supersample"));
+        ui.checkbox(&mut p.top, "Top-down");
+        ui.add_enabled(!p.top, egui::DragValue::new(&mut p.yaw).speed(1.0).prefix("yaw "));
+        ui.checkbox(&mut p.layout, "Title, border, legend and scale bar");
+        if let Ok((w, h)) = p.page(1.5) {
+            ui.weak(format!("about {w}x{h} px; rendered in tiles and streamed to disk"));
+        }
+        ui.weak("Pitch is on the Camera tab, effects on the Look tab.");
+        if self.cam_export {
+            ui.weak("Using the free camera (Camera tab).");
+        }
     }
 }

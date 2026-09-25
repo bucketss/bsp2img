@@ -11,6 +11,7 @@ use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, export_gltf};
 use crate::health::{HealthOpts, export_health};
 use crate::paths::run_dir;
+use crate::poster::{PosterOpts, export_poster};
 use crate::render::{Cuts, Gpu};
 use crate::scene::{Report, Scene};
 use crate::spin::{AnimOpts, export_anim};
@@ -27,6 +28,7 @@ pub enum Job {
     Svg(SvgOpts),
     Stl(StlOpts),
     Gltf(GltfOpts),
+    Poster(PosterOpts),
 }
 
 impl Job {
@@ -40,6 +42,7 @@ impl Job {
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
             Job::Gltf(_) => "glTF",
+            Job::Poster(_) => "poster",
         }
     }
 }
@@ -84,6 +87,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Gltf(o) => export_gltf(s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Poster(o) => export_poster(r, &s.bsp, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }
 
@@ -130,7 +134,7 @@ impl App {
         if self.busy() {
             return;
         }
-        let sky = matches!(job, Job::Iso(_) | Job::Anim(_)).then(|| self.look.sky_spec()).flatten();
+        let sky = matches!(job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)).then(|| self.look.sky_spec()).flatten();
         let spec = JobSpec {
             job,
             cut_tag: self.cut_opts().tag(scene.opts.hull),

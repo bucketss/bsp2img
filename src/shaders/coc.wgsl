@@ -1,6 +1,6 @@
 @fragment
 fn fs(@builtin(position) fp: vec4<f32>) -> @location(0) vec4<f32> {
-    var x = abs(fp.y / pu.px.y - pu.a.y);
+    var x = abs((fp.y + pu.tile.y) / pu.tile.w - pu.a.y);
     if (pu.a.x > 1.5) {
         let d = raw_depth(vec2<i32>(fp.xy));
         if (is_bg(d)) {

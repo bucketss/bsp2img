@@ -14,6 +14,7 @@ mod nav;
 mod overview;
 mod paths;
 mod post;
+mod poster;
 mod quant;
 mod reach;
 mod render;
@@ -60,6 +61,7 @@ fn main() {
         Some(cli::Cmd::Svg(a)) => cli::run_svg(a),
         Some(cli::Cmd::Stl(a)) => cli::run_stl(a),
         Some(cli::Cmd::Gltf(a)) => cli::run_gltf(a),
+        Some(cli::Cmd::Poster(a)) => cli::run_poster(a),
         Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
         None => gui::run(None, None, "iso"),
     };

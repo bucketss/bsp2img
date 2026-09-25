@@ -20,6 +20,7 @@ struct PostU {
     cam: [f32; 4],
     a: [f32; 4],
     b: [f32; 4],
+    tile: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +31,7 @@ pub struct Cam {
     pub ss: u32,
     pub depth: [f64; 4],
     pub focus: Option<f64>,
+    pub tile: [f64; 4],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -69,6 +71,20 @@ fn tilt_on(l: &Look) -> bool {
 
 pub fn needed(l: &Look) -> bool {
     l.ao || l.ink || grade_on(l) || tilt_on(l)
+}
+
+pub fn reach(l: &Look, upp: f64, ss: u32) -> f64 {
+    let mut m = 0.0;
+    if l.ao {
+        m += (l.ao_radius / upp.max(1e-6)).ceil() + 3.0;
+    }
+    if l.ink {
+        m += ((l.ink_width * ss as f64 / 2.0).clamp(0.5, MAX_INK_RADIUS) + 0.5).ceil() + 1.0;
+    }
+    if tilt_on(l) {
+        m += (l.blur * ss as f64).clamp(1.0, MAX_BLUR_RADIUS).ceil() + 1.0;
+    }
+    m
 }
 
 pub fn ao_samples(ss: u32) -> u32 {
@@ -217,6 +233,7 @@ impl Post {
                 cam: cam.depth.map(|v| v as f32),
                 a: *a,
                 b: *b,
+                tile: cam.tile.map(|v| v as f32),
             };
             let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,

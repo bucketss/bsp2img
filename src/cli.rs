@@ -13,6 +13,7 @@ use crate::gltf::{GltfOpts, Lighting, export_gltf};
 use crate::health::{HealthOpts, csv_quote, export_health};
 use crate::look::{FaceArgs, LookArgs};
 use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
+use crate::poster::{Orient, PosterOpts, export_poster};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
 use crate::spin::{Anim, AnimOpts, PeelOpts, SliceOpts, export_anim};
@@ -49,6 +50,8 @@ pub enum Cmd {
     Stl(StlArgs),
     #[command(about = "Write a textured glTF (.glb) of the map for 3D viewers and Blender")]
     Gltf(GltfArgs),
+    #[command(about = "Render a print-size poster with title, coordinate border, legend and scale bar")]
+    Poster(PosterArgs),
     #[command(about = "Open the GUI")]
     Gui(GuiArgs),
 }
@@ -306,6 +309,36 @@ pub struct GltfArgs {
     pub texel: f64,
     #[arg(long, help = "pixelated texture filtering")]
     pub nearest: bool,
+}
+
+#[derive(Args)]
+pub struct PosterArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value = "a2", value_parser = ["a0", "a1", "a2", "a3", "a4", "letter", "tabloid"])]
+    pub paper: String,
+    #[arg(long, default_value_t = 300.0)]
+    pub dpi: f64,
+    #[arg(long, conflicts_with = "portrait", help = "force landscape (default: follow the map's shape)")]
+    pub landscape: bool,
+    #[arg(long, help = "force portrait")]
+    pub portrait: bool,
+    #[arg(long, num_args = 2, value_names = ["W", "H"], help = "page size in pixels instead of --paper")]
+    pub px: Option<Vec<u32>>,
+    #[arg(long, help = "top-down instead of isometric")]
+    pub top: bool,
+    #[arg(long, default_value_t = 45.0, allow_negative_numbers = true)]
+    pub yaw: f64,
+    #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
+    pub pitch: f64,
+    #[arg(long = "no-layout", help = "map only: no title block, border or legend")]
+    pub no_layout: bool,
+    #[arg(long, hide = true)]
+    pub tile: Option<u32>,
+    #[command(flatten)]
+    pub l: LookArgs,
+    #[command(flatten)]
+    pub cam: CamArgs,
 }
 
 #[derive(Args)]
@@ -604,6 +637,43 @@ pub fn run_gltf(a: &GltfArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let res = reported(|rep| export_gltf(&scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
+        if res.is_err() {
+            let _ = std::fs::remove_dir(&out);
+        }
+        res?;
+        println!("  {:.1}s", t0.elapsed().as_secs_f64());
+    }
+    Ok(())
+}
+
+pub fn run_poster(a: &PosterArgs) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = PosterOpts {
+        paper: a.paper.clone(),
+        dpi: a.dpi.clamp(10.0, 2400.0),
+        orient: if a.landscape { Orient::Landscape } else if a.portrait { Orient::Portrait } else { Orient::Auto },
+        px: a.px.as_ref().map(|v| [v[0], v[1]]),
+        top: a.top,
+        yaw: a.yaw,
+        pitch: a.pitch,
+        ss: a.c.ss,
+        layout: !a.no_layout,
+        look: a.l.look()?,
+        framing: a.cam.framing()?,
+        tile: a.tile,
+    };
+    for m in &a.c.maps {
+        let t0 = Instant::now();
+        let path = resolve_map(m, a.c.game.as_deref())?;
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let out = run_dir(&a.c.out, &name)?;
+        println!("== {name}");
+        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
+        let cuts = scene.cuts(&co, &mut say);
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        let res = reported(|rep| export_poster(&mut r, &scene.bsp, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);
         }
