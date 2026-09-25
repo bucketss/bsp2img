@@ -296,6 +296,8 @@ pub struct SvgArgs {
     pub bands: usize,
     #[arg(long, value_delimiter = ',', allow_negative_numbers = true, help = "split floors at these heights instead")]
     pub planes: Option<Vec<f64>>,
+    #[command(flatten)]
+    pub ex: ExplodeArgs,
 }
 
 #[derive(Args)]
@@ -355,7 +357,6 @@ pub struct PosterArgs {
     pub l: LookArgs,
     #[command(flatten)]
     pub cam: CamArgs,
-
     #[command(flatten)]
     pub ex: ExplodeArgs,
 }
@@ -610,7 +611,8 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = SvgOpts { cell: a.cell, simplify: a.simplify, scale: parse_scale(&a.scale)?, bands: a.bands, planes: a.planes.clone() };
+    let base = SvgOpts { cell: a.cell, simplify: a.simplify, scale: parse_scale(&a.scale)?, bands: a.bands, planes: a.planes.clone() };
+    let ex = a.ex.opts();
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
@@ -620,6 +622,11 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, _) = scene.job_renderer(&gpu, false, None, &mut say);
+        let mut o = base.clone();
+        if let Some(e) = ex.resolve(&scene.levels, &cuts) {
+            say(format!("explode: split at z {}", e.planes.iter().map(|p| crate::scene::num(*p)).collect::<Vec<_>>().join(", ")));
+            o.planes = Some(e.planes);
+        }
         let res = reported(|rep| export_svg(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);
