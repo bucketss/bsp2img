@@ -129,9 +129,18 @@ impl Look {
         if !self.relit() {
             return String::new();
         }
-        let t = hhmm(self.time).replace(':', "");
         let amt = if self.relight < 1.0 { format!("{:.0}", self.relight * 100.0) } else { String::new() };
-        format!("_relit{amt}_{t}")
+        let mut tag = format!("_relit{amt}");
+        if self.sun_az.is_none() || self.sun_el.is_none() {
+            tag += &format!("_{}", hhmm(self.time).replace(':', ""));
+        }
+        if let Some(a) = self.sun_az {
+            tag += &format!("_az{}", crate::scene::num(a.round()));
+        }
+        if let Some(e) = self.sun_el {
+            tag += &format!("_el{}", crate::scene::num(e.round()));
+        }
+        tag
     }
 
     pub fn sky_spec(&self) -> Option<(String, f64, f64)> {

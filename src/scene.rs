@@ -245,7 +245,14 @@ impl Scene {
             return;
         }
         let env = sun_env(&self.bsp);
-        log(format!("relight: {}, time {}", env.describe(), hhmm(look.time)));
+        let mut s = format!("relight: {}, time {}", env.describe(), hhmm(look.time));
+        if let Some(a) = look.sun_az {
+            s += &format!(", sun azimuth {a}");
+        }
+        if let Some(e) = look.sun_el {
+            s += &format!(", sun elevation {e}");
+        }
+        log(s);
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
