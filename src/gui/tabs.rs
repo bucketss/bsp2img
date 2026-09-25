@@ -4,7 +4,7 @@ use super::preview::Mode;
 use super::{App, Tab};
 use crate::camera::{Camera, ISO_PITCH};
 use crate::export::overview_params;
-use crate::look::{BLUEPRINT_BG, Style, Tilt};
+use crate::look::{BLUEPRINT_BG, Look, Style, Tilt};
 use crate::overview;
 use crate::sun::{hhmm, parse_time, sun_at};
 
@@ -170,8 +170,27 @@ fn explode_ui(app: &mut App, ui: &mut egui::Ui) {
     ui.weak("Isometric and Free views, isometric, animation and poster exports. SVG callouts split at the same heights.");
 }
 
+fn reset_button(ui: &mut egui::Ui, what: &str) -> bool {
+    ui.small_button("Reset").on_hover_text(format!("restore default {what} settings")).clicked()
+}
+
 pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
+    let d = Look::default();
+    if ui.button("Reset all").on_hover_text("restore every Look setting to its default").clicked() {
+        let rebuild = app.look.nearest != d.nearest;
+        app.look = d.clone();
+        if rebuild {
+            app.rebuild_renderer();
+        }
+    }
     egui::CollapsingHeader::new("Background").default_open(true).show(ui, |ui| {
+        if reset_button(ui, "background") {
+            app.look.bg = d.bg;
+            app.look.sky = d.sky;
+            app.look.sky_name = d.sky_name.clone();
+            app.look.sky_fov = d.sky_fov;
+            app.look.sky_pitch = d.sky_pitch;
+        }
         ui.horizontal(|ui| {
             let mut on = app.look.bg.is_some();
             let mut c = app.look.bg.unwrap_or(app.bg_last);
@@ -189,6 +208,13 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
     });
     lighting_ui(app, ui);
     egui::CollapsingHeader::new("Textures").default_open(true).show(ui, |ui| {
+        if reset_button(ui, "texture") {
+            app.look.anim_textures = d.anim_textures;
+            if app.look.nearest != d.nearest {
+                app.look.nearest = d.nearest;
+                app.rebuild_renderer();
+            }
+        }
         if ui.checkbox(&mut app.look.nearest, "Pixelated textures").changed() {
             app.rebuild_renderer();
         }
@@ -199,6 +225,19 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
     });
     egui::CollapsingHeader::new("Effects").default_open(true).show(ui, |ui| {
         let l = &mut app.look;
+        if reset_button(ui, "effect") {
+            l.cull = d.cull;
+            l.ao = d.ao;
+            l.ao_strength = d.ao_strength;
+            l.ao_radius = d.ao_radius;
+            l.ink = d.ink;
+            l.ink_width = d.ink_width;
+            l.ink_color = d.ink_color;
+            l.saturation = d.saturation;
+            l.tint = d.tint;
+            l.tint_amount = d.tint_amount;
+            l.contrast = d.contrast;
+        }
         ui.checkbox(&mut l.cull, "Cutaway (back-face cull)");
         ui.horizontal(|ui| {
             ui.label("Style");
@@ -232,6 +271,13 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
     });
     egui::CollapsingHeader::new("Tilt-shift").default_open(true).show(ui, |ui| {
         let l = &mut app.look;
+        if reset_button(ui, "tilt-shift") {
+            l.tilt = d.tilt;
+            l.focus_y = d.focus_y;
+            l.band = d.band;
+            l.blur = d.blur;
+            l.focus_dist = d.focus_dist;
+        }
         ui.horizontal(|ui| {
             ui.radio_value(&mut l.tilt, Tilt::Off, "Off");
             ui.radio_value(&mut l.tilt, Tilt::Shift, "Tilt-shift");
@@ -262,6 +308,15 @@ fn lighting_ui(app: &mut App, ui: &mut egui::Ui) {
     let (az, el) = (cur.dir.y.atan2(cur.dir.x).to_degrees(), cur.dir.z.clamp(-1.0, 1.0).asin().to_degrees());
     let l = &mut app.look;
     egui::CollapsingHeader::new("Lighting").default_open(true).show(ui, |ui| {
+        if reset_button(ui, "lighting") {
+            let d = Look::default();
+            l.relight = d.relight;
+            l.time = d.time;
+            l.sun_az = d.sun_az;
+            l.sun_el = d.sun_el;
+            l.keep_lights = d.keep_lights;
+            l.shadow_res = d.shadow_res;
+        }
         let mode = if l.relight <= 0.0 { 0 } else if l.relight >= 1.0 { 2 } else { 1 };
         ui.horizontal(|ui| {
             if ui.radio(mode == 0, "Baked").clicked() {

@@ -9,7 +9,7 @@ Requires opengl, dx12, or vulkan.
 Run `bsp2img` with no arguments, or `bsp2img gui de_dust2 --game C:\HLDS`.
 
 - Top bar: current map, Open .bsp, Reload, and export progress with Cancel.
-- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts, exploded floors), **Look** (sky, background, lighting: baked, relit or blend with time of day, sun overrides and keep-lights, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
+- Tabs: **Map** (game folder, map list), **Scene** (crop, lighting, roof and XY/Z cuts, exploded floors), **Look** (sky, background, lighting: baked, relit or blend with time of day, sun overrides and keep-lights, textures, animated textures, cutaway, AO, ink, colour, styles, tilt-shift; a Reset button per section and Reset all), **Camera** (iso pitch and yaw; free camera: projection, yaw, pitch, roll, distance, fov, target, presets, save/load `.cam`, use for exports), **Export** (output folder, exporter picker and its settings).
 - Isometric view: drag to rotate, right-drag to pan, wheel to zoom.
 - Free view: perspective or orthographic. Drag to orbit, right- or middle-drag to pan, wheel to dolly, double-click to orbit around the point under the cursor, hold right button + WASD/QE to fly (shift for faster), ctrl+click to set the focus for tilt-shift and depth of field.
 - Top view: grid with world coordinates and spawns; shift+drag draws the XY crop box.
