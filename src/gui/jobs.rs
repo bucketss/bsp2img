@@ -11,12 +11,12 @@ use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::paths::run_dir;
 use crate::render::{Cuts, Gpu};
 use crate::scene::{Report, Scene};
-use crate::spin::{SpinOpts, export_spin};
+use crate::spin::{AnimOpts, export_anim};
 use crate::timing::{TimingOpts, export_timing};
 
 pub enum Job {
     Iso(IsoOpts),
-    Spin(SpinOpts),
+    Anim(AnimOpts),
     Overview(OverviewOpts),
     Timing(TimingOpts),
 }
@@ -25,7 +25,7 @@ impl Job {
     fn label(&self) -> &'static str {
         match self {
             Job::Iso(_) => "isometric",
-            Job::Spin(_) => "animation",
+            Job::Anim(_) => "animation",
             Job::Overview(_) => "overview",
             Job::Timing(_) => "rush timings",
         }
@@ -65,7 +65,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
     let name = s.bsp.name();
     match &spec.job {
         Job::Iso(o) => export_iso(r, &s.bsp, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
-        Job::Spin(o) => export_spin(r, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Anim(o) => export_anim(r, &s.levels, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Overview(o) => export_overview(r, &s.bsp, &name, &spec.cuts, o, out, rep).map(drop),
         Job::Timing(o) => export_timing(r, &s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
@@ -114,7 +114,7 @@ impl App {
         if self.busy() {
             return;
         }
-        let sky = matches!(job, Job::Iso(_) | Job::Spin(_)).then(|| self.look.sky_spec()).flatten();
+        let sky = matches!(job, Job::Iso(_) | Job::Anim(_)).then(|| self.look.sky_spec()).flatten();
         let spec = JobSpec {
             job,
             cut_tag: self.cut_opts().tag(scene.opts.hull),

@@ -6,7 +6,7 @@ use crate::export::{IsoOpts, OverviewOpts};
 use crate::look::Look;
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
-use crate::spin::SpinOpts;
+use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
 use crate::timing::TimingOpts;
 
 #[cfg(windows)]
@@ -69,7 +69,7 @@ impl Cfg for IsoOpts {
     }
 }
 
-impl Cfg for SpinOpts {
+impl Cfg for AnimOpts {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
             ("size", self.size.to_string()),
@@ -95,6 +95,50 @@ impl Cfg for SpinOpts {
             "gif" => put(&mut self.gif, v),
             "mp4" => put(&mut self.mp4, v),
             "apng" => put(&mut self.apng, v),
+            _ => {}
+        }
+    }
+}
+
+impl Cfg for PeelOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("roofs", self.roofs.to_string()),
+            ("seconds_per", self.seconds_per.to_string()),
+            ("hold", self.hold.to_string()),
+            ("reverse", self.reverse.to_string()),
+            ("then_spin", self.then_spin.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "roofs" => put(&mut self.roofs, v),
+            "seconds_per" => put(&mut self.seconds_per, v),
+            "hold" => put(&mut self.hold, v),
+            "reverse" => put(&mut self.reverse, v),
+            "then_spin" => put(&mut self.then_spin, v),
+            _ => {}
+        }
+    }
+}
+
+impl Cfg for SliceOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("slices", self.slices.to_string()),
+            ("seconds", self.seconds.to_string()),
+            ("hold", self.hold.to_string()),
+            ("then_spin", self.then_spin.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "slices" => put(&mut self.slices, v),
+            "seconds" => put(&mut self.seconds, v),
+            "hold" => put(&mut self.hold, v),
+            "then_spin" => put(&mut self.then_spin, v),
             _ => {}
         }
     }
@@ -214,11 +258,13 @@ impl App {
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
         ];
-        let sections: [(&str, &dyn Cfg); 6] = [
+        let sections: [(&str, &dyn Cfg); 8] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
             ("spin", &self.spin),
+            ("peel", &self.peel),
+            ("slice", &self.slice),
             ("overview", &self.ov),
             ("timing", &self.timing),
         ];
@@ -237,6 +283,8 @@ impl App {
                 Some(("look", k)) => self.look.set(k, v),
                 Some(("iso", k)) => self.iso.set(k, v),
                 Some(("spin", k)) => self.spin.set(k, v),
+                Some(("peel", k)) => self.peel.set(k, v),
+                Some(("slice", k)) => self.slice.set(k, v),
                 Some(("overview", k)) => self.ov.set(k, v),
                 Some(("timing", k)) => self.timing.set(k, v),
                 Some(_) => {}

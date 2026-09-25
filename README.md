@@ -23,6 +23,8 @@ bsp2img iso de_dust2 --game C:\HLDS
 bsp2img iso path\to\map.bsp --sky --hull --roofs 1
 bsp2img overview de_dust2 --game C:\HLDS
 bsp2img spin de_dust2 --game C:\HLDS --gif
+bsp2img peel cs_assault --game C:\HLDS --count 3 --then-spin
+bsp2img slice de_dust2 --game C:\HLDS --count 8
 bsp2img timing de_dust2 --game C:\HLDS
 ```
 
@@ -30,6 +32,8 @@ In a terminal, exports show a percentage while they run.
 
 `iso` writes `renders/<map>NN/<map>_045.png`, `_135`, `_225`, `_315` (transparent PNG).
 `spin` writes `<map>_spin.mp4`, a seamless loop of the map turning a full circle (needs `ffmpeg` on PATH). `--gif` and `--apng` add `<map>_spin.gif` and `<map>_spin.png`.
+`peel` writes `<map>_peel.mp4`: roof levels lift off one at a time, from the top.
+`slice` writes `<map>_slice.mp4`: a height cut rises from the floor so the map builds itself. Sliced walls show their hollow interiors.
 `timing` writes `<map>_timing.png` (which team reaches each spot first, with a white line where both arrive together), `_timing_t.png` and `_timing_ct.png` (arrival times per team), and `<map>_timing.txt` (seconds to each bombsite, hostage and rescue zone). Times are for the first player of each team after freeze time, at `--speed` units/s. Movement model: steps up to 18 units, crouch-jumps up to 63, drops of any height, crouch-only areas at 1/3 speed, ladders at 200 units/s; doors and breakables are treated as open. (EXPERIMENTAL)
 `overview` writes `<map>.bmp`, `<map>.tga` and `<map>.txt`.
 
@@ -78,6 +82,22 @@ Textures come from the map, then the WADs it lists, then any WAD in the mod and 
 | `--gif` | Also write an animated GIF |
 | `--apng` | Also write an animated PNG |
 | `--no-mp4` | Skip the MP4 |
+
+### peel and slice
+
+| Option | Effect |
+|---|---|
+| `--count N` | peel: roof levels to lift (default 0 = all but the lowest). slice: steps (default 0 = continuous sweep) |
+| `--hold S` | Pause at each step (peel 0.5, slice 0.4) |
+| `--seconds-per S` | peel: seconds to lift each level (default 1.5) |
+| `--reverse` | peel: play backwards, roofs drop into place |
+| `--seconds S` | slice: sweep duration with `--count 0` (default 6) |
+| `--then-spin` | Follow with a full turn in the same file (`_peel_spin`, `_slice_spin`) |
+| `--spin-seconds S`, `--ccw` | The turn for `--then-spin` (default 12) |
+| `--start A` | Yaw of the view (default 45) |
+| `--size`, `--fps`, `--pitch`, `--sky`, `--bg`, `--gif`, `--apng`, `--no-mp4` | As for spin |
+
+`--roofs` and `--zmax` set the starting cut. The camera stays fixed while geometry is removed.
 
 ### timing only
 

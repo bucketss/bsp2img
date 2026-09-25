@@ -46,6 +46,8 @@ fn main() {
         Some(cli::Cmd::Iso(a)) => cli::run_iso(a),
         Some(cli::Cmd::Overview(a)) => cli::run_overview(a),
         Some(cli::Cmd::Spin(a)) => cli::run_spin(a),
+        Some(cli::Cmd::Peel(a)) => cli::run_peel(a),
+        Some(cli::Cmd::Slice(a)) => cli::run_slice(a),
         Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
         Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
         None => gui::run(None, None, "iso"),

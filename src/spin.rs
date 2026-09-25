@@ -18,9 +18,46 @@ use crate::scene::Report;
 pub const DEFAULT_BG: [u8; 3] = [0x20, 0x20, 0x20];
 const PAD: u32 = 16;
 const PALETTE_SAMPLES: usize = 8;
+const SLICE_STEP: f64 = 0.3;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SpinOpts {
+pub struct PeelOpts {
+    pub roofs: usize,
+    pub seconds_per: f64,
+    pub hold: f64,
+    pub reverse: bool,
+    pub then_spin: bool,
+}
+
+impl Default for PeelOpts {
+    fn default() -> Self {
+        PeelOpts { roofs: 0, seconds_per: 1.5, hold: 0.5, reverse: false, then_spin: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SliceOpts {
+    pub slices: u32,
+    pub seconds: f64,
+    pub hold: f64,
+    pub then_spin: bool,
+}
+
+impl Default for SliceOpts {
+    fn default() -> Self {
+        SliceOpts { slices: 0, seconds: 6.0, hold: 0.4, then_spin: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Anim {
+    Spin,
+    Peel(PeelOpts),
+    Slice(SliceOpts),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimOpts {
     pub size: u32,
     pub ss: u32,
     pub pitch: f64,
@@ -32,11 +69,12 @@ pub struct SpinOpts {
     pub mp4: bool,
     pub apng: bool,
     pub look: Look,
+    pub kind: Anim,
 }
 
-impl Default for SpinOpts {
+impl Default for AnimOpts {
     fn default() -> Self {
-        SpinOpts {
+        AnimOpts {
             size: 720,
             ss: 3,
             pitch: 35.264,
@@ -48,11 +86,12 @@ impl Default for SpinOpts {
             mp4: true,
             apng: false,
             look: Look::default(),
+            kind: Anim::Spin,
         }
     }
 }
 
-impl SpinOpts {
+impl AnimOpts {
     pub fn frames(&self) -> u32 {
         (self.seconds * self.fps).round().max(1.0) as u32
     }
@@ -221,13 +260,92 @@ fn finish_ffmpeg(mut child: Child) -> Result<()> {
     Ok(())
 }
 
-pub fn export_spin(
+fn ease(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn frame_count(seconds: f64, fps: f64) -> usize {
+    (seconds * fps).round().max(0.0) as usize
+}
+
+fn tween(zs: &mut Vec<f64>, from: f64, to: f64, n: usize, f: fn(f64) -> f64) {
+    let n = n.max(1);
+    zs.extend((1..=n).map(|i| from + (to - from) * f(i as f64 / n as f64)));
+}
+
+fn hold(zs: &mut Vec<f64>, z: f64, n: usize) {
+    zs.extend(std::iter::repeat_n(z, n));
+}
+
+fn z_span(r: &Renderer, cuts: &Cuts) -> (f64, f64) {
+    r.points_in(cuts).iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.z), b.max(p.z)))
+}
+
+fn peel_zs(
+    r: &Renderer,
+    levels: &[(f64, f64, f64)],
+    cuts: &Cuts,
+    p: &PeelOpts,
+    fps: f64,
+    rep: &mut Report,
+) -> Result<Vec<f64>> {
+    let base = levels.iter().filter(|l| l.0 > cuts.zmax).count();
+    let last = levels.len().saturating_sub(1);
+    if base >= last {
+        bail!("no roof levels left to peel ({} levels, {base} already cut)", levels.len());
+    }
+    let avail = last - base;
+    let n = if p.roofs == 0 { avail } else { p.roofs.min(avail) };
+    if p.roofs > avail {
+        rep.log(format!("  --count {}: only {avail} levels can be peeled", p.roofs));
+    }
+    let mut z = cuts.zmax.min(z_span(r, cuts).1 + 1.0);
+    let mut zs = Vec::new();
+    let held = frame_count(p.hold, fps);
+    hold(&mut zs, z, held);
+    for (k, l) in levels.iter().enumerate().skip(base).take(n) {
+        let to = l.0 - 1.0;
+        tween(&mut zs, z, to, frame_count(p.seconds_per, fps), ease);
+        hold(&mut zs, to, held);
+        rep.log(format!("  peel {}: zmax {to:.0} (as --roofs {})", k + 1 - base, k + 1));
+        z = to;
+    }
+    if p.reverse {
+        zs.reverse();
+    }
+    Ok(zs)
+}
+
+fn slice_zs(r: &Renderer, cuts: &Cuts, s: &SliceOpts, fps: f64, rep: &mut Report) -> Vec<f64> {
+    let (lo, top) = z_span(r, cuts);
+    let hi = cuts.zmax.min(top + 1.0);
+    let mut zs = Vec::new();
+    let held = frame_count(s.hold, fps);
+    if s.slices == 0 {
+        tween(&mut zs, lo, hi, frame_count(s.seconds, fps), |t| t);
+        hold(&mut zs, hi, held);
+    } else {
+        let mut z = lo;
+        for i in 1..=s.slices {
+            let to = lo + (hi - lo) * i as f64 / s.slices as f64;
+            tween(&mut zs, z, to, frame_count(SLICE_STEP, fps), ease);
+            hold(&mut zs, to, held);
+            z = to;
+        }
+    }
+    rep.log(format!("  slice zmax {lo:.0} to {hi:.0}"));
+    zs
+}
+
+pub fn export_anim(
     r: &mut Renderer,
+    levels: &[(f64, f64, f64)],
     name: &str,
     sky_tag: &str,
     cut_tag: &str,
     cuts: &Cuts,
-    o: &SpinOpts,
+    o: &AnimOpts,
     out: &Path,
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
@@ -244,8 +362,19 @@ pub fn export_spin(
         }
     }
     let o = &o;
-    let yaws = o.yaws();
+    let (intro, then_spin, kind_tag) = match &o.kind {
+        Anim::Spin => (Vec::new(), true, ""),
+        Anim::Peel(p) => (peel_zs(r, levels, cuts, p, o.fps, rep)?, p.then_spin, "_peel"),
+        Anim::Slice(s) => (slice_zs(r, cuts, s, o.fps, rep), s.then_spin, "_slice"),
+    };
+    let yaws = if then_spin { o.yaws() } else { vec![o.start] };
     let (views, w, h) = spin_views(r, cuts, &yaws, o.pitch, o.size);
+    let end_z = intro.last().copied().unwrap_or(cuts.zmax);
+    let mut plan: Vec<(usize, f64)> = intro.iter().map(|&z| (0, z)).collect();
+    if then_spin {
+        plan.extend((0..views.len()).map(|i| (i, end_z)));
+    }
+    let cuts_at = |z: f64| Cuts { zmax: z, ..*cuts };
     let (cull, bg) = (o.look.cull, o.look.bg);
     let flat = |mut img: image::RgbaImage| {
         if bg.is_none() {
@@ -253,7 +382,8 @@ pub fn export_spin(
         }
         img
     };
-    let stem = format!("{name}{sky_tag}{cut_tag}_spin");
+    let spin_tag = if then_spin { "_spin" } else { "" };
+    let stem = format!("{name}{sky_tag}{cut_tag}{kind_tag}{spin_tag}");
     let mut files = Partial::default();
 
     let mut ff = None;
@@ -274,7 +404,7 @@ pub fn export_spin(
         }
     }
 
-    let n = views.len();
+    let n = plan.len();
     let total = (n + if o.gif { PALETTE_SAMPLES.min(n) } else { 0 }) as f32;
     let mut done = 0;
     let mut cache: HashMap<usize, image::RgbaImage> = HashMap::new();
@@ -283,7 +413,8 @@ pub fn export_spin(
         let picks: Vec<usize> = (0..PALETTE_SAMPLES.min(n)).map(|k| k * n / PALETTE_SAMPLES.min(n)).collect();
         for &i in &picks {
             rep.step(done as f32 / total)?;
-            cache.insert(i, r.render_view(&views[i], w, h, o.ss, cuts, cull, bg)?);
+            let (v, z) = plan[i];
+            cache.insert(i, r.render_view(&views[v], w, h, o.ss, &cuts_at(z), cull, bg)?);
             done += 1;
         }
         let samples: Vec<image::RgbaImage> = picks.iter().map(|i| flat(cache[i].clone())).collect();
@@ -302,12 +433,17 @@ pub fn export_spin(
     }
 
     let delay = (100.0 / o.fps).round() as u16;
-    for (i, view) in views.iter().enumerate() {
+    let mut prev: Option<image::RgbaImage> = None;
+    for (i, &(v, z)) in plan.iter().enumerate() {
         rep.step(done as f32 / total)?;
-        let img = match cache.remove(&i) {
-            Some(img) => img,
-            None => r.render_view(view, w, h, o.ss, cuts, cull, bg)?,
+        let img = match (cache.remove(&i), prev.take()) {
+            (Some(img), _) => img,
+            (None, Some(img)) => img,
+            (None, None) => r.render_view(&views[v], w, h, o.ss, &cuts_at(z), cull, bg)?,
         };
+        if plan.get(i + 1) == Some(&(v, z)) {
+            prev = Some(img.clone());
+        }
         done += 1;
         if let Some(a) = &mut apng {
             a.write_image_data(img.as_raw())?;
@@ -335,9 +471,13 @@ pub fn export_spin(
     }
     let files = files.keep();
     let _ = rep.step(1.0);
-    let step = 360.0 / n as f64;
-    let edge = spin_radius(r, cuts, &views[0], w) * step.to_radians();
-    rep.log(format!("  {n} frames at {:.2} fps, {step:.2} deg/frame, edge moves ~{edge:.1} px/frame", o.fps));
+    if o.kind == Anim::Spin {
+        let step = 360.0 / n as f64;
+        let edge = spin_radius(r, cuts, &views[0], w) * step.to_radians();
+        rep.log(format!("  {n} frames at {:.2} fps, {step:.2} deg/frame, edge moves ~{edge:.1} px/frame", o.fps));
+    } else {
+        rep.log(format!("  {n} frames at {:.2} fps, {:.1} s", o.fps, n as f64 / o.fps));
+    }
     for f in &files {
         rep.log(format!("  {} {}x{}", f.display(), w, h));
     }

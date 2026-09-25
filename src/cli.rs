@@ -12,7 +12,7 @@ use crate::look::{FaceArgs, LookArgs};
 use crate::paths::{resolve_map, run_dir};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
-use crate::spin::{SpinOpts, export_spin};
+use crate::spin::{Anim, AnimOpts, PeelOpts, SliceOpts, export_anim};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
@@ -30,6 +30,10 @@ pub enum Cmd {
     Overview(OverviewArgs),
     #[command(about = "Render an animation of the map rotating (.mp4 via ffmpeg, optional .gif/.png)")]
     Spin(SpinArgs),
+    #[command(about = "Animate roof levels lifting off one by one")]
+    Peel(PeelArgs),
+    #[command(about = "Animate a height cut rising from the floor so the map builds itself")]
+    Slice(SliceArgs),
     #[command(about = "Map how fast each team reaches every spot from its spawns")]
     Timing(TimingArgs),
     #[command(about = "Open the GUI")]
@@ -139,6 +143,64 @@ pub struct SpinArgs {
 }
 
 #[derive(Args)]
+pub struct AnimArgs {
+    #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
+    pub size: u32,
+    #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
+    pub pitch: f64,
+    #[arg(long, default_value_t = 60.0)]
+    pub fps: f64,
+    #[arg(long, default_value_t = 45.0, allow_negative_numbers = true, help = "yaw of the view")]
+    pub start: f64,
+    #[arg(long = "then-spin", help = "follow with a full turn in the same file")]
+    pub then_spin: bool,
+    #[arg(long = "spin-seconds", default_value_t = 12.0, help = "seconds per full turn with --then-spin")]
+    pub spin_seconds: f64,
+    #[arg(long, help = "turn the other way with --then-spin")]
+    pub ccw: bool,
+    #[arg(long, help = "also write an animated PNG")]
+    pub apng: bool,
+    #[arg(long, help = "also write an animated GIF")]
+    pub gif: bool,
+    #[arg(long = "no-mp4", help = "skip the MP4")]
+    pub no_mp4: bool,
+}
+
+#[derive(Args)]
+pub struct PeelArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[command(flatten)]
+    pub l: LookArgs,
+    #[command(flatten)]
+    pub a: AnimArgs,
+    #[arg(long, default_value_t = 0, help = "roof levels to lift off (0 = all but the lowest)")]
+    pub count: usize,
+    #[arg(long = "seconds-per", default_value_t = 1.5, help = "seconds to lift each level")]
+    pub seconds_per: f64,
+    #[arg(long, default_value_t = 0.5, help = "seconds to pause before and after each level")]
+    pub hold: f64,
+    #[arg(long, help = "play backwards: roofs drop into place")]
+    pub reverse: bool,
+}
+
+#[derive(Args)]
+pub struct SliceArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[command(flatten)]
+    pub l: LookArgs,
+    #[command(flatten)]
+    pub a: AnimArgs,
+    #[arg(long, default_value_t = 0, help = "number of steps (0 = continuous sweep)")]
+    pub count: u32,
+    #[arg(long, default_value_t = 6.0, help = "sweep duration with --count 0")]
+    pub seconds: f64,
+    #[arg(long, default_value_t = 0.4, help = "seconds to pause at each step and at the end")]
+    pub hold: f64,
+}
+
+#[derive(Args)]
 pub struct TimingArgs {
     #[command(flatten)]
     pub c: Common,
@@ -232,10 +294,7 @@ fn reported<T>(f: impl FnOnce(&mut Report) -> Result<T>) -> Result<T> {
 }
 
 pub fn run_spin(a: &SpinArgs) -> Result<()> {
-    let gpu = Gpu::headless()?;
-    let lo = a.c.load_opts();
-    let co = a.c.cut_opts();
-    let o = SpinOpts {
+    let o = AnimOpts {
         size: a.size,
         ss: a.c.ss,
         pitch: a.pitch,
@@ -247,17 +306,64 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         mp4: !a.no_mp4,
         apng: a.apng,
         look: a.l.look()?,
+        kind: Anim::Spin,
     };
-    for m in &a.c.maps {
+    run_anim(&a.c, &o)
+}
+
+impl AnimArgs {
+    fn opts(&self, c: &Common, l: &LookArgs, kind: Anim) -> Result<AnimOpts> {
+        Ok(AnimOpts {
+            size: self.size,
+            ss: c.ss,
+            pitch: self.pitch,
+            seconds: self.spin_seconds,
+            fps: self.fps,
+            start: self.start,
+            ccw: self.ccw,
+            gif: self.gif,
+            mp4: !self.no_mp4,
+            apng: self.apng,
+            look: l.look()?,
+            kind,
+        })
+    }
+}
+
+pub fn run_peel(a: &PeelArgs) -> Result<()> {
+    let p = PeelOpts {
+        roofs: a.count,
+        seconds_per: a.seconds_per,
+        hold: a.hold,
+        reverse: a.reverse,
+        then_spin: a.a.then_spin,
+    };
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Peel(p))?)
+}
+
+pub fn run_slice(a: &SliceArgs) -> Result<()> {
+    let s = SliceOpts { slices: a.count, seconds: a.seconds, hold: a.hold, then_spin: a.a.then_spin };
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?)
+}
+
+fn run_anim(c: &Common, o: &AnimOpts) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = c.load_opts();
+    let co = c.cut_opts();
+    for m in &c.maps {
         let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
+        let path = resolve_map(m, c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&c.out, &name)?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
         let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
-        reported(|rep| export_spin(&mut r, &name, &sky_tag, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
+        let res = reported(|rep| export_anim(&mut r, &scene.levels, &name, &sky_tag, &co.tag(lo.hull), &cuts, o, &out, rep));
+        if res.is_err() {
+            let _ = std::fs::remove_dir(&out);
+        }
+        res?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
     Ok(())

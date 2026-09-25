@@ -2,18 +2,21 @@ use eframe::egui;
 
 use super::App;
 use super::jobs::Job;
+use crate::spin::Anim;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Exporter {
     Iso,
     Spin,
+    Peel,
+    Slice,
     Overview,
     Timing,
 }
 
 const GROUPS: &[(&str, &[Exporter])] = &[
     ("Images", &[Exporter::Iso]),
-    ("Animation", &[Exporter::Spin]),
+    ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice]),
     ("Counter-Strike", &[Exporter::Overview]),
     ("Analysis", &[Exporter::Timing]),
 ];
@@ -23,6 +26,8 @@ impl Exporter {
         match self {
             Exporter::Iso => "iso",
             Exporter::Spin => "spin",
+            Exporter::Peel => "peel",
+            Exporter::Slice => "slice",
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
         }
@@ -36,6 +41,8 @@ impl Exporter {
         match self {
             Exporter::Iso => "Isometric",
             Exporter::Spin => "Spin",
+            Exporter::Peel => "Roof peel",
+            Exporter::Slice => "Slice",
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
         }
@@ -56,11 +63,16 @@ impl App {
                 o.look = self.look.clone();
                 Job::Iso(o)
             }
-            Exporter::Spin => {
+            Exporter::Spin | Exporter::Peel | Exporter::Slice => {
                 let mut o = self.spin.clone();
                 o.pitch = self.iso.pitch;
                 o.look = self.look.clone();
-                Job::Spin(o)
+                o.kind = match e {
+                    Exporter::Peel => Anim::Peel(self.peel.clone()),
+                    Exporter::Slice => Anim::Slice(self.slice.clone()),
+                    _ => Anim::Spin,
+                };
+                Job::Anim(o)
             }
             Exporter::Overview => {
                 let mut o = self.ov.clone();
@@ -94,7 +106,9 @@ impl App {
         ui.heading(self.exporter.label());
         match self.exporter {
             Exporter::Iso => self.form_iso(ui),
-            Exporter::Spin => self.form_spin(ui),
+            Exporter::Spin => self.form_anim(ui, true),
+            Exporter::Peel => self.form_peel(ui),
+            Exporter::Slice => self.form_slice(ui),
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
         }
@@ -121,19 +135,45 @@ impl App {
         ui.weak("Pitch is on the Camera tab, sky and background on the Look tab.");
     }
 
-    fn form_spin(&mut self, ui: &mut egui::Ui) {
+    fn form_anim(&mut self, ui: &mut egui::Ui, turn: bool) {
         ui.add(egui::Slider::new(&mut self.spin.size, 256..=2048).text("size px"));
         ui.add(egui::Slider::new(&mut self.spin.ss, 1..=4).text("supersample"));
-        ui.add(egui::Slider::new(&mut self.spin.seconds, 2.0..=60.0).text("seconds per turn"));
+        if turn {
+            ui.add(egui::Slider::new(&mut self.spin.seconds, 2.0..=60.0).text("seconds per turn"));
+        }
         ui.add(egui::Slider::new(&mut self.spin.fps, 10.0..=60.0).text("fps"));
         ui.add(egui::DragValue::new(&mut self.spin.start).speed(1.0).prefix("start yaw "));
-        ui.checkbox(&mut self.spin.ccw, "Turn the other way");
+        if turn {
+            ui.checkbox(&mut self.spin.ccw, "Turn the other way");
+        }
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.spin.mp4, "MP4");
             ui.checkbox(&mut self.spin.gif, "GIF");
             ui.checkbox(&mut self.spin.apng, "APNG");
         });
         ui.weak("Pitch is on the Camera tab.");
+    }
+
+    fn form_peel(&mut self, ui: &mut egui::Ui) {
+        let max = self.scene.as_ref().map_or(8, |s| s.levels.len().saturating_sub(1).max(1));
+        ui.add(egui::Slider::new(&mut self.peel.roofs, 0..=max).text("roofs (0 = all)"));
+        ui.add(egui::Slider::new(&mut self.peel.seconds_per, 0.2..=6.0).text("seconds per roof"));
+        ui.add(egui::Slider::new(&mut self.peel.hold, 0.0..=3.0).text("hold s"));
+        ui.checkbox(&mut self.peel.reverse, "Reverse (roofs drop into place)");
+        ui.checkbox(&mut self.peel.then_spin, "Then spin");
+        self.form_anim(ui, self.peel.then_spin);
+        ui.weak("Starts from the roof and height cuts on the Scene tab.");
+    }
+
+    fn form_slice(&mut self, ui: &mut egui::Ui) {
+        ui.add(egui::Slider::new(&mut self.slice.slices, 0..=32).text("slices (0 = sweep)"));
+        if self.slice.slices == 0 {
+            ui.add(egui::Slider::new(&mut self.slice.seconds, 1.0..=30.0).text("sweep seconds"));
+        }
+        ui.add(egui::Slider::new(&mut self.slice.hold, 0.0..=3.0).text("hold s"));
+        ui.checkbox(&mut self.slice.then_spin, "Then spin");
+        self.form_anim(ui, self.slice.then_spin);
+        ui.weak("Sliced walls show their hollow insides.");
     }
 
     fn form_overview(&mut self, ui: &mut egui::Ui) {

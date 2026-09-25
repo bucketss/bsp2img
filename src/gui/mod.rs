@@ -20,7 +20,7 @@ use crate::mesh::roof_zmax;
 use crate::paths::list_maps;
 use crate::render::{Cuts, Gpu, Renderer, wgpu};
 use crate::scene::{CutOpts, LoadOpts, Scene};
-use crate::spin::SpinOpts;
+use crate::spin::{AnimOpts, PeelOpts, SliceOpts};
 use crate::timing::TimingOpts;
 
 use export_ui::Exporter;
@@ -135,7 +135,9 @@ struct App {
     iso: IsoOpts,
     yaws_text: String,
     ov: OverviewOpts,
-    spin: SpinOpts,
+    spin: AnimOpts,
+    peel: PeelOpts,
+    slice: SliceOpts,
     timing: TimingOpts,
     exporter: Exporter,
     out: String,
@@ -184,7 +186,9 @@ impl App {
             iso: IsoOpts::default(),
             yaws_text: String::new(),
             ov: OverviewOpts::default(),
-            spin: SpinOpts::default(),
+            spin: AnimOpts::default(),
+            peel: PeelOpts::default(),
+            slice: SliceOpts::default(),
             timing: TimingOpts::default(),
             exporter: Exporter::Iso,
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),
