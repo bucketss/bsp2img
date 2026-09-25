@@ -57,6 +57,7 @@ struct FrameU {
     clip_xy: [f32; 4],
     mask_rect: [f32; 4],
     zr: [f32; 4],
+    view_dir: [f32; 4],
 }
 
 #[repr(C)]
@@ -294,7 +295,7 @@ impl Renderer {
                         buffers: &[Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<Vertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2],
+                            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32],
                         })],
                     },
                     primitive: wgpu::PrimitiveState {
@@ -587,6 +588,7 @@ impl Renderer {
             clip_xy: cuts.clip.map(|v| v as f32),
             mask_rect: rect.map(|v| v as f32),
             zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, 0.0],
+            view_dir: [b.f.x as f32, b.f.y as f32, b.f.z as f32, 0.0],
         };
         let q = &self.gpu.queue;
         q.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));

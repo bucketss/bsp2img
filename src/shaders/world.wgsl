@@ -3,6 +3,7 @@ struct Frame {
     clip_xy: vec4<f32>,
     mask_rect: vec4<f32>,
     zr: vec4<f32>,
+    view_dir: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> fr: Frame;
@@ -22,9 +23,9 @@ struct VOut {
 };
 
 @vertex
-fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>) -> VOut {
+fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32) -> VOut {
     var o: VOut;
-    o.pos = fr.mvp * vec4<f32>(pos, 1.0);
+    o.pos = fr.mvp * vec4<f32>(pos - fr.view_dir.xyz * (bias * 0.25), 1.0);
     o.uv = uv;
     o.lm = lm;
     o.world = pos;

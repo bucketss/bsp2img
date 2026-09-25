@@ -1,7 +1,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use bytemuck::{Pod, Zeroable};
-use glam::DVec3;
+use glam::{DVec2, DVec3};
+use rayon::prelude::*;
 
 use crate::bsp::{Bsp, TEX_SPECIAL};
 use crate::light::LightParams;
@@ -33,6 +34,7 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub lm: [f32; 2],
+    pub bias: f32,
 }
 
 pub struct Batch {
@@ -56,6 +58,7 @@ pub struct Mesh {
     pub faces: usize,
     pub missing: Vec<String>,
     pub points: Vec<DVec3>,
+    pub nudged: usize,
 }
 
 pub fn skip_class(cls: &str) -> bool {
@@ -142,6 +145,8 @@ struct Record {
     v: Vec<f64>,
     block: usize,
     lm: Option<(Vec<f64>, Vec<f64>)>,
+    normal: DVec3,
+    model: usize,
 }
 
 pub fn build_mesh(
@@ -294,16 +299,19 @@ pub fn build_mesh(
                 v: t.iter().map(|v| v / th).collect(),
                 block,
                 lm,
+                normal,
+                model: mi,
             });
         }
     }
 
+    let levels = overlap_levels(&records);
     let atlas_img = atlas.pack(max_dim);
     let (aw, ah) = (atlas_img.w as f64, atlas_img.h as f64);
     let mut index: HashMap<(usize, Mode, u32), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut points = Vec::new();
-    for r in &records {
+    for (r, &level) in records.iter().zip(&levels) {
         let (bx, by) = atlas.pos[r.block];
         let (bx, by) = (bx as f64, by as f64);
         let n = r.p.len();
@@ -317,6 +325,7 @@ pub fn build_mesh(
             pos: [r.p[i].x as f32, r.p[i].y as f32, r.p[i].z as f32],
             uv: [r.u[i] as f32, r.v[i] as f32],
             lm: lmuv(i),
+            bias: level as f32,
         };
         let key = (r.tex, r.mode, r.alpha.to_bits());
         let bi = *index.entry(key).or_insert_with(|| {
@@ -341,7 +350,130 @@ pub fn build_mesh(
         faces: records.len(),
         missing: missing.into_iter().collect(),
         points,
+        nudged: levels.iter().filter(|&&l| l > 0).count(),
     }
+}
+
+const OVERLAP_MIN_AREA: f64 = 4.0;
+const MAX_LEVEL: u8 = 4;
+
+struct Flat {
+    idx: usize,
+    poly: Vec<DVec2>,
+    lo: DVec2,
+    hi: DVec2,
+    area: f64,
+    model: usize,
+    translucent: bool,
+}
+
+fn signed_area(poly: &[DVec2]) -> f64 {
+    let n = poly.len();
+    (0..n).map(|i| poly[i].perp_dot(poly[(i + 1) % n])).sum::<f64>() / 2.0
+}
+
+fn clip_convex(subject: &[DVec2], clipper: &[DVec2]) -> Vec<DVec2> {
+    let sign = signed_area(clipper).signum();
+    let mut out = subject.to_vec();
+    let n = clipper.len();
+    for i in 0..n {
+        if out.is_empty() {
+            break;
+        }
+        let (a, b) = (clipper[i], clipper[(i + 1) % n]);
+        let e = b - a;
+        let side = |p: DVec2| sign * e.perp_dot(p - a);
+        let input = std::mem::take(&mut out);
+        let m = input.len();
+        for j in 0..m {
+            let (p, q) = (input[j], input[(j + 1) % m]);
+            let (sp, sq) = (side(p), side(q));
+            if sp >= 0.0 {
+                out.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                out.push(p + (q - p) * (sp / (sp - sq)));
+            }
+        }
+    }
+    out
+}
+
+fn above(a: &Flat, b: &Flat) -> bool {
+    if a.translucent != b.translucent {
+        return a.translucent;
+    }
+    let tol = 1e-6 * a.area.max(b.area);
+    if (a.area - b.area).abs() > tol {
+        return a.area < b.area;
+    }
+    if a.model != b.model {
+        return a.model > b.model;
+    }
+    a.idx > b.idx
+}
+
+fn bucket_levels(faces: &[Flat]) -> Vec<(usize, u8)> {
+    let mut lv = vec![0u8; faces.len()];
+    for i in 0..faces.len() {
+        for j in i + 1..faces.len() {
+            let (a, b) = (&faces[i], &faces[j]);
+            if a.hi.x <= b.lo.x || b.hi.x <= a.lo.x || a.hi.y <= b.lo.y || b.hi.y <= a.lo.y {
+                continue;
+            }
+            if signed_area(&clip_convex(&a.poly, &b.poly)).abs() <= OVERLAP_MIN_AREA {
+                continue;
+            }
+            let k = if above(a, b) { i } else { j };
+            lv[k] = (lv[k] + 1).min(MAX_LEVEL);
+        }
+    }
+    faces.iter().zip(lv).map(|(f, l)| (f.idx, l)).collect()
+}
+
+fn overlap_levels(records: &[Record]) -> Vec<u8> {
+    let mut buckets: HashMap<[i64; 4], Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        let n = r.normal;
+        let d = n.dot(r.p[0]);
+        let q = |v: f64, s: f64| (v * s).round() as i64;
+        let key = [q(n.x, 1e3), q(n.y, 1e3), q(n.z, 1e3), q(d, 4.0)];
+        buckets.entry(key).or_default().push(i);
+    }
+    let found: Vec<Vec<(usize, u8)>> = buckets
+        .into_par_iter()
+        .filter(|(_, v)| v.len() > 1)
+        .map(|(_, v)| {
+            let n = records[v[0]].normal;
+            let u = n.any_orthonormal_vector();
+            let w = n.cross(u);
+            let faces: Vec<Flat> = v
+                .iter()
+                .map(|&i| {
+                    let r = &records[i];
+                    let poly: Vec<DVec2> = r.p.iter().map(|q| DVec2::new(q.dot(u), q.dot(w))).collect();
+                    let lo = poly.iter().fold(DVec2::INFINITY, |m, p| m.min(*p));
+                    let hi = poly.iter().fold(DVec2::NEG_INFINITY, |m, p| m.max(*p));
+                    let area = signed_area(&poly).abs();
+                    Flat {
+                        idx: i,
+                        poly,
+                        lo,
+                        hi,
+                        area,
+                        model: r.model,
+                        translucent: r.mode == Mode::Additive || (r.mode == Mode::Blend && r.alpha < 1.0),
+                    }
+                })
+                .collect();
+            bucket_levels(&faces)
+        })
+        .collect();
+    let mut levels = vec![0u8; records.len()];
+    for (i, l) in found.into_iter().flatten() {
+        levels[i] = l;
+    }
+    levels
 }
 
 pub fn roof_levels(mesh: &Mesh) -> Vec<(f64, f64, f64)> {
