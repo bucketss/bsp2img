@@ -250,10 +250,20 @@ impl App {
         ui.add(egui::Slider::new(&mut self.ov.ss, 1..=4).text("supersample"));
         ui.checkbox(&mut self.ov.png, "Also write PNG");
         ui.checkbox(&mut self.ov.grid, "Also write grid preview");
+        ui.horizontal(|ui| {
+            let mut on = self.ov.from_txt.is_some();
+            if ui.checkbox(&mut on, "Reuse framing from .txt").changed() {
+                self.ov.from_txt = if on { rfd::FileDialog::new().add_filter("overview", &["txt"]).pick_file() } else { None };
+            }
+            if let Some(f) = &self.ov.from_txt {
+                ui.weak(f.file_name().unwrap_or_default().to_string_lossy());
+            }
+        });
     }
 
     fn form_timing(&mut self, ui: &mut egui::Ui) {
         ui.add(egui::Slider::new(&mut self.timing.speed, 100.0..=260.0).text("speed u/s"));
+        ui.add(egui::Slider::new(&mut self.timing.cell, 4.0..=32.0).text("walk grid units"));
         ui.add(egui::Slider::new(&mut self.timing.interval, 1.0..=10.0).text("contour s"));
         ui.add(egui::Slider::new(&mut self.timing.size, 512..=4096).text("size px"));
         ui.weak("Uses the roof and height cuts on the Scene tab.");
