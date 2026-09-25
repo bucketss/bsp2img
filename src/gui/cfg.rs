@@ -4,6 +4,7 @@ use std::str::FromStr;
 use super::{App, Exporter, Tab};
 use crate::camera::Camera;
 use crate::export::{IsoOpts, OverviewOpts};
+use crate::gltf::{GltfOpts, Lighting};
 use crate::health::HealthOpts;
 use crate::look::{Look, Tilt};
 use crate::render::parse_color;
@@ -258,6 +259,25 @@ impl Cfg for Camera {
     }
 }
 
+impl Cfg for GltfOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("lighting", self.lighting.key().to_string()),
+            ("texel", self.texel.to_string()),
+            ("nearest", self.nearest.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "lighting" => self.lighting = Lighting::parse(v).unwrap_or(self.lighting),
+            "texel" => put(&mut self.texel, v),
+            "nearest" => put(&mut self.nearest, v),
+            _ => {}
+        }
+    }
+}
+
 impl Cfg for Look {
     fn kv(&self) -> Vec<(String, String)> {
         kvs(&[
@@ -363,7 +383,7 @@ impl App {
             format!("log_open={}", self.log_open),
             format!("cam_export={}", self.cam_export),
         ];
-        let sections: [(&str, &dyn Cfg); 12] = [
+        let sections: [(&str, &dyn Cfg); 13] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
@@ -376,6 +396,7 @@ impl App {
             ("svg", &self.svg),
             ("stl", &self.stl),
             ("cam", &self.cam),
+            ("gltf", &self.gltf),
         ];
         for (s, c) in sections {
             lines.extend(c.kv().into_iter().map(|(k, v)| format!("{s}.{k}={v}")));
@@ -400,6 +421,7 @@ impl App {
                 Some(("svg", k)) => self.svg.set(k, v),
                 Some(("stl", k)) => self.stl.set(k, v),
                 Some(("cam", k)) => Cfg::set(&mut self.cam, k, v),
+                Some(("gltf", k)) => self.gltf.set(k, v),
                 Some(_) => {}
                 None => match k {
                     "game" => self.game = v.to_string(),

@@ -8,6 +8,7 @@ use eframe::egui;
 
 use super::{App, Msg};
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
+use crate::gltf::{GltfOpts, export_gltf};
 use crate::health::{HealthOpts, export_health};
 use crate::paths::run_dir;
 use crate::render::{Cuts, Gpu};
@@ -25,6 +26,7 @@ pub enum Job {
     Health(HealthOpts),
     Svg(SvgOpts),
     Stl(StlOpts),
+    Gltf(GltfOpts),
 }
 
 impl Job {
@@ -37,6 +39,7 @@ impl Job {
             Job::Health(_) => "health report",
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
+            Job::Gltf(_) => "glTF",
         }
     }
 }
@@ -80,6 +83,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Health(o) => export_health(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Gltf(o) => export_gltf(s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }
 

@@ -16,6 +16,7 @@ use glam::DVec3;
 
 use crate::camera::Camera;
 use crate::export::{IsoOpts, OverviewOpts};
+use crate::gltf::GltfOpts;
 use crate::health::HealthOpts;
 use crate::look::Look;
 use crate::mesh::roof_zmax;
@@ -153,6 +154,7 @@ struct App {
     health: HealthOpts,
     svg: SvgOpts,
     stl: StlOpts,
+    gltf: GltfOpts,
     health_text: Option<(String, String)>,
     exporter: Exporter,
     out: String,
@@ -214,6 +216,7 @@ impl App {
             health: HealthOpts::default(),
             svg: SvgOpts::default(),
             stl: StlOpts::default(),
+            gltf: GltfOpts::default(),
             health_text: None,
             exporter: Exporter::Iso,
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),

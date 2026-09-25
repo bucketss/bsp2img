@@ -1,7 +1,9 @@
 mod bsp;
 mod camera;
 mod cli;
+mod clip;
 mod export;
+mod gltf;
 mod grid;
 mod gui;
 mod health;
@@ -57,6 +59,7 @@ fn main() {
         Some(cli::Cmd::Health(a)) => cli::run_health(a),
         Some(cli::Cmd::Svg(a)) => cli::run_svg(a),
         Some(cli::Cmd::Stl(a)) => cli::run_stl(a),
+        Some(cli::Cmd::Gltf(a)) => cli::run_gltf(a),
         Some(cli::Cmd::Gui(a)) => gui::run(a.map.clone(), a.game.clone(), &a.view),
         None => gui::run(None, None, "iso"),
     };
