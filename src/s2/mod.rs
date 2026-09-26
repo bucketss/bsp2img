@@ -1,6 +1,7 @@
 pub mod buf;
 pub mod entities;
 pub mod kv3;
+pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod model;
@@ -18,6 +19,9 @@ use rayon::prelude::*;
 
 use crate::bsp::{Bsp, Entity, Model as BModel};
 use crate::mesh::Mesh;
+use crate::scene::LoadOpts;
+
+const LIGHTMAP_MAX: usize = 4096;
 
 pub struct Extra {
     pub map: String,
@@ -32,9 +36,9 @@ fn brush_model(m: &str, map: &str) -> bool {
     m.starts_with(&format!("maps/{map}/entities/"))
 }
 
-pub fn load(path: &Path, game: Option<&Path>, tex_max: usize, log: &mut dyn FnMut(String)) -> Result<(Bsp, Mesh)> {
+pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(String)) -> Result<(Bsp, Mesh)> {
     let t0 = Instant::now();
-    let root = vpk::game_root(path, game);
+    let root = vpk::game_root(path, opts.game.as_deref());
     if root.is_none() {
         log("CS2 install not found next to the map or via --game; only the map's own files are searched".into());
     }
@@ -73,7 +77,21 @@ pub fn load(path: &Path, game: Option<&Path>, tex_max: usize, log: &mut dyn FnMu
     }
     let t1 = t0.elapsed().as_secs_f64();
 
-    let built = mesh::build(&fs, &world, &lumps.ents, mesh::Opts { tex_max, keep: None, lightmap: None });
+    let lightmap = match light::bake(&fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {
+        Ok(Some((l, info))) => {
+            log(info);
+            Some(l)
+        }
+        Ok(None) => {
+            log("no baked lighting; use --relight".into());
+            None
+        }
+        Err(e) => {
+            log(format!("baked lighting failed: {e:#}"));
+            None
+        }
+    };
+    let built = mesh::build(&fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, keep: None, lightmap });
     for b in built.bad_models.iter().take(10) {
         log(format!("model failed: {b}"));
     }

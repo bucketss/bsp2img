@@ -157,7 +157,7 @@ pub struct Scene {
 impl Scene {
     pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: Log) -> Result<Scene> {
         if crate::s2::is_vpk(path) {
-            return Self::load_cs2(path, opts, log);
+            return Self::load_cs2(path, opts, max_dim, log);
         }
         let bsp = Bsp::load(path)?;
         let dirs = search_dirs(path, opts.game.as_deref(), &opts.wad_dirs);
@@ -220,8 +220,8 @@ impl Scene {
         Ok(Scene { bsp, mesh, levels, mask, dirs, opts: opts.clone() })
     }
 
-    fn load_cs2(path: &Path, opts: &LoadOpts, log: Log) -> Result<Scene> {
-        let (bsp, mesh) = crate::s2::load(path, opts.game.as_deref(), opts.tex_max, log)?;
+    fn load_cs2(path: &Path, opts: &LoadOpts, max_dim: u32, log: Log) -> Result<Scene> {
+        let (bsp, mesh) = crate::s2::load(path, opts, max_dim, log)?;
         if !mesh.missing.is_empty() {
             log(format!("missing ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
