@@ -11,6 +11,7 @@ use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, export_gltf};
 use crate::health::{HealthOpts, export_health};
+use crate::kills::{KillOpts, export_kills, load_demos};
 use crate::paths::run_dir;
 use crate::poster::{PosterOpts, export_poster};
 use crate::render::{Cuts, Gpu};
@@ -25,6 +26,7 @@ pub enum Job {
     Anim(AnimOpts),
     Overview(OverviewOpts),
     Timing(TimingOpts),
+    Kills(KillOpts, Vec<PathBuf>),
     Health(HealthOpts),
     Svg(SvgOpts),
     Stl(StlOpts),
@@ -48,6 +50,7 @@ impl Job {
             Job::Anim(_) => "animation",
             Job::Overview(_) => "overview",
             Job::Timing(_) => "rush timings",
+            Job::Kills(..) => "kill heatmap",
             Job::Health(_) => "health report",
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
@@ -94,6 +97,14 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Anim(o) => export_anim(r, &s.levels, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Overview(o) => export_overview(r, &s.bsp, &name, &spec.cuts, o, out, rep).map(drop),
         Job::Timing(o) => export_timing(r, &s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Kills(o, demos) => {
+            let data = load_demos(demos, o, rep, (0.0, 0.5))?;
+            if data.is_empty() {
+                anyhow::bail!("none of the demos could be read");
+            }
+            rep.log(format!("  {} demos parsed", data.len()));
+            export_kills(r, &s.bsp, &name, &spec.cut_tag, &spec.cuts, o, &data, out, rep, 0.5).map(drop)
+        }
         Job::Health(o) => export_health(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
