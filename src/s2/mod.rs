@@ -5,6 +5,7 @@ pub mod light;
 pub mod material;
 pub mod mesh;
 pub mod model;
+pub mod nav;
 pub mod resource;
 pub mod texture;
 pub mod vpk;
@@ -22,10 +23,42 @@ use crate::mesh::Mesh;
 use crate::scene::LoadOpts;
 
 const LIGHTMAP_MAX: usize = 4096;
+const SPAWN_REACH: f32 = 64.0;
+const CROP_CELL: f64 = 16.0;
+const CROP_PAD: f64 = 512.0;
 
 pub struct Extra {
     pub map: String,
     pub root: Option<PathBuf>,
+    pub nav: Option<nav::NavMesh>,
+}
+
+fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
+    let t = Instant::now();
+    let nav = crate::nav::Nav::build(bsp, CROP_CELL, 250.0).ok()?;
+    let Some(reach) = crate::reach::nav_reach(&nav, bsp, 250.0) else {
+        log("auto crop: no spawn points on the nav mesh, using whole map".into());
+        return None;
+    };
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut n = 0;
+    for (u, _) in reach.iter().enumerate().filter(|(_, r)| **r) {
+        let (x, y) = nav.cell_xy(nav.col[u] as usize);
+        b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        n += 1;
+    }
+    if n == 0 {
+        return None;
+    }
+    log(format!(
+        "auto crop: {n} reachable nav cells, box {:.0} {:.0} .. {:.0} {:.0} + {CROP_PAD:.0} ({:.1}s)",
+        b[0],
+        b[1],
+        b[2],
+        b[3],
+        t.elapsed().as_secs_f64()
+    ));
+    Some(b)
 }
 
 pub fn is_vpk(path: &Path) -> bool {
@@ -75,6 +108,31 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         }
         bsp.entities.push(Entity(kv));
     }
+    let navmesh = match fs.read(&format!("maps/{map}.nav")).and_then(|b| nav::parse(&b)) {
+        Ok(m) if !m.areas.is_empty() => Some(m),
+        Ok(_) => {
+            log("nav mesh is empty; timing, svg, auto crop and --hull are unavailable".into());
+            None
+        }
+        Err(e) => {
+            log(format!("nav mesh: {e:#}"));
+            None
+        }
+    };
+    if let Some(m) = &navmesh {
+        let mut moved = 0;
+        for e in bsp.entities.iter_mut().filter(|e| crate::reach::SEED_CLASSES.contains(&e.class())) {
+            let Some(o) = e.origin() else { continue };
+            let ring = [(0.0, 0.0), (24.0, 0.0), (-24.0, 0.0), (0.0, 24.0), (0.0, -24.0), (48.0, 0.0), (-48.0, 0.0), (0.0, 48.0), (0.0, -48.0)];
+            let found = ring.iter().find_map(|&(dx, dy)| m.floor_below(o.x as f32 + dx, o.y as f32 + dy, o.z as f32 + SPAWN_REACH));
+            if let Some(z) = found {
+                e.0.insert("origin".into(), format!("{} {} {}", o.x, o.y, z as f64 + crate::nav::STAND_OFS));
+                moved += 1;
+            }
+        }
+        log(format!("{moved} spawn points raised to nav floor + {}", crate::nav::STAND_OFS));
+    }
+    bsp.cs2 = Some(Box::new(Extra { map: map.clone(), root, nav: navmesh }));
     let t1 = t0.elapsed().as_secs_f64();
 
     let lightmap = match light::bake(&fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {
@@ -91,7 +149,9 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
             None
         }
     };
-    let built = mesh::build(&fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, keep: None, lightmap });
+    let crop = if opts.auto_crop { crop_box(&bsp, log) } else { None };
+    let crop = crop.map(|[x0, y0, x1, y1]| [x0 - CROP_PAD, y0 - CROP_PAD, x1 + CROP_PAD, y1 + CROP_PAD]);
+    let built = mesh::build(&fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, crop, lightmap });
     for b in built.bad_models.iter().take(10) {
         log(format!("model failed: {b}"));
     }
@@ -107,6 +167,5 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         built.dropped,
         t0.elapsed().as_secs_f64()
     ));
-    bsp.cs2 = Some(Box::new(Extra { map, root }));
     Ok((bsp, built.mesh))
 }

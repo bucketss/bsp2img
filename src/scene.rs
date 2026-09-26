@@ -234,7 +234,24 @@ impl Scene {
             mesh.atlas.h
         ));
         let levels = levels(&mesh, log);
-        Ok(Scene { bsp, mesh, levels, mask: None, dirs: Vec::new(), opts: opts.clone() })
+        let mask = match opts.hull {
+            Some(h) => {
+                let t = Instant::now();
+                let m = crate::reach::nav_mask(&bsp, h, opts.hull_pad);
+                match &m {
+                    Some(m) => log(format!(
+                        "hull {h}: {} walkable nav cells (grid {:.0}, {:.1}s)",
+                        m.cells,
+                        m.spacing,
+                        t.elapsed().as_secs_f64()
+                    )),
+                    None => log("hull: no nav mesh or spawn points, skipped".into()),
+                }
+                m
+            }
+            None => None,
+        };
+        Ok(Scene { bsp, mesh, levels, mask, dirs: Vec::new(), opts: opts.clone() })
     }
 
     pub fn zmax(&self, cuts: &CutOpts, log: Log) -> f64 {

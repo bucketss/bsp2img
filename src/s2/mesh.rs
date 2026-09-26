@@ -21,9 +21,9 @@ pub struct Lightmap {
     pub flat: [f32; 2],
 }
 
-pub struct Opts<'a> {
+pub struct Opts {
     pub tex_max: usize,
-    pub keep: Option<&'a (dyn Fn(DVec3, DVec3) -> bool + Sync)>,
+    pub crop: Option<[f64; 4]>,
     pub lightmap: Option<Lightmap>,
 }
 
@@ -50,6 +50,7 @@ struct Entry {
     inst: u32,
     dc: u32,
     tris: usize,
+    clip: bool,
 }
 
 fn white() -> Image {
@@ -132,19 +133,19 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         for dc in dcs {
             let c = &m.draws[dc as usize];
             if c.triangles && c.index_count >= 3 {
-                entries.push(Entry { inst: ii as u32, dc, tris: c.index_count / 3 });
+                entries.push(Entry { inst: ii as u32, dc, tris: c.index_count / 3, clip: false });
             }
         }
     }
     let total = entries.len();
-    if let Some(keep) = o.keep {
-        let flags: Vec<bool> = entries
+    if let Some([x0, y0, x1, y1]) = o.crop {
+        let flags: Vec<(bool, bool)> = entries
             .par_iter()
             .map(|e| {
                 let it = &insts[e.inst as usize];
                 let m = models[it.model as usize].as_ref().unwrap();
                 let c = &m.draws[e.dc as usize];
-                let (Some(ps), Ok(ix)) = (m.stream(c, "POSITION", 0), m.index_view(c)) else { return false };
+                let (Some(ps), Ok(ix)) = (m.stream(c, "POSITION", 0), m.index_view(c)) else { return (false, false) };
                 let mut lo = DVec3::splat(f64::INFINITY);
                 let mut hi = DVec3::splat(f64::NEG_INFINITY);
                 for k in 0..ix.len() {
@@ -153,13 +154,18 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                     lo = lo.min(q);
                     hi = hi.max(q);
                 }
-                keep(lo, hi)
+                let meets = hi.x >= x0 && lo.x <= x1 && hi.y >= y0 && lo.y <= y1;
+                let inside = lo.x >= x0 && hi.x <= x1 && lo.y >= y0 && hi.y <= y1;
+                (meets, !inside)
             })
             .collect();
+        for (e, f) in entries.iter_mut().zip(&flags) {
+            e.clip = f.1;
+        }
         let mut i = 0;
         entries.retain(|_| {
             i += 1;
-            flags[i - 1]
+            flags[i - 1].0
         });
     }
     let dropped = total - entries.len();
@@ -266,6 +272,23 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         Some(l) => (l.atlas, l.rect, l.flat),
         None => (white(), [0.0; 4], [0.5, 0.5]),
     };
+    let to_clip: Vec<(usize, usize)> =
+        groups.iter().enumerate().flat_map(|(gi, g)| g.4.iter().filter(|&&ei| entries[ei].clip).map(move |&ei| (gi, ei))).collect();
+    let clipped: HashMap<usize, Vec<Vertex>> = to_clip
+        .par_iter()
+        .map(|&(gi, ei)| {
+            let mat = mats[&groups[gi].0].as_ref().unwrap();
+            let e = &entries[ei];
+            let it = &insts[e.inst as usize];
+            let m = models[it.model as usize].as_ref().unwrap();
+            let mut v = vec![ZERO; e.tris * 3];
+            fill(m, e.dc as usize, it, mat, lm_rect, flat, &mut v);
+            (ei, clip_rect(&v, o.crop.unwrap()))
+        })
+        .collect();
+    for (&ei, v) in &clipped {
+        entries[ei].tris = v.len() / 3;
+    }
     let mut batches: Vec<Batch> = Vec::new();
     let mut faces = 0;
     for (gi, (mn, tq, md, alpha, list)) in groups.iter().enumerate() {
@@ -279,7 +302,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 end += 1;
             }
             let part = &list[start..end];
-            let mut verts = vec![Vertex { pos: [0.0; 3], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0; 3] }; n];
+            let mut verts = vec![ZERO; n];
             let mut slices: Vec<&mut [Vertex]> = Vec::with_capacity(part.len());
             let mut rest: &mut [Vertex] = &mut verts;
             for &ei in part {
@@ -291,7 +314,10 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 let e = &entries[ei];
                 let it = &insts[e.inst as usize];
                 let m = models[it.model as usize].as_ref().unwrap();
-                fill(m, e.dc as usize, it, mat, lm_rect, flat, out);
+                match clipped.get(&ei) {
+                    Some(v) => out.copy_from_slice(v),
+                    None => fill(m, e.dc as usize, it, mat, lm_rect, flat, out),
+                }
             });
             faces += n / 3;
             batches.push(Batch { tex: group_tex[gi], mode: *md, alpha: *alpha, warp: None, tint: tq.map(|v| v as f32 / TINT_LEVELS), verts });
@@ -362,6 +388,43 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, lm_rect: [f32; 4], flat
             }
         }
     }
+}
+
+const ZERO: Vertex = Vertex { pos: [0.0; 3], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0; 3] };
+
+fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
+    let l2 = |x: [f32; 2], y: [f32; 2]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t];
+    let l3 = |x: [f32; 3], y: [f32; 3]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
+    Vertex { pos: l3(a.pos, b.pos), uv: l2(a.uv, b.uv), lm: l2(a.lm, b.lm), bias: a.bias, normal: l3(a.normal, b.normal) }
+}
+
+fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
+    let planes: [(usize, f32, f32); 4] = [(0, 1.0, x0 as f32), (0, -1.0, -x1 as f32), (1, 1.0, y0 as f32), (1, -1.0, -y1 as f32)];
+    let mut out = Vec::new();
+    for tri in v.chunks_exact(3) {
+        let mut poly: Vec<Vertex> = tri.to_vec();
+        for &(axis, s, d) in &planes {
+            let side = |p: &Vertex| s * p.pos[axis] - d;
+            let input = std::mem::take(&mut poly);
+            for i in 0..input.len() {
+                let (a, b) = (&input[i], &input[(i + 1) % input.len()]);
+                let (sa, sb) = (side(a), side(b));
+                if sa >= 0.0 {
+                    poly.push(*a);
+                }
+                if (sa >= 0.0) != (sb >= 0.0) {
+                    poly.push(lerp(a, b, sa / (sa - sb)));
+                }
+            }
+            if poly.len() < 3 {
+                break;
+            }
+        }
+        for i in 1..poly.len().saturating_sub(1) {
+            out.extend([poly[0], poly[i], poly[i + 1]]);
+        }
+    }
+    out
 }
 
 fn sample_points(batches: &[Batch]) -> Vec<DVec3> {
