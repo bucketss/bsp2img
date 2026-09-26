@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 
-use super::buf::{slice, u32_};
+use super::buf::{half, slice, u32_};
 use super::kv3::{self, Value};
 use super::resource::Res;
 
@@ -44,17 +44,6 @@ pub struct Stream<'a> {
     buf: &'a Buf,
     format: u32,
     offset: usize,
-}
-
-fn half(h: u16) -> f32 {
-    let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
-    let e = ((h >> 10) & 0x1f) as i32;
-    let m = (h & 0x3ff) as f32;
-    s * match e {
-        0 => m / 1024.0 * 2f32.powi(-14),
-        31 => f32::INFINITY,
-        _ => (1.0 + m / 1024.0) * 2f32.powi(e - 15),
-    }
 }
 
 pub fn format_size(f: u32) -> Option<usize> {

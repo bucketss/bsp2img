@@ -33,6 +33,17 @@ pub fn cstr(b: &[u8], o: usize) -> Result<(String, usize)> {
     Ok((String::from_utf8_lossy(&rest[..e]).into_owned(), o + e + 1))
 }
 
+pub fn half(h: u16) -> f32 {
+    let s = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let e = ((h >> 10) & 0x1f) as i32;
+    let m = (h & 0x3ff) as f32;
+    s * match e {
+        0 => m / 1024.0 * 2f32.powi(-14),
+        31 => f32::INFINITY,
+        _ => (1.0 + m / 1024.0) * 2f32.powi(e - 15),
+    }
+}
+
 pub struct Rd<'a> {
     pub b: &'a [u8],
     pub p: usize,
