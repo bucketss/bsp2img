@@ -36,7 +36,7 @@ pub struct Cli {
 pub enum Cmd {
     #[command(about = "Render isometric diorama views")]
     Iso(IsoArgs),
-    #[command(about = "Generate a CS overview (.bmp, .tga, .txt)")]
+    #[command(about = "Generate a CS overview (.bmp, .tga, .txt; CS2: radar .png and .txt)")]
     Overview(OverviewArgs),
     #[command(about = "Render an animation of the map rotating (.mp4 via ffmpeg, optional .gif/.png)")]
     Spin(SpinArgs),
