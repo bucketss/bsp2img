@@ -202,3 +202,12 @@ pub fn map_fs(vpk: &Path, root: Option<&Path>) -> Result<Fs> {
     }
     Ok(Fs { paks })
 }
+
+pub fn is_map(path: &Path) -> bool {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+    let menu = stem.ends_with("_vanity") || stem == "graphics_settings" || stem == "lobby_mapveto";
+    if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("vpk")) || stem.ends_with("_dir") || menu {
+        return false;
+    }
+    Vpk::open(path).is_ok_and(|v| v.entry(&format!("maps/{stem}/world.vwrld_c")).is_some())
+}

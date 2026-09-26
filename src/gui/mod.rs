@@ -375,7 +375,7 @@ impl App {
                     ui.weak("no map");
                 }
             }
-            if ui.button("Open .bsp").clicked() {
+            if ui.button("Open map").clicked() {
                 self.open_bsp(&ctx);
             }
             let can_reload = self.current.is_some() && self.load_rx.is_none();
@@ -412,7 +412,7 @@ impl App {
     }
 
     fn open_bsp(&mut self, ctx: &egui::Context) {
-        if let Some(f) = rfd::FileDialog::new().add_filter("BSP", &["bsp"]).pick_file() {
+        if let Some(f) = rfd::FileDialog::new().add_filter("Maps", &["bsp", "vpk"]).pick_file() {
             self.current = Some(f);
             self.start_load(ctx);
         }
