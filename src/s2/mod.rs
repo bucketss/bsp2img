@@ -26,6 +26,7 @@ const LIGHTMAP_MAX: usize = 4096;
 const SPAWN_REACH: f32 = 64.0;
 const CROP_CELL: f64 = 16.0;
 const CROP_PAD: f64 = 512.0;
+const REACH_MIN: f64 = 0.5;
 
 pub struct Extra {
     pub nav: Option<nav::NavMesh>,
@@ -34,10 +35,15 @@ pub struct Extra {
 fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
     let t = Instant::now();
     let nav = crate::nav::Nav::build(bsp, CROP_CELL, 250.0).ok()?;
-    let Some(reach) = crate::reach::nav_reach(&nav, bsp, 250.0) else {
+    let Some(mut reach) = crate::reach::nav_reach(&nav, bsp, 250.0) else {
         log("auto crop: no spawn points on the nav mesh, using whole map".into());
         return None;
     };
+    let hit = reach.iter().filter(|r| **r).count();
+    if (hit as f64) < REACH_MIN * reach.len() as f64 {
+        log(format!("auto crop: spawns reach only {hit} of {} nav cells, keeping the whole nav mesh", reach.len()));
+        reach.fill(true);
+    }
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     let mut n = 0;
     for (u, _) in reach.iter().enumerate().filter(|(_, r)| **r) {
