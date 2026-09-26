@@ -36,6 +36,7 @@ pub struct Vertex {
     pub lm: [f32; 2],
     pub bias: f32,
     pub normal: [f32; 3],
+    pub blend: f32,
 }
 
 pub struct Batch {
@@ -44,6 +45,7 @@ pub struct Batch {
     pub alpha: f32,
     pub warp: Option<[f32; 4]>,
     pub tint: [f32; 3],
+    pub layer2: Option<(usize, [f32; 4])>,
     pub verts: Vec<Vertex>,
 }
 
@@ -379,10 +381,11 @@ pub fn build_mesh(
             lm: lmuv(i),
             bias: level as f32,
             normal: [r.normal.x as f32, r.normal.y as f32, r.normal.z as f32],
+            blend: 0.0,
         };
         let key = (r.tex, r.mode, r.alpha.to_bits(), r.warp.map(|w| w.map(f32::to_bits)));
         let bi = *index.entry(key).or_insert_with(|| {
-            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, tint: [1.0; 3], verts: Vec::new() });
+            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, tint: [1.0; 3], layer2: None, verts: Vec::new() });
             batches.len() - 1
         });
         let out = &mut batches[bi].verts;

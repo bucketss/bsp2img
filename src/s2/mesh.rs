@@ -4,7 +4,7 @@ use glam::{DMat3, DVec3};
 use rayon::prelude::*;
 
 use super::entities::Ent;
-use super::material::{self, Fill, Material};
+use super::material::{self, Blend, Fill, Material};
 use super::model::Model;
 use super::texture;
 use super::vpk::Fs;
@@ -226,9 +226,13 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
 
     let mut tex_names: Vec<String> = groups
         .iter()
-        .filter_map(|g| match &mats[&g.0].as_ref().unwrap().fill {
-            Fill::Texture(t) => Some(t.clone()),
-            Fill::Solid(_) => None,
+        .flat_map(|g| {
+            let m = mats[&g.0].as_ref().unwrap();
+            let base = match &m.fill {
+                Fill::Texture(t) => Some(t.clone()),
+                Fill::Solid(_) => None,
+            };
+            base.into_iter().chain(m.layer2.as_ref().map(|l| l.0.clone()))
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -251,22 +255,27 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     let mut tex_ids: HashMap<String, usize> = HashMap::new();
     let mut tex_label: Vec<String> = Vec::new();
     let mut group_tex = Vec::with_capacity(groups.len());
+    let mut group_l2 = Vec::with_capacity(groups.len());
     let mut decoded = decoded;
     for (mn, _, _, _, _) in &groups {
         let mat = mats[mn].as_ref().unwrap();
+        let label = mn.rsplit('/').next().unwrap_or(mn).trim_end_matches(".vmat").to_string();
+        let mut add = |src: String, fill: &Fill| {
+            *tex_ids.entry(src).or_insert_with(|| {
+                images.push(Some(match fill {
+                    Fill::Texture(t) => decoded.remove(t).flatten().unwrap_or_else(checker),
+                    Fill::Solid(c) => Image { w: 4, h: 4, rgba: c.repeat(16) },
+                }));
+                tex_label.push(label.clone());
+                images.len() - 1
+            })
+        };
         let src = match &mat.fill {
             Fill::Texture(t) => t.clone(),
             Fill::Solid(c) => format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3]),
         };
-        let id = *tex_ids.entry(src.clone()).or_insert_with(|| {
-            images.push(Some(match &mat.fill {
-                Fill::Texture(t) => decoded.remove(t).flatten().unwrap_or_else(checker),
-                Fill::Solid(c) => Image { w: 4, h: 4, rgba: c.repeat(16) },
-            }));
-            tex_label.push(mn.rsplit('/').next().unwrap_or(mn).trim_end_matches(".vmat").to_string());
-            images.len() - 1
-        });
-        group_tex.push(id);
+        group_tex.push(add(src, &mat.fill));
+        group_l2.push(mat.layer2.as_ref().map(|(t, _, uv)| (add(t.clone(), &Fill::Texture(t.clone())), *uv)));
     }
     let (atlas, lm_rect, flat) = match o.lightmap {
         Some(l) => (l.atlas, l.rect, l.flat),
@@ -320,7 +329,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 }
             });
             faces += n / 3;
-            batches.push(Batch { tex: group_tex[gi], mode: *md, alpha: *alpha, warp: None, tint: tq.map(|v| v as f32 / TINT_LEVELS), verts });
+            batches.push(Batch { tex: group_tex[gi], mode: *md, alpha: *alpha, warp: None, tint: tq.map(|v| v as f32 / TINT_LEVELS), layer2: group_l2[gi], verts });
             start = end;
         }
     }
@@ -353,6 +362,7 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, lm_rect: [f32; 4], flat
     let uvs = m.stream(c, "TEXCOORD", 0);
     let lms = if c.lightmapped && lm_rect[2] > 0.0 { m.map_stream(c, "TEXCOORD", 3) } else { None };
     let ns = m.stream(c, "NORMAL", 0);
+    let blend = mat.layer2.as_ref().and_then(|l| m.stream(c, "TEXCOORD", 4).map(|s| (s, l.1)));
     let bias = if mat.decal { 1.0 } else { 0.0 };
     for (t, tri) in out.chunks_exact_mut(3).enumerate() {
         let order = if it.flip { [0, 2, 1] } else { [0, 1, 2] };
@@ -375,6 +385,11 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, lm_rect: [f32; 4], flat
                 lm,
                 bias,
                 normal: [0.0; 3],
+                blend: match blend {
+                    Some((s, Blend::Painted)) => s.get(i)[0],
+                    Some((s, Blend::Height)) => (s.get(i)[0] * 1.1 - 0.05).clamp(0.0, 1.0),
+                    None => 0.0,
+                },
             };
             if let Some(n) = ns.and_then(|s| s.normal(i)) {
                 let w = (it.nrm * DVec3::new(n[0] as f64, n[1] as f64, n[2] as f64)).normalize_or_zero();
@@ -390,12 +405,12 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, lm_rect: [f32; 4], flat
     }
 }
 
-const ZERO: Vertex = Vertex { pos: [0.0; 3], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0; 3] };
+const ZERO: Vertex = Vertex { pos: [0.0; 3], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0; 3], blend: 0.0 };
 
 fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
     let l2 = |x: [f32; 2], y: [f32; 2]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t];
     let l3 = |x: [f32; 3], y: [f32; 3]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
-    Vertex { pos: l3(a.pos, b.pos), uv: l2(a.uv, b.uv), lm: l2(a.lm, b.lm), bias: a.bias, normal: l3(a.normal, b.normal) }
+    Vertex { pos: l3(a.pos, b.pos), uv: l2(a.uv, b.uv), lm: l2(a.lm, b.lm), bias: a.bias, normal: l3(a.normal, b.normal), blend: a.blend + (b.blend - a.blend) * t }
 }
 
 fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {

@@ -12,6 +12,12 @@ pub enum Mode {
     Additive,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blend {
+    Painted,
+    Height,
+}
+
 #[derive(Clone, Debug)]
 pub enum Fill {
     Texture(String),
@@ -22,7 +28,7 @@ pub enum Fill {
 pub struct Material {
     pub shader: String,
     pub fill: Fill,
-    pub layer2: Option<String>,
+    pub layer2: Option<(String, Blend, [f32; 4])>,
     pub mode: Mode,
     pub alpha: f32,
     pub tint: [f32; 3],
@@ -99,12 +105,22 @@ pub fn parse(name: &str, d: &Value) -> Option<Material> {
         _ => {}
     }
     let fill = fill.unwrap_or(Fill::Solid([128, 128, 128, 255]));
-    let layers = shader == "csgo_environment_blend.vfx"
-        || shader == "csgo_simple_2way_blend.vfx"
-        || (shader == "csgo_lightmappedgeneric.vfx" && int(d, "F_LAYERS") != 0);
-    let layer2 = if layers { texture(d, LAYER2_PARAMS) } else { None };
+    let blend = match shader.as_str() {
+        "csgo_environment_blend.vfx" => Some(Blend::Height),
+        "csgo_lightmappedgeneric.vfx" if int(d, "F_LAYERS") != 0 => Some(Blend::Painted),
+        _ => None,
+    };
     let scale = vector(d, "g_vTexCoordScale").or_else(|| vector(d, "g_vTexCoordScale1")).or_else(|| vector(d, "g_vLayer1TexCoordScale"));
     let offset = vector(d, "g_vTexCoordOffset").or_else(|| vector(d, "g_vTexCoordOffset1")).or_else(|| vector(d, "g_vLayer1TexCoordOffset"));
+    let scale2 = vector(d, "g_vTexCoordScale2").or_else(|| vector(d, "g_vLayer2TexCoordScale"));
+    let offset2 = vector(d, "g_vTexCoordOffset2").or_else(|| vector(d, "g_vLayer2TexCoordOffset"));
+    let uv2 = {
+        let (s1, o1) = (scale.as_ref().map_or([1.0; 2], |v| [v[0], v[1]]), offset.as_ref().map_or([0.0; 2], |v| [v[0], v[1]]));
+        let (s2, o2) = (scale2.map_or([1.0; 2], |v| [v[0], v[1]]), offset2.map_or([0.0; 2], |v| [v[0], v[1]]));
+        let a = [s2[0] / s1[0].max(1e-6), s2[1] / s1[1].max(1e-6)];
+        [a[0] as f32, a[1] as f32, (o2[0] - o1[0] * a[0]) as f32, (o2[1] - o1[1] * a[1]) as f32]
+    };
+    let layer2 = blend.and_then(|b| texture(d, LAYER2_PARAMS).map(|t| (t, b, uv2)));
     let decal = int(d, "F_OVERLAY") != 0 || int(d, "F_DECAL_TEXTURE") != 0 || int(d, "F_DEPTH_BIAS") != 0;
     Some(Material {
         shader,

@@ -136,7 +136,7 @@ mod tests {
         for _ in 0..3000 {
             for _ in 0..3 {
                 let z = if rnd() > 300.0 { 100.0 } else { rnd() };
-                tris.push(Vertex { pos: [rnd() as f32, rnd() as f32, z as f32], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0, 0.0, 1.0] });
+                tris.push(Vertex { pos: [rnd() as f32, rnd() as f32, z as f32], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0, 0.0, 1.0], blend: 0.0 });
             }
         }
         let planes = [-200.0, 100.0, 250.0];

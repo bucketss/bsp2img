@@ -420,13 +420,22 @@ fn make_batch(
         None => (0.0, [0.0; 4]),
     };
     let t = b.tint;
-    let u = [b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], band as f32, 0.0, 0.0, 0.0, t[0], t[1], t[2], 1.0];
+    let layer = b.layer2.and_then(|(i, uv)| tex_views.get(i).and_then(|v| v.as_ref()).map(|v| (v, uv)));
+    let (l2, uv2) = match layer {
+        Some((v, uv)) => (Some(v), uv),
+        None => (None, [1.0, 1.0, 0.0, 0.0]),
+    };
+    let has2 = if l2.is_some() { 1.0 } else { 0.0 };
+    let u = [
+        b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], band as f32, 0.0, has2, 0.0, t[0], t[1], t[2], 1.0,
+        uv2[0], uv2[1], uv2[2], uv2[3],
+    ];
     let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&u),
         usage: wgpu::BufferUsages::UNIFORM,
     });
-    let make = |v: &wgpu::TextureView| batch_bind(dev, layout, v, samp, &ub);
+    let make = |v: &wgpu::TextureView| batch_bind(dev, layout, v, l2.unwrap_or(v), samp, &ub);
     let frames = match mesh.anim.get(b.tex) {
         Some(Some(seq)) => seq.iter().filter_map(|&i| tex_views.get(i).and_then(|v| v.as_ref())).map(make).collect(),
         _ => Vec::new(),
@@ -438,6 +447,7 @@ fn batch_bind(
     dev: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     v: &wgpu::TextureView,
+    v2: &wgpu::TextureView,
     samp: &wgpu::Sampler,
     ub: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
@@ -448,6 +458,7 @@ fn batch_bind(
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(samp) },
             wgpu::BindGroupEntry { binding: 2, resource: ub.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(v2) },
         ],
     })
 }
@@ -479,6 +490,7 @@ impl Renderer {
                 tex_entry(0, wgpu::TextureViewDimension::D2),
                 samp_entry(1),
                 ubuf_entry(2, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                tex_entry(3, wgpu::TextureViewDimension::D2),
             ],
         });
         let light_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -521,7 +533,7 @@ impl Renderer {
         let vbuf_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3, 5 => Float32],
         };
 
         let premul = wgpu::BlendComponent {
@@ -949,10 +961,10 @@ impl Renderer {
             .create_view(&Default::default());
         let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(&[0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]),
+            contents: bytemuck::cast_slice(&[0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let bind = batch_bind(dev, &self.batch_layout, &tex, &self.tex_sampler, &ub);
+        let bind = batch_bind(dev, &self.batch_layout, &tex, &tex, &self.tex_sampler, &ub);
         Guides { vbuf, bind, feet: Mutex::new(None) }
     }
 
@@ -980,7 +992,7 @@ impl Renderer {
         }
         let side = side.normalize() * (width / 2.0);
         let n = (-b.f).as_vec3().to_array();
-        let v = |p: DVec3| Vertex { pos: p.as_vec3().to_array(), uv: [0.5, 0.5], lm: [0.0, 0.0], bias: 0.0, normal: n };
+        let v = |p: DVec3| Vertex { pos: p.as_vec3().to_array(), uv: [0.5, 0.5], lm: [0.0, 0.0], bias: 0.0, normal: n, blend: 0.0 };
         let mut out = Vec::new();
         for k in 1..feet.len() {
             let (Some(f), Some(_)) = (feet[k], feet[k - 1]) else { continue };
