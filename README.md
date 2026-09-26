@@ -4,7 +4,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp`. Needs OpenGL, DX12 or
 
 ## GUI
 
-`bsp2img` or `bsp2img gui <map>`. Settings are saved to `%APPDATA%\bsp2img\gui.cfg`.
+`bsp2img` or `bsp2img gui <map>`. Settings are saved to `%APPDATA%\bsp2img\gui.cfg` on Windows, or `$XDG_CONFIG_HOME/bsp2img/gui.cfg` (default `~/.config/bsp2img/gui.cfg`) elsewhere.
 
 ## Commands
 
@@ -119,27 +119,6 @@ Also the spin output options.
 | `--persp FOV` | Perspective |
 | `--camera FILE` | `.cam` saved from the GUI |
 
-### Exploded floors (iso, spin, peel, slice, poster, svg)
-
-| Option | Effect |
-|---|---|
-| `--explode N` | Split at the N largest level gaps |
-| `--explode-at Z,...` | Split at these heights |
-| `--explode-gap U` | Lift per floor (256) |
-| `--explode-guides` | Corner guide lines |
-
-### poster
-
-| Option | Effect |
-|---|---|
-| `--paper a0..a4\|letter\|tabloid` | Page size (a2) |
-| `--dpi N` | Resolution (300) |
-| `--landscape`, `--portrait` | Orientation |
-| `--px W H` | Size in pixels |
-| `--top` | Top-down |
-| `--yaw`, `--pitch` | Iso angles |
-| `--no-layout` | Map only |
-
 ### overview
 
 | Option | Effect |
@@ -147,38 +126,6 @@ Also the spin output options.
 | `--from-txt FILE` | Reuse framing from a `.txt` |
 | `--margin F` | Border (0.04) |
 | `--png` | Also write a PNG |
-
-### timing
-
-| Option | Effect |
-|---|---|
-| `--speed U` | Units/s (250) |
-| `--cell U` | Grid spacing (8) |
-| `--interval S` | Contour spacing (5) |
-| `--size N` | Longest side (1600) |
-
-### kills
-
-| Option | Effect |
-|---|---|
-| `--demos PATH...` | Demo files, folders or globs |
-| `--weapon W,...` | Only these weapons |
-| `--team t\|ct\|both` | Victim's team (both) |
-| `--headshots` | Only headshots |
-| `--lines` | Killer-to-victim lines |
-| `--rounds A-B` | Only these rounds |
-| `--radius U` | Heatmap radius (96) |
-| `--presence-every S` | Presence sampling (0.5, 0 = off) |
-| `--size N` | Longest side (1600) |
-
-Only demos recorded on the map are used. With no map, every map in the demos that `--game` has a `.bsp` for, plus `kills_summary.csv`. Kills on floors under the visible one are left out.
-
-### health
-
-| Option | Effect |
-|---|---|
-| `--cell U` | Grid spacing (8) |
-| `--size N` | Thumbnail size (600) |
 
 ### svg
 
