@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "bsp2img"
-version = "1.0.0"
+version = "1.5.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
