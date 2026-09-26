@@ -10,29 +10,27 @@ pub const DT_TIMEWINDOW_BIG: u32 = 64;
 pub const DT_STRING: u32 = 128;
 pub const DT_SIGNED: u32 = 0x8000_0000;
 
-pub const SLOT_NAMES: [&str; 11] = [
+pub const SLOT_NAMES: [&str; 10] = [
     "origin[0]",
     "origin[1]",
     "origin[2]",
     "angles[0]",
     "angles[1]",
     "angles[2]",
-    "usehull",
     "effects",
-    "movetype",
+    "solid",
     "sequence",
     "gaitsequence",
 ];
 pub const NSLOT: usize = SLOT_NAMES.len();
-pub const USEHULL: usize = 6;
-pub const EFFECTS: usize = 7;
+pub const EFFECTS: usize = 6;
+pub const SOLID: usize = 7;
 const NONE: u8 = u8::MAX;
 
 pub type Slots = [f32; NSLOT];
 
 #[derive(Clone, Debug)]
 pub struct Field {
-    pub name: String,
     pub kind: u32,
     pub bits: u32,
     pub pre: f64,
@@ -43,7 +41,7 @@ pub struct Field {
 impl Field {
     pub fn new(name: &str, kind: u32, bits: u32, pre: f64, post: f64) -> Field {
         let slot = SLOT_NAMES.iter().position(|s| *s == name).map_or(NONE, |i| i as u8);
-        Field { name: name.to_string(), kind, bits, pre, post, slot }
+        Field { kind, bits, pre, post, slot }
     }
 }
 

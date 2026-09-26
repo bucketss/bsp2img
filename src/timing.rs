@@ -7,12 +7,10 @@ use rayon::prelude::*;
 use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::bsp::Bsp;
-use crate::camera::top_down;
-use crate::grid::{CT, T, Text, grid_frame, line, outline, paint, rect};
+use crate::grid::{Text, dark_base, line, outline, paint, rect, spawn_dots};
 use crate::nav::{JUMP_COST, LADDER_SPEED, NONE, Nav, STAND_OFS, STEP, Zone, zones};
 use crate::paths::{Partial, free_name};
-use crate::look::Look;
-use crate::render::{Cuts, NO_CLIP, Renderer, View};
+use crate::render::{Cuts, Renderer};
 use crate::scene::Report;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -261,24 +259,7 @@ pub fn export_timing(
         rep.log(format!("  {line}"));
     }
 
-    let g = grid_frame(r, cuts, o.size);
-    let view = View {
-        basis: top_down(DVec3::X, DVec3::Y),
-        cx: (g.x0 + g.x1) / 2.0,
-        cy: (g.y0 + g.y1) / 2.0,
-        w: g.x1 - g.x0,
-        h: g.y1 - g.y0,
-        sky_yaw: None,
-        persp: None,
-    };
-    let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
-    let mut base = r.render_view(&view, g.wpx, g.hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?.into_raw();
-    for p in base.chunks_exact_mut(4) {
-        let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
-        for k in 0..3 {
-            p[k] = ((p[k] as f64 * 0.4 + l * 0.6) * 0.75) as u8;
-        }
-    }
+    let (g, base) = dark_base(r, cuts, o.size)?;
     let field = sample_field(&nav, &dt, &dct, cuts.zmax, &g);
     let firsts: Vec<f32> = (0..field.t.len()).map(|i| field.first(i)).collect();
     let tmax_both = percentile(firsts, 0.98);
@@ -290,15 +271,6 @@ pub fn export_timing(
     let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
     let text = Text::new(14.0);
     let small = Text::new(12.0);
-    let spawns: Vec<(DVec3, bool)> = bsp
-        .entities
-        .iter()
-        .filter_map(|e| match e.class() {
-            "info_player_deathmatch" => e.origin().map(|p| (p, true)),
-            "info_player_start" => e.origin().map(|p| (p, false)),
-            _ => None,
-        })
-        .collect();
 
     let mut files = Partial::default();
     for (k, (suffix, kind, tmax)) in [
@@ -315,13 +287,7 @@ pub fn export_timing(
             .context("pixmap")?;
         let (fw, fh) = (g.wpx as f32, g.hpx as f32);
 
-        for (p, is_t) in &spawns {
-            if let Some(c) = PathBuilder::from_circle(sx(p.x), sy(p.y), 3.5) {
-                let col = if *is_t { T } else { CT };
-                pm.fill_path(&c, &paint(col, 255), tiny_skia::FillRule::Winding, Transform::identity(), None);
-                pm.stroke_path(&c, &paint([0, 0, 0], 255), &Stroke::default(), Transform::identity(), None);
-            }
-        }
+        spawn_dots(&mut pm, bsp, &g);
         for (z, (label, a, b)) in zs.iter().zip(&rows) {
             let (x0, y0, x1, y1) = (sx(z.lo.x), sy(z.hi.y), sx(z.hi.x), sy(z.lo.y));
             if z.boxed {

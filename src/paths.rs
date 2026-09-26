@@ -162,7 +162,7 @@ impl Drop for Partial {
     }
 }
 
-fn glob_match(p: &[u8], s: &[u8]) -> bool {
+pub fn glob_match(p: &[u8], s: &[u8]) -> bool {
     match (p.first(), s.first()) {
         (None, None) => true,
         (Some(b'*'), _) => glob_match(&p[1..], s) || (!s.is_empty() && glob_match(p, &s[1..])),
@@ -204,5 +204,35 @@ pub fn expand_maps(args: &[String], game: Option<&Path>) -> Vec<String> {
         found.sort_by_key(|n| n.to_lowercase());
         out.extend(found);
     }
+    out
+}
+
+pub fn expand_demos(args: &[String]) -> Vec<PathBuf> {
+    let is_dem = |p: &Path| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("dem"));
+    let mut out = Vec::new();
+    for a in args {
+        let p = Path::new(a);
+        if p.is_dir() {
+            let mut found: Vec<PathBuf> =
+                std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()).filter(|f| is_dem(f)).collect();
+            found.sort();
+            out.extend(found);
+        } else if a.contains(['*', '?']) {
+            let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let pat = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|f| is_dem(f) && glob_match(pat.as_bytes(), f.file_name().unwrap_or_default().to_string_lossy().as_bytes()))
+                .collect();
+            found.sort();
+            out.extend(found);
+        } else {
+            out.push(p.to_path_buf());
+        }
+    }
+    out.dedup();
     out
 }

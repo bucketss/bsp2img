@@ -1,7 +1,9 @@
-use super::delta::{EFFECTS, USEHULL};
+use super::delta::{EFFECTS, SOLID};
 use super::messages::{MAX_PLAYERS, Msg, Parser};
 
 const EF_NODRAW: u32 = 128;
+const SOLID_SLIDEBOX: f32 = 3.0;
+const MAX_FREEZE: f32 = 30.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash, PartialOrd, Ord)]
 pub enum Team {
@@ -45,27 +47,23 @@ pub struct Death {
 
 #[derive(Clone, Debug)]
 pub struct Presence {
-    pub time: f32,
     pub round: u32,
-    pub ent: u8,
     pub team: Team,
     pub pos: [f32; 3],
-    pub ducked: bool,
 }
 
 #[derive(Clone, Debug)]
 pub enum Event {
     Death(Death),
     Presence(Presence),
-    RoundStart { time: f32, round: u32 },
-    RoundEnd { time: f32, round: u32, winner: Option<Team>, reason: String },
+    RoundEnd { winner: Option<Team> },
 }
 
 #[derive(Clone, Default)]
 struct Player {
     name: String,
     team: Team,
-    alive: bool,
+    model_team: Team,
     seen: Option<([f32; 3], f32)>,
 }
 
@@ -74,7 +72,8 @@ pub struct Game {
     pub round: u32,
     round_used: bool,
     ended: bool,
-    frozen: bool,
+    frozen_since: Option<f32>,
+    roundtime_now: bool,
     pub map: String,
     next_sample: f32,
     pub every: f32,
@@ -90,6 +89,14 @@ fn winner_of(text: &str) -> Option<Option<Team>> {
         "#Round_Draw" | "#Game_Commencing" => None,
         _ => return None,
     })
+}
+
+fn team_of_model(model: &str) -> Team {
+    match model.to_ascii_lowercase().as_str() {
+        "terror" | "leet" | "arctic" | "guerilla" | "militia" => Team::T,
+        "urban" | "gsg9" | "sas" | "gign" | "spetsnaz" | "vip" => Team::Ct,
+        _ => Team::None,
+    }
 }
 
 fn info_value(info: &str, key: &str) -> Option<String> {
@@ -109,7 +116,8 @@ impl Game {
             round: 1,
             round_used: false,
             ended: false,
-            frozen: false,
+            frozen_since: None,
+            roundtime_now: false,
             map: String::new(),
             next_sample: 0.0,
             every,
@@ -127,20 +135,21 @@ impl Game {
     }
 
     fn team(&self, ent: u8) -> Team {
-        self.players.get(ent as usize).map_or(Team::None, |p| p.team)
+        self.players.get(ent as usize).map_or(Team::None, |p| if p.team == Team::None { p.model_team } else { p.team })
     }
 
-    fn end(&mut self, winner: Option<Team>, reason: String, out: &mut dyn FnMut(Event)) {
+    fn end(&mut self, winner: Option<Team>, out: &mut dyn FnMut(Event)) {
         if self.ended {
             return;
         }
         self.ended = true;
         self.round_used = true;
-        out(Event::RoundEnd { time: self.time, round: self.round, winner, reason });
+        out(Event::RoundEnd { winner });
     }
 
     pub fn frame(&mut self, time: f32, p: &mut Parser, out: &mut dyn FnMut(Event)) {
         self.time = time;
+        self.roundtime_now = false;
         for (ent, s) in p.players.iter().enumerate().take(p.maxclients.min(MAX_PLAYERS) + 1) {
             if let Some(s) = s {
                 self.players[ent].seen = Some(([s[0], s[1], s[2]], time));
@@ -155,6 +164,7 @@ impl Game {
                 Msg::UserInfo { slot, info, .. } => {
                     if let Some(pl) = self.players.get_mut(*slot as usize + 1) {
                         pl.name = info_value(info, "name").unwrap_or_default();
+                        pl.model_team = team_of_model(&info_value(info, "model").unwrap_or_default());
                     }
                 }
                 Msg::TeamInfo { ent, team } => {
@@ -165,9 +175,6 @@ impl Game {
                             "SPECTATOR" => Team::Spec,
                             _ => Team::None,
                         };
-                        if !pl.team.playing() {
-                            pl.alive = false;
-                        }
                     }
                 }
                 Msg::Hltv { ent: 0, value } if *value & 128 != 0 => {
@@ -176,36 +183,21 @@ impl Game {
                     }
                     self.round_used = false;
                     self.ended = false;
-                    self.frozen = true;
-                    for pl in self.players.iter_mut() {
-                        pl.alive = pl.team.playing();
-                    }
-                    out(Event::RoundStart { time, round: self.round });
+                    self.frozen_since = (!self.roundtime_now).then_some(time);
                 }
-                Msg::Hltv { ent, value } if *ent > 0 && *value & 128 != 0 => {
-                    if let Some(pl) = self.players.get_mut(*ent as usize) {
-                        pl.alive = *value & 127 > 0 && pl.team.playing();
-                    }
-                }
-                Msg::ScoreAttrib { ent, flags } => {
-                    if let Some(pl) = self.players.get_mut(*ent as usize)
-                        && flags & 1 != 0
-                    {
-                        pl.alive = false;
-                    }
-                }
-                Msg::RoundTime(_) if self.frozen => {
-                    self.frozen = false;
+                Msg::RoundTime => {
+                    self.frozen_since = None;
+                    self.roundtime_now = true;
                 }
                 Msg::SendAudio(s) => match s.as_str() {
-                    "%!MRAD_terwin" => self.end(Some(Team::T), String::new(), out),
-                    "%!MRAD_ctwin" => self.end(Some(Team::Ct), String::new(), out),
-                    "%!MRAD_rounddraw" => self.end(None, String::new(), out),
+                    "%!MRAD_terwin" => self.end(Some(Team::T), out),
+                    "%!MRAD_ctwin" => self.end(Some(Team::Ct), out),
+                    "%!MRAD_rounddraw" => self.end(None, out),
                     _ => {}
                 },
                 Msg::TextMsg { text, .. } => {
                     if let Some(w) = winner_of(text) {
-                        self.end(w, text.trim_start_matches('#').to_string(), out);
+                        self.end(w, out);
                     }
                 }
                 Msg::Death { killer, victim, headshot, weapon } => {
@@ -224,9 +216,6 @@ impl Game {
                         killer_pos: if *killer != 0 { self.pos(*killer) } else { None },
                         victim_pos: self.pos(*victim),
                     };
-                    if let Some(pl) = self.players.get_mut(*victim as usize) {
-                        pl.alive = false;
-                    }
                     out(Event::Death(d));
                 }
                 _ => {}
@@ -236,21 +225,14 @@ impl Game {
         p.out.clear();
         if self.every > 0.0 && time >= self.next_sample {
             self.next_sample = if time - self.next_sample > self.every { time + self.every } else { self.next_sample + self.every };
-            if !self.frozen {
+            if self.frozen_since.is_none_or(|t| time - t > MAX_FREEZE) {
                 for ent in 1..=p.maxclients.min(MAX_PLAYERS) {
-                    let pl = &self.players[ent];
+                    let team = self.team(ent as u8);
                     let Some(s) = p.players[ent] else { continue };
-                    if !pl.alive || !pl.team.playing() || s[EFFECTS] as u32 & EF_NODRAW != 0 {
+                    if !team.playing() || s[SOLID] != SOLID_SLIDEBOX || s[EFFECTS] as u32 & EF_NODRAW != 0 {
                         continue;
                     }
-                    out(Event::Presence(Presence {
-                        time,
-                        round: self.round,
-                        ent: ent as u8,
-                        team: pl.team,
-                        pos: [s[0], s[1], s[2]],
-                        ducked: s[USEHULL] != 0.0,
-                    }));
+                    out(Event::Presence(Presence { round: self.round, team, pos: [s[0], s[1], s[2]] }));
                 }
             }
         }

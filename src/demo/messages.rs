@@ -24,10 +24,8 @@ enum UKind {
     Other,
     DeathMsg,
     TeamInfo,
-    TeamScore,
     TextMsg,
     Hltv,
-    ScoreAttrib,
     RoundTime,
     SendAudio,
 }
@@ -40,16 +38,13 @@ struct UserMsg {
 
 #[derive(Clone, Debug)]
 pub enum Msg {
-    Time(f32),
-    ServerInfo { maxclients: u8, map: String },
-    UserInfo { slot: u8, userid: i32, info: String },
+    ServerInfo { map: String },
+    UserInfo { slot: u8, info: String },
     Death { killer: u8, victim: u8, headshot: bool, weapon: String },
     TeamInfo { ent: u8, team: String },
-    TeamScore { team: String, score: i16 },
-    TextMsg { dest: u8, text: String },
+    TextMsg { text: String },
     Hltv { ent: u8, value: u8 },
-    ScoreAttrib { ent: u8, flags: u8 },
-    RoundTime(i16),
+    RoundTime,
     SendAudio(String),
     Entities,
 }
@@ -187,7 +182,7 @@ impl Parser {
                 }
                 Ok(())
             })?,
-            7 => self.out.push(Msg::Time(b.f32()?)),
+            7 => b.skip(4)?,
             10 => b.skip(6)?,
             11 => {
                 b.skip(12 + 16)?;
@@ -202,7 +197,7 @@ impl Parser {
                     b.skip(n + 16)?;
                 }
                 self.maxclients = (maxclients as usize).min(MAX_PLAYERS);
-                self.out.push(Msg::ServerInfo { maxclients, map });
+                self.out.push(Msg::ServerInfo { map });
             }
             12 => {
                 b.u8()?;
@@ -210,10 +205,10 @@ impl Parser {
             }
             13 => {
                 let slot = b.u8()?;
-                let userid = b.i32()?;
+                b.skip(4)?;
                 let info = text(b.string()?);
                 b.skip(16)?;
-                self.out.push(Msg::UserInfo { slot, userid, info });
+                self.out.push(Msg::UserInfo { slot, info });
             }
             14 => {
                 let name = text(b.string()?);
@@ -310,10 +305,8 @@ impl Parser {
                 let kind = match name.as_str() {
                     "DeathMsg" => UKind::DeathMsg,
                     "TeamInfo" => UKind::TeamInfo,
-                    "TeamScore" => UKind::TeamScore,
                     "TextMsg" => UKind::TextMsg,
                     "HLTV" => UKind::Hltv,
-                    "ScoreAttrib" => UKind::ScoreAttrib,
                     "RoundTime" => UKind::RoundTime,
                     "SendAudio" => UKind::SendAudio,
                     _ => UKind::Other,
@@ -413,17 +406,12 @@ impl Parser {
                     weapon: text(r.rest()),
                 }),
                 UKind::TeamInfo => Some(Msg::TeamInfo { ent: r.u8()?, team: text(r.rest()) }),
-                UKind::TeamScore => {
-                    let team = text(r.string()?);
-                    Some(Msg::TeamScore { team, score: r.i16()? })
-                }
                 UKind::TextMsg => {
-                    let dest = r.u8()?;
-                    Some(Msg::TextMsg { dest, text: text(r.rest()) })
+                    r.u8()?;
+                    Some(Msg::TextMsg { text: text(r.rest()) })
                 }
                 UKind::Hltv => Some(Msg::Hltv { ent: r.u8()?, value: r.u8()? }),
-                UKind::ScoreAttrib => Some(Msg::ScoreAttrib { ent: r.u8()?, flags: r.u8()? }),
-                UKind::RoundTime => Some(Msg::RoundTime(r.i16()?)),
+                UKind::RoundTime => Some(Msg::RoundTime),
                 UKind::SendAudio => {
                     r.u8()?;
                     Some(Msg::SendAudio(text(r.rest())))

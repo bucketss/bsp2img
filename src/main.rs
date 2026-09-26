@@ -2,12 +2,14 @@ mod bsp;
 mod camera;
 mod cli;
 mod clip;
+mod demo;
 mod explode;
 mod export;
 mod gltf;
 mod grid;
 mod gui;
 mod health;
+mod kills;
 mod light;
 mod look;
 mod mesh;
@@ -59,6 +61,7 @@ fn main() {
         Some(cli::Cmd::Peel(a)) => cli::run_peel(a),
         Some(cli::Cmd::Slice(a)) => cli::run_slice(a),
         Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
+        Some(cli::Cmd::Kills(a)) => cli::run_kills(a),
         Some(cli::Cmd::Health(a)) => cli::run_health(a),
         Some(cli::Cmd::Svg(a)) => cli::run_svg(a),
         Some(cli::Cmd::Stl(a)) => cli::run_stl(a),

@@ -128,16 +128,6 @@ impl<'a> Bytes<'a> {
         Ok(u16::from_le_bytes([b[0], b[1]]))
     }
 
-    pub fn i32(&mut self) -> Result<i32, Short> {
-        let b = self.take(4)?;
-        Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    pub fn f32(&mut self) -> Result<f32, Short> {
-        let b = self.take(4)?;
-        Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
     pub fn string(&mut self) -> Result<&'a [u8], Short> {
         let rest = &self.d[self.pos.min(self.d.len())..];
         let n = rest.iter().position(|&c| c == 0).ok_or(Short)?;

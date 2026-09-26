@@ -17,7 +17,6 @@ pub struct Header {
     pub demo_protocol: i32,
     pub net_protocol: i32,
     pub map: String,
-    pub game_dir: String,
     pub dir_offset: u32,
 }
 
@@ -31,7 +30,6 @@ impl Header {
             demo_protocol: i32_at(8),
             net_protocol: i32_at(12),
             map: text(&b[16..276]),
-            game_dir: text(&b[276..536]),
             dir_offset: i32_at(540) as u32,
         })
     }
@@ -46,7 +44,7 @@ pub fn header(path: &Path) -> Result<Header> {
 
 pub enum Frame<'a> {
     Net { time: f32, seq: i32, msgs: &'a [u8] },
-    Other { kind: u8 },
+    Other,
 }
 
 pub struct Reader {
@@ -150,7 +148,7 @@ impl Reader {
                 return Ok(Some(Frame::Net { time, seq, msgs: &self.buf[INFO_LEN + SEQ_LEN + 4..] }));
             }
             if kind != 5 {
-                return Ok(Some(Frame::Other { kind }));
+                return Ok(Some(Frame::Other));
             }
         }
     }

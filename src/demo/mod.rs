@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-pub use container::{Header, header};
-pub use state::{Death, Event, Presence, Team};
+pub use container::header;
+pub use state::{Death, Event, Team};
 
 use container::{Frame, Reader};
 use messages::Parser;
@@ -30,6 +30,12 @@ pub fn scan(path: &Path, presence_every: f32, cancel: &dyn Fn() -> bool, on_even
     let mut p = Parser::new();
     let mut g = Game::new(presence_every);
     let mut sum = Summary { map: r.header.map.clone(), ..Default::default() };
+    if r.header.demo_protocol != 5 || r.header.net_protocol != 48 {
+        sum.desyncs.push(format!(
+            "demo protocol {}, network protocol {}; only 5 and 48 are known",
+            r.header.demo_protocol, r.header.net_protocol
+        ));
+    }
     while let Some(f) = r.next()? {
         let Frame::Net { time, seq, msgs } = f else { continue };
         sum.frames += 1;
