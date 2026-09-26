@@ -20,6 +20,7 @@ mod post;
 mod poster;
 mod quant;
 mod reach;
+mod s2;
 mod render;
 mod scene;
 mod sky;

@@ -23,6 +23,10 @@ gif = "0.13"
 png = "0.18"
 fast-surface-nets = "0.2.1"
 serde_json = "1"
+lz4_flex = "0.14"
+ruzstd = "0.9"
+meshopt = "0.6"
+bcdec_rs = "0.2"
 
 [build-dependencies]
 embed-resource = "3"
