@@ -8,6 +8,7 @@ use crate::export::{IsoOpts, OverviewOpts};
 use crate::gltf::{GltfOpts, Lighting};
 use crate::poster::{Orient, PosterOpts};
 use crate::health::HealthOpts;
+use crate::kills::{KillOpts, TeamSel};
 use crate::look::{Look, Tilt};
 use crate::render::parse_color;
 use crate::scene::LoadOpts;
@@ -202,6 +203,37 @@ impl Cfg for TimingOpts {
             "speed" => put(&mut self.speed, v),
             "cell" => put(&mut self.cell, v),
             "interval" => put(&mut self.interval, v),
+            "size" => put(&mut self.size, v),
+            _ => {}
+        }
+    }
+}
+
+impl Cfg for KillOpts {
+    fn kv(&self) -> Vec<(String, String)> {
+        kvs(&[
+            ("weapons", self.weapons.join(",")),
+            ("team", self.team.key().to_string()),
+            ("headshots", self.headshots.to_string()),
+            ("lines", self.lines.to_string()),
+            ("rounds", self.rounds.map_or(String::new(), |(a, b)| format!("{a}-{b}"))),
+            ("radius", self.radius.to_string()),
+            ("presence", self.presence.to_string()),
+            ("presence_every", self.presence_every.to_string()),
+            ("size", self.size.to_string()),
+        ])
+    }
+
+    fn set(&mut self, k: &str, v: &str) {
+        match k {
+            "weapons" => self.weapons = v.split(',').map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
+            "team" => self.team = TeamSel::parse(v).unwrap_or(self.team),
+            "headshots" => put(&mut self.headshots, v),
+            "lines" => put(&mut self.lines, v),
+            "rounds" => self.rounds = crate::kills::parse_rounds(v).ok(),
+            "radius" => put(&mut self.radius, v),
+            "presence" => put(&mut self.presence, v),
+            "presence_every" => put(&mut self.presence_every, v),
             "size" => put(&mut self.size, v),
             _ => {}
         }
@@ -471,13 +503,14 @@ impl App {
         let mut lines = vec![
             format!("game={}", self.game),
             format!("out={}", self.out),
+            format!("kill_dir={}", self.kill_dir),
             format!("tab={}", self.tab.key()),
             format!("exporter={}", self.exporter.key()),
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
             format!("cam_export={}", self.cam_export),
         ];
-        let sections: [(&str, &dyn Cfg); 15] = [
+        let sections: [(&str, &dyn Cfg); 16] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
             ("iso", &iso),
@@ -488,6 +521,7 @@ impl App {
             ("overview", &self.ov),
             ("timing", &self.timing),
             ("health", &self.health),
+            ("kills", &self.kills),
             ("svg", &self.svg),
             ("stl", &self.stl),
             ("cam", &self.cam),
@@ -517,6 +551,7 @@ impl App {
                 Some(("overview", k)) => self.ov.set(k, v),
                 Some(("timing", k)) => self.timing.set(k, v),
                 Some(("health", k)) => self.health.set(k, v),
+                Some(("kills", k)) => self.kills.set(k, v),
                 Some(("svg", k)) => self.svg.set(k, v),
                 Some(("stl", k)) => self.stl.set(k, v),
                 Some(("cam", k)) => Cfg::set(&mut self.cam, k, v),
@@ -526,6 +561,7 @@ impl App {
                 None => match k {
                     "game" => self.game = v.to_string(),
                     "out" => self.out = v.to_string(),
+                    "kill_dir" => self.kill_dir = v.to_string(),
                     "tab" => self.tab = Tab::from_key(v).unwrap_or(self.tab),
                     "exporter" => self.exporter = Exporter::from_key(v).unwrap_or(self.exporter),
                     "bg_last" => self.bg_last = parse_color(v).unwrap_or(self.bg_last),
@@ -540,6 +576,7 @@ impl App {
         self.load.hull = None;
         let yaws: Vec<String> = self.iso.yaws.iter().map(|y| y.to_string()).collect();
         self.yaws_text = yaws.join(" ");
+        self.kill_weapons = self.kills.weapons.join(",");
         self.cfg_saved = self.cfg_text();
     }
 

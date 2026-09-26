@@ -2,7 +2,10 @@ use eframe::egui;
 
 use super::App;
 use super::jobs::Job;
+use crate::demo;
 use crate::gltf::Lighting;
+use crate::kills::TeamSel;
+use crate::paths::expand_demos;
 use crate::poster::{Orient, PAPERS};
 use crate::spin::Anim;
 use crate::sun::{hhmm, parse_time};
@@ -16,6 +19,7 @@ pub enum Exporter {
     Day,
     Overview,
     Timing,
+    Kills,
     Health,
     Svg,
     Stl,
@@ -27,7 +31,7 @@ const GROUPS: &[(&str, &[Exporter])] = &[
     ("Images", &[Exporter::Iso, Exporter::Poster]),
     ("Animation", &[Exporter::Spin, Exporter::Peel, Exporter::Slice, Exporter::Day]),
     ("Counter-Strike", &[Exporter::Overview]),
-    ("Analysis", &[Exporter::Timing, Exporter::Health]),
+    ("Analysis", &[Exporter::Timing, Exporter::Kills, Exporter::Health]),
     ("3D and vector", &[Exporter::Svg, Exporter::Stl, Exporter::Gltf]),
 ];
 
@@ -41,6 +45,7 @@ impl Exporter {
             Exporter::Day => "day",
             Exporter::Overview => "overview",
             Exporter::Timing => "timing",
+            Exporter::Kills => "kills",
             Exporter::Health => "health",
             Exporter::Svg => "svg",
             Exporter::Stl => "stl",
@@ -62,6 +67,7 @@ impl Exporter {
             Exporter::Day => "Day cycle",
             Exporter::Overview => "Overview",
             Exporter::Timing => "Rush timings",
+            Exporter::Kills => "Kill heatmap",
             Exporter::Health => "Health report",
             Exporter::Svg => "SVG callouts",
             Exporter::Stl => "STL diorama",
@@ -105,6 +111,7 @@ impl App {
                 Job::Overview(o)
             }
             Exporter::Timing => Job::Timing(self.timing.clone()),
+            Exporter::Kills => Job::Kills(self.kills.clone(), self.kill_list.iter().filter(|x| x.1).map(|x| x.0.clone()).collect()),
             Exporter::Health => Job::Health(self.health.clone()),
             Exporter::Svg => {
                 let mut o = self.svg.clone();
@@ -154,6 +161,7 @@ impl App {
             Exporter::Day => self.form_day(ui),
             Exporter::Overview => self.form_overview(ui),
             Exporter::Timing => self.form_timing(ui),
+            Exporter::Kills => self.form_kills(ui),
             Exporter::Health => self.form_health(ui),
             Exporter::Svg => self.form_svg(ui),
             Exporter::Stl => self.form_stl(ui),
@@ -161,7 +169,7 @@ impl App {
             Exporter::Poster => self.form_poster(ui),
         }
         ui.add_space(6.0);
-        let ready = self.scene.is_some() && !self.busy();
+        let ready = self.scene.is_some() && !self.busy() && (self.exporter != Exporter::Kills || self.kill_list.iter().any(|x| x.1));
         let text = format!("Export {}", self.exporter.label().to_lowercase());
         if ui.add_enabled(ready, egui::Button::new(text)).clicked() {
             let job = self.job_for(self.exporter);
@@ -267,6 +275,95 @@ impl App {
         ui.add(egui::Slider::new(&mut self.timing.interval, 1.0..=10.0).text("contour s"));
         ui.add(egui::Slider::new(&mut self.timing.size, 512..=4096).text("size px"));
         ui.weak("Uses the roof and height cuts on the Scene tab.");
+    }
+
+    fn kill_scan(&mut self) {
+        let map = self.scene.as_ref().map(|s| s.bsp.name()).unwrap_or_default();
+        let key = (self.kill_dir.clone(), map.clone());
+        if key == self.kill_key {
+            return;
+        }
+        self.kill_key = key;
+        self.kill_list.clear();
+        self.kill_others = 0;
+        if self.kill_dir.trim().is_empty() || map.is_empty() {
+            return;
+        }
+        for f in expand_demos(&[self.kill_dir.trim().to_string()]) {
+            match demo::header(&f) {
+                Ok(h) if h.map.eq_ignore_ascii_case(&map) => self.kill_list.push((f, true)),
+                _ => self.kill_others += 1,
+            }
+        }
+    }
+
+    fn form_kills(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Demos");
+            ui.add(egui::TextEdit::singleline(&mut self.kill_dir).desired_width(200.0).hint_text("folder of .dem files"));
+            if ui.button("...").clicked()
+                && let Some(d) = rfd::FileDialog::new().pick_folder()
+            {
+                self.kill_dir = d.to_string_lossy().into_owned();
+            }
+        });
+        self.kill_scan();
+        let on = self.kill_list.iter().filter(|x| x.1).count();
+        ui.horizontal(|ui| {
+            ui.weak(format!("{on} of {} demos of this map, {} others", self.kill_list.len(), self.kill_others));
+            if ui.small_button("all").clicked() {
+                self.kill_list.iter_mut().for_each(|x| x.1 = true);
+            }
+            if ui.small_button("none").clicked() {
+                self.kill_list.iter_mut().for_each(|x| x.1 = false);
+            }
+            if ui.small_button("rescan").clicked() {
+                self.kill_key = Default::default();
+            }
+        });
+        if !self.kill_list.is_empty() {
+            egui::ScrollArea::vertical().id_salt("kill_demos").max_height(150.0).show(ui, |ui| {
+                for (p, on) in &mut self.kill_list {
+                    ui.checkbox(on, p.file_name().unwrap_or_default().to_string_lossy());
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label("weapons");
+            if ui.add(egui::TextEdit::singleline(&mut self.kill_weapons).desired_width(140.0).hint_text("all, or awp,scout")).changed() {
+                self.kills.weapons =
+                    self.kill_weapons.split(',').map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("victims");
+            for t in TeamSel::ALL {
+                ui.selectable_value(&mut self.kills.team, t, t.key());
+            }
+        });
+        ui.checkbox(&mut self.kills.headshots, "Headshots only");
+        ui.checkbox(&mut self.kills.lines, "Killer-to-victim lines");
+        ui.horizontal(|ui| {
+            let mut on = self.kills.rounds.is_some();
+            if ui.checkbox(&mut on, "Rounds").changed() {
+                self.kills.rounds = on.then_some((1, 30));
+            }
+            if let Some((a, b)) = &mut self.kills.rounds {
+                ui.add(egui::DragValue::new(a).range(1..=999));
+                ui.label("to");
+                ui.add(egui::DragValue::new(b).range(1..=999));
+                if *b < *a {
+                    *b = *a;
+                }
+            }
+        });
+        ui.add(egui::Slider::new(&mut self.kills.radius, 16.0..=384.0).text("radius units"));
+        ui.checkbox(&mut self.kills.presence, "Presence map");
+        if self.kills.presence {
+            ui.add(egui::Slider::new(&mut self.kills.presence_every, 0.1..=5.0).text("sample every s"));
+        }
+        ui.add(egui::Slider::new(&mut self.kills.size, 512..=4096).text("size px"));
+        ui.weak("Uses the roof, height and XY cuts on the Scene tab. Kills on floors under the visible one are left out.");
     }
 
     fn form_health(&mut self, ui: &mut egui::Ui) {

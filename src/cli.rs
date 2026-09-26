@@ -11,9 +11,11 @@ use crate::explode::ExplodeArgs;
 use crate::light::LightParams;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
 use crate::gltf::{GltfOpts, Lighting, export_gltf};
+use crate::demo;
 use crate::health::{HealthOpts, csv_quote, export_health};
+use crate::kills::{DemoData, KillOpts, KillStats, TeamSel, export_kills, load_demos, parse_rounds};
 use crate::look::{FaceArgs, LookArgs};
-use crate::paths::{expand_maps, free_name, resolve_map, run_dir};
+use crate::paths::{expand_demos, expand_maps, free_name, resolve_map, run_dir};
 use crate::poster::{Orient, PosterOpts, export_poster};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
@@ -44,6 +46,8 @@ pub enum Cmd {
     Slice(SliceArgs),
     #[command(about = "Map how fast each team reaches every spot from its spawns")]
     Timing(TimingArgs),
+    #[command(about = "Heatmaps of kills and player positions from HLTV demos")]
+    Kills(KillsArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
     #[command(about = "Write editable SVG line art of the walkable floors, walls, objectives and spawns")]
@@ -266,6 +270,33 @@ pub struct TimingArgs {
     pub cell: f64,
     #[arg(long, default_value_t = 5.0, help = "seconds between contour lines")]
     pub interval: f64,
+    #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
+    pub size: u32,
+    #[command(flatten)]
+    pub f: FaceArgs,
+}
+
+#[derive(Args)]
+#[command(mut_arg("maps", |a| a.required(false).help("map .bsp or name with --game; omit to do every map the demos were recorded on")))]
+pub struct KillsArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, num_args = 1.., required = true, value_name = "PATH", help = "demo files, folders or globs")]
+    pub demos: Vec<String>,
+    #[arg(long, value_delimiter = ',', value_name = "NAME", help = "only kills with these weapons, e.g. awp,scout")]
+    pub weapon: Vec<String>,
+    #[arg(long, default_value = "both", value_parser = ["t", "ct", "both"], help = "victim's team")]
+    pub team: String,
+    #[arg(long, help = "only headshots")]
+    pub headshots: bool,
+    #[arg(long, help = "draw killer-to-victim lines")]
+    pub lines: bool,
+    #[arg(long, value_name = "A-B", value_parser = parse_rounds, help = "only these rounds, counted from the start of each demo")]
+    pub rounds: Option<(u32, u32)>,
+    #[arg(long, default_value_t = 96.0, help = "heatmap kernel radius in units")]
+    pub radius: f64,
+    #[arg(long = "presence-every", default_value_t = 0.5, value_name = "S", help = "seconds between presence samples; 0 = no presence map")]
+    pub presence_every: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
     #[command(flatten)]
@@ -541,6 +572,166 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
         reported(|rep| export_timing(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
+    Ok(())
+}
+
+fn kill_map(
+    gpu: &Gpu,
+    c: &Common,
+    nearest: bool,
+    path: &std::path::Path,
+    o: &KillOpts,
+    data: &[DemoData],
+    rep: &mut crate::scene::Report,
+) -> Result<(PathBuf, KillStats)> {
+    let lo = c.load_opts();
+    let co = c.cut_opts();
+    let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let out = run_dir(&c.out, &name)?;
+    let res = (|| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, rep.log)?;
+        let cuts = scene.cuts(&co, rep.log);
+        let (mut r, _) = scene.job_renderer(gpu, nearest, None, rep.log);
+        export_kills(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, o, data, &out, rep, 0.0)
+    })();
+    match res {
+        Ok((_, s)) => Ok((out, s)),
+        Err(e) => {
+            let _ = std::fs::remove_dir(&out);
+            Err(e)
+        }
+    }
+}
+
+pub fn run_kills(a: &KillsArgs) -> Result<()> {
+    let t0 = Instant::now();
+    let o = KillOpts {
+        weapons: a.weapon.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect(),
+        team: TeamSel::parse(&a.team).unwrap_or(TeamSel::Both),
+        headshots: a.headshots,
+        lines: a.lines,
+        rounds: a.rounds,
+        radius: a.radius.max(1.0),
+        presence: a.presence_every > 0.0,
+        presence_every: a.presence_every,
+        size: a.size,
+    };
+    let files = expand_demos(&a.demos);
+    if files.is_empty() {
+        anyhow::bail!("no demos found");
+    }
+    let heads: Vec<(PathBuf, String)> = files
+        .iter()
+        .filter_map(|f| match demo::header(f) {
+            Ok(h) => Some((f.clone(), h.map)),
+            Err(e) => {
+                println!("skipped {}: {e:#}", f.display());
+                None
+            }
+        })
+        .collect();
+    if heads.is_empty() {
+        anyhow::bail!("no readable demos");
+    }
+    let gpu = Gpu::headless()?;
+    let game = a.c.game.as_deref();
+
+    if !a.c.maps.is_empty() {
+        for m in &a.c.maps {
+            let path = resolve_map(m, game)?;
+            let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let (mine, other): (Vec<_>, Vec<_>) = heads.iter().partition(|(_, map)| map.eq_ignore_ascii_case(&name));
+            println!("== {name}");
+            if !other.is_empty() {
+                println!("  skipped {} demos of other maps", other.len());
+                if other.len() <= 10 {
+                    for (f, map) in &other {
+                        println!("    {} ({map})", f.file_name().unwrap_or_default().to_string_lossy());
+                    }
+                }
+            }
+            if mine.is_empty() {
+                println!("  no demos of {name}");
+                continue;
+            }
+            let paths: Vec<PathBuf> = mine.iter().map(|(f, _)| f.clone()).collect();
+            reported(|rep| {
+                let data = load_demos(&paths, &o, rep, (0.0, 1.0))?;
+                println!("  {} demos parsed", data.len());
+                let (out, s) = kill_map(&gpu, &a.c, a.f.nearest, &path, &o, &data, rep)?;
+                println!("  {} deaths, {} drawn: {}", s.deaths, s.drawn, out.display());
+                Ok(())
+            })?;
+        }
+        println!("{:.1}s", t0.elapsed().as_secs_f64());
+        return Ok(());
+    }
+
+    let mut groups: std::collections::BTreeMap<String, Vec<PathBuf>> = std::collections::BTreeMap::new();
+    for (f, map) in &heads {
+        groups.entry(map.to_lowercase()).or_default().push(f.clone());
+    }
+    let mut found = Vec::new();
+    let mut missing = Vec::new();
+    for (map, fs) in &groups {
+        match resolve_map(map, game) {
+            Ok(p) => found.push((map.clone(), p, fs.clone())),
+            Err(_) => missing.push((map.clone(), fs.len())),
+        }
+    }
+    println!("{} demos of {} maps; {} maps have no local .bsp", heads.len(), groups.len(), missing.len());
+    for (m, n) in &missing {
+        println!("  skipped {m} ({n} demo{})", if *n == 1 { "" } else { "s" });
+    }
+    let paths: Vec<PathBuf> = found.iter().flat_map(|(_, _, fs)| fs.iter().cloned()).collect();
+    let tp = Instant::now();
+    let data = reported(|rep| load_demos(&paths, &o, rep, (0.0, 1.0)))?;
+    println!("parsed {} demos in {:.1}s", data.len(), tp.elapsed().as_secs_f64());
+    let mut by_map: std::collections::HashMap<String, Vec<DemoData>> = std::collections::HashMap::new();
+    for d in data {
+        by_map.entry(d.map.to_lowercase()).or_default().push(d);
+    }
+    std::fs::create_dir_all(&a.c.out)?;
+    let summary = free_name(&a.c.out, "kills_summary", ".csv");
+    let mut rows = Vec::new();
+    let mut failed = 0;
+    for (map, path, _) in &found {
+        let t1 = Instant::now();
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        println!("== {name}");
+        let data = by_map.remove(map).unwrap_or_default();
+        if data.is_empty() {
+            rows.push(format!("{},no demos parsed,0,,,,,,,,,,", csv_quote(&name)));
+            continue;
+        }
+        match reported(|rep| kill_map(&gpu, &a.c, a.f.nearest, path, &o, &data, rep)) {
+            Ok((out, s)) => {
+                println!("  {} demos, {} deaths, {} drawn ({:.1}s)", s.demos, s.deaths, s.drawn, t1.elapsed().as_secs_f64());
+                rows.push(s.csv_row(&name, &out));
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  error: {e:#}");
+                rows.push(format!("{},{},{},,,,,,,,,,", csv_quote(&name), csv_quote(&format!("error: {e:#}")), data.len()));
+            }
+        }
+    }
+    for (m, n) in &missing {
+        rows.push(format!("{},no bsp,{n},,,,,,,,,,", csv_quote(m)));
+    }
+    let mut text = format!("{}\n", KillStats::csv_header());
+    for r in &rows {
+        text.push_str(r);
+        text.push('\n');
+    }
+    std::fs::write(&summary, text)?;
+    println!(
+        "{} maps done, {failed} failed, {} skipped without .bsp: {} ({:.1}s)",
+        found.len() - failed,
+        missing.len(),
+        summary.display(),
+        t0.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 

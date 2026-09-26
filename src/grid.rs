@@ -153,6 +153,43 @@ pub fn grid_frame(r: &Renderer, cuts: &Cuts, size: u32) -> GridFrame {
     GridFrame { x0, y0, x1: x0 + wpx as f64 * upp, y1: y0 + hpx as f64 * upp, upp, wpx, hpx }
 }
 
+pub fn dark_base(r: &mut Renderer, cuts: &Cuts, size: u32) -> Result<(GridFrame, Vec<u8>)> {
+    let g = grid_frame(r, cuts, size);
+    let view = View {
+        basis: top_down(DVec3::X, DVec3::Y),
+        cx: (g.x0 + g.x1) / 2.0,
+        cy: (g.y0 + g.y1) / 2.0,
+        w: g.x1 - g.x0,
+        h: g.y1 - g.y0,
+        sky_yaw: None,
+        persp: None,
+    };
+    let rc = Cuts { clip: NO_CLIP, use_mask: false, ..*cuts };
+    let mut base = r.render_view(&view, g.wpx, g.hpx, 2, &rc, &Look::plain(true, Some([0x1c, 0x1c, 0x1c])), 0.0)?.into_raw();
+    for p in base.chunks_exact_mut(4) {
+        let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
+        for k in 0..3 {
+            p[k] = ((p[k] as f64 * 0.4 + l * 0.6) * 0.75) as u8;
+        }
+    }
+    Ok((g, base))
+}
+
+pub fn spawn_dots(pm: &mut Pixmap, bsp: &Bsp, g: &GridFrame) {
+    for e in &bsp.entities {
+        let col = match e.class() {
+            "info_player_deathmatch" => T,
+            "info_player_start" => CT,
+            _ => continue,
+        };
+        let Some(p) = e.origin() else { continue };
+        if let Some(c) = PathBuilder::from_circle(((p.x - g.x0) / g.upp) as f32, ((g.y1 - p.y) / g.upp) as f32, 3.5) {
+            pm.fill_path(&c, &paint(col, 255), tiny_skia::FillRule::Winding, Transform::identity(), None);
+            pm.stroke_path(&c, &paint([0, 0, 0], 255), &Stroke::default(), Transform::identity(), None);
+        }
+    }
+}
+
 pub fn grid_preview(r: &mut Renderer, bsp: &Bsp, path: &Path, cuts: &Cuts) -> Result<()> {
     let g = grid_frame(r, cuts, 1600);
     let (x0, y0, x1, y1, upp) = (g.x0, g.y0, g.x1, g.y1, g.upp);

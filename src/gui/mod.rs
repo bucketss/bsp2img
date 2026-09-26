@@ -20,6 +20,7 @@ use crate::export::{IsoOpts, OverviewOpts};
 use crate::gltf::GltfOpts;
 use crate::poster::PosterOpts;
 use crate::health::HealthOpts;
+use crate::kills::KillOpts;
 use crate::look::Look;
 use crate::mesh::roof_zmax;
 use crate::paths::list_maps;
@@ -162,6 +163,12 @@ struct App {
     day: DayOpts,
     timing: TimingOpts,
     health: HealthOpts,
+    kills: KillOpts,
+    kill_dir: String,
+    kill_weapons: String,
+    kill_list: Vec<(PathBuf, bool)>,
+    kill_others: usize,
+    kill_key: (String, String),
     svg: SvgOpts,
     stl: StlOpts,
     gltf: GltfOpts,
@@ -227,6 +234,12 @@ impl App {
             day: DayOpts::default(),
             timing: TimingOpts::default(),
             health: HealthOpts::default(),
+            kills: KillOpts::default(),
+            kill_dir: String::new(),
+            kill_weapons: String::new(),
+            kill_list: Vec::new(),
+            kill_others: 0,
+            kill_key: (String::new(), String::new()),
             svg: SvgOpts::default(),
             stl: StlOpts::default(),
             gltf: GltfOpts::default(),
