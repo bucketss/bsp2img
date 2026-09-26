@@ -33,6 +33,27 @@ pub struct DrawCall {
     pub lightmapped: bool,
 }
 
+pub struct Indices<'a> {
+    data: &'a [u8],
+    wide: bool,
+    base: u32,
+}
+
+impl Indices<'_> {
+    pub fn len(&self) -> usize {
+        self.data.len() >> if self.wide { 2 } else { 1 }
+    }
+
+    pub fn get(&self, k: usize) -> u32 {
+        self.base
+            + if self.wide {
+                u32::from_le_bytes(self.data[k * 4..k * 4 + 4].try_into().unwrap())
+            } else {
+                u16::from_le_bytes([self.data[k * 2], self.data[k * 2 + 1]]) as u32
+            }
+    }
+}
+
 pub struct Model {
     pub vbs: Vec<Buf>,
     pub ibs: Vec<Buf>,
@@ -122,10 +143,6 @@ fn norm(v: [f32; 3]) -> [f32; 3] {
 }
 
 impl Stream<'_> {
-    pub fn format_id(&self) -> u32 {
-        self.format
-    }
-
     fn bytes(&self, i: usize) -> Option<&[u8]> {
         let n = format_size(self.format)?;
         let p = i.checked_mul(self.buf.stride)? + self.offset;
@@ -316,22 +333,13 @@ impl Model {
         None
     }
 
-    pub fn triangles(&self, dc: &DrawCall) -> Result<Vec<[u32; 3]>> {
+    pub fn index_view(&self, dc: &DrawCall) -> Result<Indices<'_>> {
         ensure!(dc.triangles, "draw call is not a triangle list");
         let ib = self.ibs.get(dc.ib).context("index buffer out of range")?;
         ensure!(ib.stride == 2 || ib.stride == 4, "index size {}", ib.stride);
         let s = dc.start_index + dc.ib_bind / ib.stride;
         let n = dc.index_count / 3 * 3;
-        let d = slice(&ib.data, s * ib.stride, n * ib.stride).context("index range")?;
-        let base = dc.base_vertex as u32;
-        let idx = |k: usize| -> u32 {
-            let p = k * ib.stride;
-            base + if ib.stride == 2 { u16::from_le_bytes([d[p], d[p + 1]]) as u32 } else { u32::from_le_bytes(d[p..p + 4].try_into().unwrap()) }
-        };
-        Ok((0..n / 3).map(|t| [idx(t * 3), idx(t * 3 + 1), idx(t * 3 + 2)]).collect())
-    }
-
-    pub fn vertices(&self) -> usize {
-        self.vbs.first().map_or(0, |b| b.count)
+        let data = slice(&ib.data, s * ib.stride, n * ib.stride).context("index range")?;
+        Ok(Indices { data, wide: ib.stride == 4, base: dc.base_vertex as u32 })
     }
 }

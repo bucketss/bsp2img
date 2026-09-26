@@ -13,6 +13,7 @@ struct BatchU {
     a: vec4<f32>,
     warp: vec4<f32>,
     e: vec4<f32>,
+    tint: vec4<f32>,
 };
 
 struct Light {
@@ -159,7 +160,7 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
         }
         lr = relight(lr, i.lpos, n);
     }
-    let c = t.rgb * lr;
+    let c = t.rgb * bu.tint.rgb * lr;
     var a = 1.0;
     if (mode >= 2) {
         a = bu.a.y * t.a;

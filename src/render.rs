@@ -419,7 +419,8 @@ fn make_batch(
         Some(w) => (1.0, w),
         None => (0.0, [0.0; 4]),
     };
-    let u = [b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], band as f32, 0.0, 0.0, 0.0];
+    let t = b.tint;
+    let u = [b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], band as f32, 0.0, 0.0, 0.0, t[0], t[1], t[2], 1.0];
     let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: None,
         contents: bytemuck::cast_slice(&u),
@@ -948,7 +949,7 @@ impl Renderer {
             .create_view(&Default::default());
         let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(&[0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            contents: bytemuck::cast_slice(&[0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let bind = batch_bind(dev, &self.batch_layout, &tex, &self.tex_sampler, &ub);

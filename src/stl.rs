@@ -673,6 +673,9 @@ pub fn export_stl(
     out: &Path,
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
+    if bsp.is_cs2() {
+        bail!("STL export is not supported for CS2 maps yet");
+    }
     if !(o.voxel >= 1.0) || !(o.print_width > 0.0) || o.wall < 0.0 || o.base < 0.0 {
         bail!("voxel must be at least 1, print width above 0, wall and base not negative");
     }

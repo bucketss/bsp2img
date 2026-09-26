@@ -50,11 +50,20 @@ pub struct LoadOpts {
     pub auto_crop: bool,
     pub hull: Option<usize>,
     pub hull_pad: f64,
+    pub tex_max: usize,
 }
 
 impl Default for LoadOpts {
     fn default() -> Self {
-        LoadOpts { game: None, wad_dirs: Vec::new(), light: LightParams::default(), auto_crop: true, hull: None, hull_pad: 64.0 }
+        LoadOpts {
+            game: None,
+            wad_dirs: Vec::new(),
+            light: LightParams::default(),
+            auto_crop: true,
+            hull: None,
+            hull_pad: 64.0,
+            tex_max: 512,
+        }
     }
 }
 
@@ -120,6 +129,22 @@ pub fn num(v: f64) -> String {
     if v.fract() == 0.0 && v.abs() < 1e15 { format!("{}", v as i64) } else { format!("{v}") }
 }
 
+fn levels(mesh: &Mesh, log: Log) -> Vec<(f64, f64, f64)> {
+    let levels = roof_levels(mesh);
+    log(format!(
+        "roof levels: {}",
+        levels
+            .iter()
+            .enumerate()
+            .map(|(i, (lo, hi, _))| {
+                if hi - lo > 1.0 { format!("{}:{:.0}..{:.0}", i + 1, lo, hi) } else { format!("{}:{:.0}", i + 1, lo) }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    levels
+}
+
 pub struct Scene {
     pub bsp: Bsp,
     pub mesh: Mesh,
@@ -131,6 +156,9 @@ pub struct Scene {
 
 impl Scene {
     pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: Log) -> Result<Scene> {
+        if crate::s2::is_vpk(path) {
+            return Self::load_cs2(path, opts, log);
+        }
         let bsp = Bsp::load(path)?;
         let dirs = search_dirs(path, opts.game.as_deref(), &opts.wad_dirs);
         let mut tex = TextureSource::new(&dirs);
@@ -171,18 +199,7 @@ impl Scene {
         if !seqs.is_empty() || warps > 0 {
             log(format!("animated textures: {} sequences, {} water batches", seqs.len(), warps));
         }
-        let levels = roof_levels(&mesh);
-        log(format!(
-            "roof levels: {}",
-            levels
-                .iter()
-                .enumerate()
-                .map(|(i, (lo, hi, _))| {
-                    if hi - lo > 1.0 { format!("{}:{:.0}..{:.0}", i + 1, lo, hi) } else { format!("{}:{:.0}", i + 1, lo) }
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        let levels = levels(&mesh, log);
         let mask = match opts.hull {
             Some(h) => {
                 let t = Instant::now();
@@ -201,6 +218,23 @@ impl Scene {
             None => None,
         };
         Ok(Scene { bsp, mesh, levels, mask, dirs, opts: opts.clone() })
+    }
+
+    fn load_cs2(path: &Path, opts: &LoadOpts, log: Log) -> Result<Scene> {
+        let (bsp, mesh) = crate::s2::load(path, opts.game.as_deref(), opts.tex_max, log)?;
+        if !mesh.missing.is_empty() {
+            log(format!("missing ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
+        }
+        log(format!(
+            "triangles: {}, batches: {}, textures: {}, lightmap atlas: {}x{}",
+            mesh.faces,
+            mesh.batches.len(),
+            mesh.textures.len(),
+            mesh.atlas.w,
+            mesh.atlas.h
+        ));
+        let levels = levels(&mesh, log);
+        Ok(Scene { bsp, mesh, levels, mask: None, dirs: Vec::new(), opts: opts.clone() })
     }
 
     pub fn zmax(&self, cuts: &CutOpts, log: Log) -> f64 {

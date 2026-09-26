@@ -550,6 +550,9 @@ pub fn export_kills(
     rep: &mut Report,
     p0: f32,
 ) -> Result<(Vec<PathBuf>, KillStats)> {
+    if bsp.is_cs2() {
+        anyhow::bail!("CS2 demos are not supported");
+    }
     let step = |rep: &mut Report, f: f32| rep.step(p0 + (1.0 - p0) * f);
     step(rep, 0.0)?;
     let t0 = std::time::Instant::now();

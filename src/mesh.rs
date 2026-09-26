@@ -43,6 +43,7 @@ pub struct Batch {
     pub mode: Mode,
     pub alpha: f32,
     pub warp: Option<[f32; 4]>,
+    pub tint: [f32; 3],
     pub verts: Vec<Vertex>,
 }
 
@@ -62,6 +63,7 @@ pub struct Mesh {
     pub missing: Vec<String>,
     pub points: Vec<DVec3>,
     pub nudged: usize,
+    pub names: Vec<String>,
 }
 
 pub fn skip_class(cls: &str) -> bool {
@@ -380,7 +382,7 @@ pub fn build_mesh(
         };
         let key = (r.tex, r.mode, r.alpha.to_bits(), r.warp.map(|w| w.map(f32::to_bits)));
         let bi = *index.entry(key).or_insert_with(|| {
-            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, verts: Vec::new() });
+            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, tint: [1.0; 3], verts: Vec::new() });
             batches.len() - 1
         });
         let out = &mut batches[bi].verts;
@@ -403,6 +405,7 @@ pub fn build_mesh(
         missing: missing.into_iter().collect(),
         points,
         nudged: levels.iter().filter(|&&l| l > 0).count(),
+        names: Vec::new(),
     }
 }
 

@@ -62,6 +62,7 @@ struct Part<'a> {
     tex: usize,
     mode: Mode,
     alpha: f32,
+    tint: [f32; 3],
     verts: Vec<Vertex>,
     image: Option<&'a Image>,
 }
@@ -316,7 +317,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool) -
                 };
                 let l = sample(lmap, mix(|v| v.lm), false, false);
                 for i in 0..3 {
-                    acc[i] += t[i] * l[i] / 255.0;
+                    acc[i] += t[i] * part.tint[i] as f64 * l[i] / 255.0;
                 }
                 acc[3] += t[3];
             }
@@ -512,13 +513,14 @@ fn indexed(verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool
     o
 }
 
-fn material(name: &str, mode: Mode, alpha: f32, tex: Option<usize>, unlit: bool) -> Value {
+fn material(name: &str, mode: Mode, alpha: f32, tint: [f32; 3], tex: Option<usize>, unlit: bool) -> Value {
     let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 1.0});
     if let Some(t) = tex {
         pbr["baseColorTexture"] = json!({"index": t});
     }
-    if matches!(mode, Mode::Blend | Mode::Additive) && alpha < 1.0 {
-        pbr["baseColorFactor"] = json!([1.0, 1.0, 1.0, alpha]);
+    let a = if matches!(mode, Mode::Blend | Mode::Additive) { alpha } else { 1.0 };
+    if a < 1.0 || tint != [1.0; 3] {
+        pbr["baseColorFactor"] = json!([tint[0], tint[1], tint[2], a]);
     }
     let mut m = json!({"name": name, "pbrMetallicRoughness": pbr});
     match mode {
@@ -568,6 +570,7 @@ struct Mat {
     name: String,
     mode: Mode,
     alpha: f32,
+    tint: [f32; 3],
     tex: Option<usize>,
     occlusion: Option<usize>,
 }
@@ -610,7 +613,7 @@ fn write_glb(m: &Model, name: &str, nearest: bool, rep: &mut Report) -> Result<V
         texs.push(doc.texture(t.img.get(), &t.name, s)?);
     }
     for mat in &m.mats {
-        let mut v = material(&mat.name, mat.mode, mat.alpha, mat.tex.map(|t| texs[t]), m.unlit);
+        let mut v = material(&mat.name, mat.mode, mat.alpha, mat.tint, mat.tex.map(|t| texs[t]), m.unlit);
         if let Some(o) = mat.occlusion {
             v["occlusionTexture"] = json!({"index": texs[o], "texCoord": 1});
         }
@@ -665,7 +668,8 @@ fn write_obj(m: &Model, obj: &Path, files: &mut Partial, rep: &mut Report) -> Re
     let mut w = std::io::BufWriter::new(std::fs::File::create(&mtl)?);
     for (i, mat) in m.mats.iter().enumerate() {
         writeln!(w, "newmtl m{i}_{}", file_safe(&mat.name))?;
-        writeln!(w, "Ka 0 0 0\nKd 1 1 1\nKs 0 0 0\nillum {}", if m.unlit { 0 } else { 1 })?;
+        let t = mat.tint;
+        writeln!(w, "Ka 0 0 0\nKd {} {} {}\nKs 0 0 0\nillum {}", t[0], t[1], t[2], if m.unlit { 0 } else { 1 })?;
         if matches!(mat.mode, Mode::Blend | Mode::Additive) && mat.alpha < 1.0 {
             writeln!(w, "d {:.4}", mat.alpha)?;
         }
@@ -736,6 +740,7 @@ pub fn export_gltf(
             tex: b.tex,
             mode: b.mode,
             alpha: b.alpha,
+            tint: b.tint,
             verts: clip_tris_cuts(&b.verts, cuts, scene.mask.as_ref()),
             image: mesh.textures.get(b.tex).and_then(|t| t.as_ref()),
         })
@@ -748,7 +753,7 @@ pub fn export_gltf(
     rep.log(format!("  {tris} triangles in {} batches", parts.len()));
     rep.step(0.1)?;
     let tex_name = |t: usize| {
-        scene.bsp.miptex.get(t).map(|m| m.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("tex{t}"))
+        mesh.names.get(t).or(scene.bsp.miptex.get(t).map(|m| &m.name)).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("tex{t}"))
     };
     let mut model = Model { texs: Vec::new(), mats: Vec::new(), prims: Vec::new(), unlit: o.lighting == Lighting::Baked };
     match o.lighting {
@@ -790,7 +795,7 @@ pub fn export_gltf(
             for (p, uv) in parts.iter().zip(uvs) {
                 let m = *mats.entry((p.mode, p.alpha.to_bits())).or_insert_with(|| {
                     let label = format!("{}_{:.0}", mode_key(p.mode), p.alpha * 255.0);
-                    model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tex: Some(0), occlusion: None });
+                    model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tint: [1.0; 3], tex: Some(0), occlusion: None });
                     model.mats.len() - 1
                 });
                 model.prims.push(Prim { verts: &p.verts, uv: Some(uv), mat: m });
@@ -802,7 +807,7 @@ pub fn export_gltf(
                 model.texs.len() - 1
             });
             let mut texs: HashMap<usize, usize> = HashMap::new();
-            let mut mats: HashMap<(usize, Mode, u32), usize> = HashMap::new();
+            let mut mats: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
             for p in &parts {
                 let t = p.image.map(|img| {
                     *texs.entry(p.tex).or_insert_with(|| {
@@ -810,8 +815,8 @@ pub fn export_gltf(
                         model.texs.len() - 1
                     })
                 });
-                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits())).or_insert_with(|| {
-                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tex: t, occlusion: lm });
+                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits))).or_insert_with(|| {
+                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion: lm });
                     model.mats.len() - 1
                 });
                 model.prims.push(Prim { verts: &p.verts, uv: None, mat: m });

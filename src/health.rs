@@ -786,6 +786,9 @@ pub fn export_health(
     out: &Path,
     rep: &mut Report,
 ) -> Result<(Vec<PathBuf>, Health)> {
+    if scene.bsp.is_cs2() {
+        anyhow::bail!("health reports are for GoldSrc maps only");
+    }
     rep.step(0.0)?;
     let h = gather(scene, name, o);
     rep.step(0.6)?;

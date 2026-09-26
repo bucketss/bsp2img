@@ -8,25 +8,39 @@ pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
         return Ok(p.to_path_buf());
     }
     if let Some(game) = game {
-        let fname = if arg.to_lowercase().ends_with(".bsp") { arg.to_string() } else { format!("{arg}.bsp") };
-        let mut cands = vec![game.to_path_buf()];
-        if let Ok(rd) = std::fs::read_dir(game) {
-            let mut subs: Vec<String> = rd
-                .flatten()
-                .filter(|e| e.path().join("maps").is_dir())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            subs.sort();
-            subs.sort_by_key(|d| {
-                let l = d.to_lowercase();
-                (l != "cstrike", l.ends_with("_downloads") || l.ends_with("_addon"))
-            });
-            cands.extend(subs.iter().map(|d| game.join(d)));
+        let lower = arg.to_lowercase();
+        let fnames = if lower.ends_with(".bsp") || lower.ends_with(".vpk") {
+            vec![arg.to_string()]
+        } else {
+            vec![format!("{arg}.bsp"), format!("{arg}.vpk")]
+        };
+        let mut roots = vec![game.to_path_buf()];
+        if game.join("game").is_dir() {
+            roots.push(game.join("game"));
+        }
+        let mut cands = Vec::new();
+        for root in roots {
+            cands.push(root.clone());
+            if let Ok(rd) = std::fs::read_dir(&root) {
+                let mut subs: Vec<String> = rd
+                    .flatten()
+                    .filter(|e| e.path().join("maps").is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                subs.sort();
+                subs.sort_by_key(|d| {
+                    let l = d.to_lowercase();
+                    (l != "cstrike" && l != "csgo", l.ends_with("_downloads") || l.ends_with("_addon"))
+                });
+                cands.extend(subs.iter().map(|d| root.join(d)));
+            }
         }
         for c in cands {
-            let p = c.join("maps").join(&fname);
-            if p.is_file() {
-                return Ok(p);
+            for f in &fnames {
+                let p = c.join("maps").join(f);
+                if p.is_file() {
+                    return Ok(p);
+                }
             }
         }
     }
