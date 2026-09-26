@@ -1,6 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::SystemTime;
+
 use anyhow::{Result, bail};
+use rayon::prelude::*;
 
 pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
     let p = Path::new(arg);
@@ -8,42 +13,92 @@ pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
         return Ok(p.to_path_buf());
     }
     if let Some(game) = game {
-        let fname = if arg.to_lowercase().ends_with(".bsp") { arg.to_string() } else { format!("{arg}.bsp") };
-        let mut cands = vec![game.to_path_buf()];
-        if let Ok(rd) = std::fs::read_dir(game) {
-            let mut subs: Vec<String> = rd
-                .flatten()
-                .filter(|e| e.path().join("maps").is_dir())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
-            subs.sort();
-            subs.sort_by_key(|d| {
-                let l = d.to_lowercase();
-                (l != "cstrike", l.ends_with("_downloads") || l.ends_with("_addon"))
-            });
-            cands.extend(subs.iter().map(|d| game.join(d)));
+        let lower = arg.to_lowercase();
+        let fnames = if lower.ends_with(".bsp") || lower.ends_with(".vpk") {
+            vec![arg.to_string()]
+        } else {
+            vec![format!("{arg}.bsp"), format!("{arg}.vpk")]
+        };
+        let mut roots = vec![game.to_path_buf()];
+        if game.join("game").is_dir() {
+            roots.push(game.join("game"));
+        }
+        let mut cands = Vec::new();
+        for root in roots {
+            cands.push(root.clone());
+            if let Ok(rd) = std::fs::read_dir(&root) {
+                let mut subs: Vec<String> = rd
+                    .flatten()
+                    .filter(|e| e.path().join("maps").is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                subs.sort();
+                subs.sort_by_key(|d| {
+                    let l = d.to_lowercase();
+                    (l != "cstrike" && l != "csgo", l.ends_with("_downloads") || l.ends_with("_addon"))
+                });
+                cands.extend(subs.iter().map(|d| root.join(d)));
+            }
         }
         for c in cands {
-            let p = c.join("maps").join(&fname);
-            if p.is_file() {
-                return Ok(p);
+            for f in &fnames {
+                let p = c.join("maps").join(f);
+                if p.is_file() {
+                    return Ok(p);
+                }
             }
         }
     }
     bail!("map not found: {arg}")
 }
 
+static CS2_MAPS: Mutex<Option<HashMap<PathBuf, (SystemTime, bool)>>> = Mutex::new(None);
+
+fn cs2_maps(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let stamp = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+    let known: HashMap<PathBuf, (SystemTime, bool)> = CS2_MAPS.lock().unwrap().clone().unwrap_or_default();
+    let checked: Vec<(PathBuf, SystemTime, bool)> = files
+        .into_par_iter()
+        .map(|p| {
+            let t = stamp(&p);
+            let ok = match known.get(&p) {
+                Some(&(kt, ok)) if kt == t => ok,
+                _ => crate::s2::vpk::is_map(&p),
+            };
+            (p, t, ok)
+        })
+        .collect();
+    let mut cache = CS2_MAPS.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    let mut out = Vec::new();
+    for (p, t, ok) in checked {
+        cache.insert(p.clone(), (t, ok));
+        if ok {
+            out.push(p);
+        }
+    }
+    out
+}
+
 pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
-    let mut dirs = vec![game.to_path_buf()];
-    if let Ok(rd) = std::fs::read_dir(game) {
-        let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join("maps").is_dir()).collect();
-        subs.sort_by_key(|p| {
-            let l = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            (l != "cstrike", l.ends_with("_downloads") || l.ends_with("_addon"), l)
-        });
-        dirs.extend(subs);
+    let mut roots = vec![game.to_path_buf()];
+    if game.join("game").is_dir() {
+        roots.push(game.join("game"));
+    }
+    let mut dirs = Vec::new();
+    for root in roots {
+        dirs.push(root.clone());
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join("maps").is_dir()).collect();
+            subs.sort_by_key(|p| {
+                let l = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                (l != "cstrike" && l != "csgo", l.ends_with("_downloads") || l.ends_with("_addon"), l)
+            });
+            dirs.extend(subs);
+        }
     }
     let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let mut vpks = Vec::new();
     for d in dirs {
         let Ok(rd) = std::fs::read_dir(d.join("maps")) else { continue };
         for e in rd.flatten() {
@@ -53,7 +108,15 @@ pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
                 if !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&n)) {
                     out.push((n, p));
                 }
+            } else if crate::s2::is_vpk(&p) {
+                vpks.push(p);
             }
+        }
+    }
+    for p in cs2_maps(vpks) {
+        let n = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        if !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&n)) {
+            out.push((n, p));
         }
     }
     out.sort_by_key(|(n, _)| n.to_lowercase());
@@ -182,14 +245,14 @@ pub fn expand_maps(args: &[String], game: Option<&Path>) -> Vec<String> {
         let p = Path::new(a);
         let dir = p.parent().filter(|d| !d.as_os_str().is_empty());
         let pat = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let stem_pat = pat.strip_suffix(".bsp").unwrap_or(&pat).to_string();
+        let stem_pat = pat.strip_suffix(".bsp").or(pat.strip_suffix(".vpk")).unwrap_or(&pat).to_string();
         let mut found: Vec<String> = match dir {
             Some(d) => std::fs::read_dir(d)
                 .into_iter()
                 .flatten()
                 .flatten()
                 .map(|e| e.path())
-                .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")))
+                .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")) || crate::s2::vpk::is_map(f))
                 .filter(|f| glob_match(stem_pat.as_bytes(), f.file_stem().unwrap_or_default().to_string_lossy().as_bytes()))
                 .map(|f| f.to_string_lossy().into_owned())
                 .collect(),

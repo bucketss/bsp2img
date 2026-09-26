@@ -20,6 +20,7 @@ pub fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
         lm: l2(a.lm, b.lm),
         bias: a.bias + (b.bias - a.bias) * t,
         normal: n,
+        blend: a.blend + (b.blend - a.blend) * t,
     }
 }
 

@@ -1,6 +1,10 @@
 # bsp2img
 
-Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp`. Needs OpenGL, DX12 or Vulkan.
+Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
+
+## CS2
+
+`--game` is the CS2 `game` folder or the install folder above it. `health`, `stl` and `kills` are GoldSrc only.
 
 ## GUI
 
@@ -17,7 +21,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp`. Needs OpenGL, DX12 or
 | `peel` | Animation lifting roof levels off one by one |
 | `slice` | Animation raising a height cut from floor to sky |
 | `poster` | Print-size tiled PNG with title block, legend and scale bar |
-| `overview` | CS overview `.bmp`, `.tga` and `.txt` |
+| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2 radar `.png` and `.txt` |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV demos |
 | `health` | Asset, compile, engine limit and spawn report; `health_summary.csv` for several maps |
@@ -48,6 +52,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp`. Needs OpenGL, DX12 or
 | `--brightness`, `--light-scale` | Brighten lighting |
 | `--gamma`, `--texgamma`, `--lightgamma` | Gamma (2.5, 2, 2.5) |
 | `--all-styles` | Include switchable lights |
+| `--tex-max N` | CS2 texture size limit (512) |
 | `--nearest` | Pixelated textures |
 | `--no-cull` | Draw back faces |
 
@@ -151,7 +156,7 @@ Also the spin output options.
 
 | Option | Effect |
 |---|---|
-| `--lighting baked\|separate\|none` | Lighting mode (baked) |
+| `--lighting baked\|separate\|none` | Lighting mode (baked; CS2 separate for gltf, none for obj) |
 | `--texel U` | Units per atlas texel (2) |
 
 ## Build

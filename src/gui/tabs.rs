@@ -48,7 +48,7 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.label("Filter");
         ui.add(egui::TextEdit::singleline(&mut app.filter).desired_width(170.0));
-        if ui.button("Open .bsp").clicked() {
+        if ui.button("Open map").clicked() {
             app.open_bsp(&ctx);
         }
     });

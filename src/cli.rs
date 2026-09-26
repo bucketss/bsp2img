@@ -26,7 +26,7 @@ use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
-#[command(name = "bsp2img", version, about = "Render GoldSrc BSP maps: isometric views and CS overviews. Run without arguments for the GUI.")]
+#[command(name = "bsp2img", version, about = "Render GoldSrc BSP and CS2 maps: isometric views and CS overviews. Run without arguments for the GUI.")]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -36,7 +36,7 @@ pub struct Cli {
 pub enum Cmd {
     #[command(about = "Render isometric diorama views")]
     Iso(IsoArgs),
-    #[command(about = "Generate a CS overview (.bmp, .tga, .txt)")]
+    #[command(about = "Generate a CS overview (.bmp, .tga, .txt; CS2: radar .png and .txt)")]
     Overview(OverviewArgs),
     #[command(about = "Render an animation of the map rotating (.mp4 via ffmpeg, optional .gif/.png)")]
     Spin(SpinArgs),
@@ -66,7 +66,7 @@ pub enum Cmd {
 
 #[derive(Args, Clone)]
 pub struct Common {
-    #[arg(required = true, help = "path to .bsp, or map name with --game")]
+    #[arg(required = true, help = "path to .bsp or CS2 .vpk, or map name with --game")]
     pub maps: Vec<String>,
     #[arg(long, help = "game install root or mod directory")]
     pub game: Option<PathBuf>,
@@ -114,6 +114,8 @@ pub struct Common {
     pub light_scale: f64,
     #[arg(long = "all-styles", help = "include switchable light styles")]
     pub all_styles: bool,
+    #[arg(long = "tex-max", default_value_t = 512, help = "CS2: largest texture size to load")]
+    pub tex_max: usize,
 }
 
 #[derive(Args)]
@@ -353,9 +355,9 @@ pub struct StlArgs {
 pub struct GltfArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value = "baked", value_parser = ["baked", "separate", "none"],
-          help = "baked: lightmap baked into one atlas; separate: tiled textures plus lightmap on UV 2; none: textures only")]
-    pub lighting: String,
+    #[arg(long, value_parser = ["baked", "separate", "none"],
+          help = "baked: lightmap baked into one atlas; separate: tiled textures plus lightmap on UV 2; none: textures only [default: baked, CS2: separate for glTF, none for OBJ]")]
+    pub lighting: Option<String>,
     #[arg(long, default_value_t = 2.0, help = "units per atlas texel with --lighting baked")]
     pub texel: f64,
     #[arg(long, help = "pixelated texture filtering")]
@@ -424,6 +426,7 @@ impl Common {
             auto_crop: self.crop.is_none() && !self.no_auto_crop,
             hull: self.hull.as_ref().and_then(|h| h.parse().ok()),
             hull_pad: self.hull_pad,
+            tex_max: self.tex_max.max(16),
         }
     }
 
@@ -855,7 +858,7 @@ pub fn run_stl(a: &StlArgs) -> Result<()> {
 pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = GltfOpts { lighting: Lighting::parse(&a.lighting).unwrap_or(Lighting::Baked), texel: a.texel, nearest: a.nearest, obj };
+    let chosen = a.lighting.as_deref().and_then(Lighting::parse);
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
@@ -864,6 +867,12 @@ pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
+        let lighting = chosen.unwrap_or(match (scene.bsp.is_cs2(), obj) {
+            (false, _) => Lighting::Baked,
+            (true, false) => Lighting::Separate,
+            (true, true) => Lighting::None,
+        });
+        let o = GltfOpts { lighting, texel: a.texel, nearest: a.nearest, obj };
         let res = reported(|rep| export_gltf(&scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
         if res.is_err() {
             let _ = std::fs::remove_dir(&out);

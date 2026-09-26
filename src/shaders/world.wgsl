@@ -13,6 +13,8 @@ struct BatchU {
     a: vec4<f32>,
     warp: vec4<f32>,
     e: vec4<f32>,
+    tint: vec4<f32>,
+    uv2: vec4<f32>,
 };
 
 struct Light {
@@ -36,6 +38,7 @@ struct Light {
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var tsamp: sampler;
 @group(1) @binding(2) var<uniform> bu: BatchU;
+@group(1) @binding(3) var tex2: texture_2d<f32>;
 @group(2) @binding(0) var<uniform> lu: Light;
 @group(2) @binding(1) var smap: texture_depth_2d;
 @group(2) @binding(2) var csamp: sampler_comparison;
@@ -48,10 +51,11 @@ struct VOut {
     @location(2) world: vec3<f32>,
     @location(3) normal: vec3<f32>,
     @location(4) lpos: vec3<f32>,
+    @location(5) blend: f32,
 };
 
 @vertex
-fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32, @location(4) normal: vec3<f32>) -> VOut {
+fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32, @location(4) normal: vec3<f32>, @location(5) blend: f32) -> VOut {
     var o: VOut;
     let lp = pos + vec3<f32>(0.0, 0.0, bu.e.x * fr.view_r.w);
     var off = fr.view_dir.xyz * (bias * 0.25);
@@ -66,6 +70,7 @@ fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: 
     o.world = pos;
     o.normal = normal;
     o.lpos = lp;
+    o.blend = blend;
     return o;
 }
 
@@ -137,7 +142,11 @@ fn relight(l: vec3<f32>, p: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 }
 
 fn shade(i: VOut, front: bool) -> vec4<f32> {
-    let t = textureSample(tex, tsamp, tex_uv(i.uv));
+    var t = textureSample(tex, tsamp, tex_uv(i.uv));
+    let t2 = textureSample(tex2, tsamp, i.uv * bu.uv2.xy + bu.uv2.zw);
+    if (bu.e.z > 0.5) {
+        t = vec4<f32>(mix(t.rgb, t2.rgb, clamp(i.blend, 0.0, 1.0)), t.a);
+    }
     var l = textureSampleLevel(lmap, lsamp, i.lm, 0.0);
     let p = i.world;
     let unlit = bu.e.y > 0.5;
@@ -159,7 +168,7 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
         }
         lr = relight(lr, i.lpos, n);
     }
-    let c = t.rgb * lr;
+    let c = t.rgb * bu.tint.rgb * lr;
     var a = 1.0;
     if (mode >= 2) {
         a = bu.a.y * t.a;

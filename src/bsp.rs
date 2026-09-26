@@ -222,6 +222,7 @@ pub struct Bsp {
     pub lighting: Vec<u8>,
     pub miptex: Vec<MipTex>,
     pub lump_len: [usize; 15],
+    pub cs2: Option<Box<crate::s2::Extra>>,
 }
 
 fn lump<'a, T>(r: &Rd<'a>, l: (usize, usize), size: usize, f: impl Fn(&Rd<'a>, usize) -> T) -> Result<Vec<T>> {
@@ -343,6 +344,7 @@ impl Bsp {
             lighting,
             miptex,
             lump_len: std::array::from_fn(|i| lumps[i].1),
+            cs2: None,
         };
         bsp.validate()?;
         Ok(bsp)
@@ -407,6 +409,32 @@ impl Bsp {
             bail!("marksurface out of range");
         }
         Ok(())
+    }
+
+    pub fn empty(path: &Path) -> Bsp {
+        Bsp {
+            path: path.to_path_buf(),
+            entities: Vec::new(),
+            planes: Vec::new(),
+            vertices: Vec::new(),
+            texinfo: Vec::new(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            surfedges: Vec::new(),
+            models: Vec::new(),
+            nodes: Vec::new(),
+            leaves: Vec::new(),
+            marksurfaces: Vec::new(),
+            clipnodes: Vec::new(),
+            lighting: Vec::new(),
+            miptex: Vec::new(),
+            lump_len: [0; 15],
+            cs2: None,
+        }
+    }
+
+    pub fn is_cs2(&self) -> bool {
+        self.cs2.is_some()
     }
 
     pub fn name(&self) -> String {

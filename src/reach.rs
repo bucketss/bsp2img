@@ -4,6 +4,7 @@ use glam::DVec3;
 use rayon::prelude::*;
 
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
+use crate::nav::{Nav, STAND_OFS};
 
 pub const SEED_CLASSES: &[&str] =
     &["info_player_start", "info_player_deathmatch", "info_vip_start", "hostage_entity", "monster_scientist"];
@@ -336,6 +337,32 @@ pub fn hull_mask(bsp: &Bsp, hull: usize, pad: f64) -> Option<HullMask> {
             }
         }
     }
+    Some(mask_from_foot(foot, nx, ny, g.lo, g.spacing, pad, cells))
+}
+
+pub fn nav_reach(nav: &Nav, bsp: &Bsp, speed: f64) -> Option<Vec<bool>> {
+    let seeds: Vec<usize> = seeds(bsp).into_iter().filter_map(|p| nav.nearest(p, STAND_OFS)).collect();
+    if seeds.is_empty() {
+        return None;
+    }
+    Some(nav.flood(&seeds, speed).iter().map(|d| d.is_finite()).collect())
+}
+
+pub fn nav_mask(bsp: &Bsp, hull: usize, pad: f64) -> Option<HullMask> {
+    let nav = Nav::build(bsp, 8.0, 250.0).ok()?;
+    let reach = nav_reach(&nav, bsp, 250.0)?;
+    let mut foot = vec![false; nav.nx * nav.ny];
+    let mut cells = 0;
+    for (u, &r) in reach.iter().enumerate() {
+        if r && (hull != 1 || nav.nodes[u].stand) {
+            foot[nav.col[u] as usize] = true;
+            cells += 1;
+        }
+    }
+    Some(mask_from_foot(foot, nav.nx, nav.ny, nav.lo, nav.cell, pad, cells))
+}
+
+fn mask_from_foot(foot: Vec<bool>, nx: usize, ny: usize, lo: DVec3, spacing: f64, pad: f64, cells: usize) -> HullMask {
 
     let mut outside = vec![false; nx * ny];
     let mut st: Vec<usize> = Vec::new();
@@ -364,7 +391,7 @@ pub fn hull_mask(bsp: &Bsp, hull: usize, pad: f64) -> Option<HullMask> {
     }
     let filled: Vec<bool> = outside.iter().map(|&o| !o).collect();
 
-    let rad = (pad / g.spacing).ceil().max(0.0) as i64;
+    let rad = (pad / spacing).ceil().max(0.0) as i64;
     let disc: Vec<(i64, i64)> = (-rad..=rad)
         .flat_map(|x| (-rad..=rad).map(move |y| (x, y)))
         .filter(|&(x, y)| x * x + y * y <= rad * rad)
@@ -390,7 +417,6 @@ pub fn hull_mask(bsp: &Bsp, hull: usize, pad: f64) -> Option<HullMask> {
             }
         }
     }
-    let lo = g.lo;
-    let rect = [lo.x, lo.y, lo.x + nx as f64 * g.spacing, lo.y + ny as f64 * g.spacing];
-    Some(HullMask { mask, nx, ny, rect, spacing: g.spacing, cells })
+    let rect = [lo.x, lo.y, lo.x + nx as f64 * spacing, lo.y + ny as f64 * spacing];
+    HullMask { mask, nx, ny, rect, spacing, cells }
 }

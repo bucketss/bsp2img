@@ -126,7 +126,7 @@ pub fn export_overview(
     o: &OverviewOpts,
     out: &Path,
     rep: &mut Report,
-) -> Result<Overview> {
+) -> Result<()> {
     let mut files = Partial::default();
     rep.step(0.0)?;
     if o.grid {
@@ -135,6 +135,25 @@ pub fn export_overview(
         grid_preview(r, bsp, &f, cuts)?;
         rep.log(format!("  {}", f.display()));
         rep.step(0.3)?;
+    }
+    if bsp.is_cs2() {
+        let rd = match &o.from_txt {
+            Some(t) => overview::read_radar(t)?,
+            None => overview::fit_radar(&r.points_in(cuts), o.margin),
+        };
+        let n = overview::RADAR;
+        let img = r.render_view(&overview::radar_view(&rd), n, n, o.ss, cuts, &crate::look::Look::plain(o.cull, None), 0.0)?;
+        rep.step(0.8)?;
+        let (png, txt) = (out.join(format!("{name}_radar.png")), out.join(format!("{name}.txt")));
+        files.add(png.clone());
+        files.add(txt.clone());
+        img.save(&png)?;
+        std::fs::write(&txt, overview::radar_txt(name, &rd))?;
+        files.keep();
+        let _ = rep.step(1.0);
+        rep.log(format!("  pos_x {}  pos_y {}  scale {}", crate::scene::num(rd.pos_x), crate::scene::num(rd.pos_y), rd.scale));
+        rep.log(format!("  {}  {}", png.display(), txt.display()));
+        return Ok(());
     }
     let ov = overview_params(r, cuts, o)?;
     let img = overview::render(r, &ov, o.ss, cuts, o.cull)?;
@@ -150,5 +169,5 @@ pub fn export_overview(
         ov.zoom, ov.origin[0], ov.origin[1], ov.origin[2], ov.rotated
     ));
     rep.log(format!("  {}.bmp/.tga/.txt", out.join(name).display()));
-    Ok(ov)
+    Ok(())
 }

@@ -6,6 +6,7 @@ use glam::DVec3;
 use rayon::prelude::*;
 
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
+use crate::s2::nav::{CROUCH, NavMesh};
 
 pub const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
@@ -122,9 +123,37 @@ pub struct Nav {
 }
 
 const DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+const BUCKET: f64 = 128.0;
+const LADDER_PAD: DVec3 = DVec3::new(24.0, 24.0, 40.0);
+
+struct NavTri {
+    p: [DVec3; 3],
+    stand: bool,
+}
+
+impl NavTri {
+    fn z_at(&self, x: f64, y: f64) -> Option<f64> {
+        let [a, b, c] = self.p;
+        let d = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if d.abs() < 1e-9 {
+            return None;
+        }
+        let w0 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d;
+        let w1 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
+        let w2 = 1.0 - w0 - w1;
+        let e = -1e-6;
+        (w0 >= e && w1 >= e && w2 >= e).then(|| w0 * a.z + w1 * b.z + w2 * c.z)
+    }
+}
 
 impl Nav {
     pub fn build(bsp: &Bsp, cell: f64, speed: f64) -> Result<Nav> {
+        if let Some(x) = &bsp.cs2 {
+            return match &x.nav {
+                Some(m) => Nav::from_areas(m, cell, speed),
+                None => bail!("map has no nav mesh"),
+            };
+        }
         if bsp.clipnodes.is_empty() {
             bail!("map has no collision hulls");
         }
@@ -165,6 +194,85 @@ impl Nav {
             })
             .collect();
 
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, bl.len());
+        nav.add_ladders(bsp, speed);
+        Ok(nav)
+    }
+
+    pub fn from_areas(m: &NavMesh, cell: f64, speed: f64) -> Result<Nav> {
+        if m.areas.is_empty() {
+            bail!("map has no nav mesh areas");
+        }
+        let v = |c: &[f32; 3]| DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64);
+        let mut tris = Vec::new();
+        for a in &m.areas {
+            let p: Vec<DVec3> = a.poly.iter().map(v).collect();
+            for i in 1..p.len().saturating_sub(1) {
+                tris.push(NavTri { p: [p[0], p[i], p[i + 1]], stand: a.flags & CROUCH == 0 });
+            }
+        }
+        let pts = tris.iter().flat_map(|t| t.p);
+        let (mut lo, mut hi) = pts.fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(a, b), p| (a.min(p), b.max(p)));
+        lo -= DVec3::new(cell, cell, 0.0);
+        hi += DVec3::new(cell, cell, 0.0);
+        let nx = ((hi.x - lo.x) / cell).ceil().max(1.0) as usize;
+        let ny = ((hi.y - lo.y) / cell).ceil().max(1.0) as usize;
+        let bx = ((hi.x - lo.x) / BUCKET).ceil().max(1.0) as usize;
+        let by = ((hi.y - lo.y) / BUCKET).ceil().max(1.0) as usize;
+        let bi = |x: f64, y: f64| {
+            let i = (((x - lo.x) / BUCKET).floor().max(0.0) as usize).min(bx - 1);
+            let j = (((y - lo.y) / BUCKET).floor().max(0.0) as usize).min(by - 1);
+            (i, j)
+        };
+        let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); bx * by];
+        for (k, t) in tris.iter().enumerate() {
+            let (a0, b0) = bi(t.p.iter().map(|p| p.x).fold(f64::INFINITY, f64::min), t.p.iter().map(|p| p.y).fold(f64::INFINITY, f64::min));
+            let (a1, b1) = bi(t.p.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max), t.p.iter().map(|p| p.y).fold(f64::NEG_INFINITY, f64::max));
+            for i in a0..=a1 {
+                for j in b0..=b1 {
+                    buckets[i * by + j].push(k as u32);
+                }
+            }
+        }
+        let cols: Vec<Vec<Node>> = (0..nx * ny)
+            .into_par_iter()
+            .map(|c| {
+                let x = lo.x + ((c / ny) as f64 + 0.5) * cell;
+                let y = lo.y + ((c % ny) as f64 + 0.5) * cell;
+                let (i, j) = bi(x, y);
+                let mut hits: Vec<(f64, bool)> = buckets[i * by + j]
+                    .iter()
+                    .filter_map(|&k| tris[k as usize].z_at(x, y).map(|z| (z, tris[k as usize].stand)))
+                    .collect();
+                hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut groups: Vec<(f64, bool)> = Vec::new();
+                for (z, s) in hits {
+                    match groups.last_mut() {
+                        Some(g) if z - g.0 <= STEP as f64 => *g = (z, g.1 || s),
+                        _ => groups.push((z, s)),
+                    }
+                }
+                (0..groups.len())
+                    .map(|k| Node {
+                        z: groups[k].0 as f32,
+                        top: groups.get(k + 1).map_or(f32::INFINITY, |g| g.0 as f32 - 1.0),
+                        stand: groups[k].1,
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0);
+        for l in &m.ladders {
+            let (t, b) = (v(&l.top), v(&l.bottom));
+            let w = DVec3::new(l.width as f64 / 2.0, l.width as f64 / 2.0, 0.0);
+            if nav.ladder(t.min(b) - w - LADDER_PAD, t.max(b) + w + LADDER_PAD, speed) {
+                nav.ladders += 1;
+            }
+        }
+        Ok(nav)
+    }
+
+    fn assemble(lo: DVec3, cell: f64, nx: usize, ny: usize, cols: Vec<Vec<Node>>, blockers: usize) -> Nav {
         let mut start = Vec::with_capacity(nx * ny + 1);
         let mut nodes = Vec::new();
         let mut col = Vec::new();
@@ -174,7 +282,6 @@ impl Nav {
             nodes.extend(v);
         }
         start.push(nodes.len() as u32);
-        let blockers = bl.len();
         let mut nav =
             Nav { lo, cell, nx, ny, start, nodes, col, orth: Vec::new(), extra: Vec::new(), ladders: 0, blockers };
         nav.orth = (0..nav.nodes.len())
@@ -192,8 +299,7 @@ impl Nav {
             })
             .collect();
         nav.extra = vec![Vec::new(); nav.nodes.len()];
-        nav.add_ladders(bsp, speed);
-        Ok(nav)
+        nav
     }
 
     pub fn len(&self) -> usize {
@@ -237,28 +343,31 @@ impl Nav {
         for e in bsp.entities.iter().filter(|e| e.class() == "func_ladder") {
             let Some(m) = e.model().and_then(|m| bsp.models.get(m)) else { continue };
             let o = e.origin().unwrap_or(DVec3::ZERO);
-            let pad = DVec3::new(24.0, 24.0, 40.0);
-            let near = self.nodes_in(m.mins + o - pad, m.maxs + o + pad);
-            if near.len() > 400 {
-                continue;
-            }
-            let before: usize = near.iter().map(|&a| self.extra[a].len()).sum();
-            for &a in &near {
-                for &b in &near {
-                    let dz = (self.nodes[b].z - self.nodes[a].z).abs();
-                    if dz <= STEP {
-                        continue;
-                    }
-                    let (ax, ay) = self.cell_xy(self.col[a] as usize);
-                    let (bx, by) = self.cell_xy(self.col[b] as usize);
-                    let t = dz as f64 / LADDER_SPEED + (bx - ax).hypot(by - ay) / speed;
-                    self.extra[a].push((b as u32, t as f32));
-                }
-            }
-            if near.iter().map(|&a| self.extra[a].len()).sum::<usize>() > before {
+            if self.ladder(m.mins + o - LADDER_PAD, m.maxs + o + LADDER_PAD, speed) {
                 self.ladders += 1;
             }
         }
+    }
+
+    fn ladder(&mut self, lo: DVec3, hi: DVec3, speed: f64) -> bool {
+        let near = self.nodes_in(lo, hi);
+        if near.len() > 400 {
+            return false;
+        }
+        let before: usize = near.iter().map(|&a| self.extra[a].len()).sum();
+        for &a in &near {
+            for &b in &near {
+                let dz = (self.nodes[b].z - self.nodes[a].z).abs();
+                if dz <= STEP {
+                    continue;
+                }
+                let (ax, ay) = self.cell_xy(self.col[a] as usize);
+                let (bx, by) = self.cell_xy(self.col[b] as usize);
+                let t = dz as f64 / LADDER_SPEED + (bx - ax).hypot(by - ay) / speed;
+                self.extra[a].push((b as u32, t as f32));
+            }
+        }
+        near.iter().map(|&a| self.extra[a].len()).sum::<usize>() > before
     }
 
     pub fn links(&self, u: usize) -> [u32; 4] {

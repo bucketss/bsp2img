@@ -170,6 +170,61 @@ pub fn tga_bytes(img: &image::RgbaImage) -> Vec<u8> {
     out
 }
 
+pub const RADAR: u32 = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Radar {
+    pub pos_x: f64,
+    pub pos_y: f64,
+    pub scale: f64,
+}
+
+pub fn read_radar(path: &Path) -> Result<Radar> {
+    let text = String::from_utf8_lossy(&std::fs::read(path).with_context(|| format!("reading {}", path.display()))?).into_owned();
+    let toks: Vec<&str> = text.split('"').collect();
+    let get = |key: &str| -> Option<f64> {
+        let i = toks.iter().position(|t| t.eq_ignore_ascii_case(key))?;
+        toks.get(i + 2)?.trim().parse().ok()
+    };
+    Ok(Radar {
+        pos_x: get("pos_x").context("pos_x missing")?,
+        pos_y: get("pos_y").context("pos_y missing")?,
+        scale: get("scale").context("scale missing")?,
+    })
+}
+
+pub fn fit_radar(points: &[DVec3], margin: f64) -> Radar {
+    let lo = points.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
+    let hi = points.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
+    let size = (hi.x - lo.x).max(hi.y - lo.y) * (1.0 + margin);
+    let scale = (size / RADAR as f64 * 100.0).ceil() / 100.0;
+    let half = scale * RADAR as f64 / 2.0;
+    let c = (lo + hi) / 2.0;
+    Radar { pos_x: (c.x - half).round(), pos_y: (c.y + half).round(), scale }
+}
+
+pub fn radar_view(r: &Radar) -> View {
+    let s = r.scale * RADAR as f64;
+    View { basis: top_down(DVec3::X, DVec3::Y), cx: r.pos_x + s / 2.0, cy: r.pos_y - s / 2.0, w: s, h: s, sky_yaw: None, persp: None }
+}
+
+pub fn radar_txt(name: &str, r: &Radar) -> String {
+    let lines = [
+        format!("// overview description file for {name}"),
+        String::new(),
+        format!("\"{name}\""),
+        "{".into(),
+        format!("\t\"material\"\t\"overviews/{name}\""),
+        format!("\t\"pos_x\"\t\t\"{}\"", crate::scene::num(r.pos_x)),
+        format!("\t\"pos_y\"\t\t\"{}\"", crate::scene::num(r.pos_y)),
+        format!("\t\"scale\"\t\t\"{}\"", crate::scene::num(r.scale)),
+        "\t\"rotate\"\t\"0\"".into(),
+        "\t\"zoom\"\t\t\"1\"".into(),
+        "}".into(),
+    ];
+    lines.iter().map(|l| format!("{l}\r\n")).collect()
+}
+
 pub fn exts(png: bool) -> &'static [&'static str] {
     if png { &[".bmp", ".tga", ".txt", ".png"] } else { &[".bmp", ".tga", ".txt"] }
 }
