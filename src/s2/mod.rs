@@ -6,3 +6,4 @@ pub mod model;
 pub mod world;
 pub mod material;
 pub mod texture;
+pub mod entities;
