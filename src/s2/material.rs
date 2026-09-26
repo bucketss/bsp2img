@@ -26,7 +26,6 @@ pub enum Fill {
 
 #[derive(Clone, Debug)]
 pub struct Material {
-    pub shader: String,
     pub fill: Fill,
     pub layer2: Option<(String, Blend, [f32; 4])>,
     pub mode: Mode,
@@ -123,7 +122,6 @@ pub fn parse(name: &str, d: &Value) -> Option<Material> {
     let layer2 = blend.and_then(|b| texture(d, LAYER2_PARAMS).map(|t| (t, b, uv2)));
     let decal = int(d, "F_OVERLAY") != 0 || int(d, "F_DECAL_TEXTURE") != 0 || int(d, "F_DEPTH_BIAS") != 0;
     Some(Material {
-        shader,
         fill,
         layer2,
         mode,

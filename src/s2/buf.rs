@@ -7,24 +7,12 @@ pub fn slice(b: &[u8], o: usize, n: usize) -> Result<&[u8]> {
     }
 }
 
-pub fn u8_(b: &[u8], o: usize) -> Result<u8> {
-    Ok(slice(b, o, 1)?[0])
-}
-
 pub fn u16_(b: &[u8], o: usize) -> Result<u16> {
     Ok(u16::from_le_bytes(slice(b, o, 2)?.try_into()?))
 }
 
 pub fn u32_(b: &[u8], o: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(slice(b, o, 4)?.try_into()?))
-}
-
-pub fn i32_(b: &[u8], o: usize) -> Result<i32> {
-    Ok(u32_(b, o)? as i32)
-}
-
-pub fn f32_(b: &[u8], o: usize) -> Result<f32> {
-    Ok(f32::from_bits(u32_(b, o)?))
 }
 
 pub fn cstr(b: &[u8], o: usize) -> Result<(String, usize)> {
@@ -66,9 +54,6 @@ impl<'a> Rd<'a> {
     }
     pub fn u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into()?))
-    }
-    pub fn i32(&mut self) -> Result<i32> {
-        Ok(self.u32()? as i32)
     }
     pub fn u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into()?))

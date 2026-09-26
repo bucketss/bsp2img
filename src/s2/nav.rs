@@ -17,7 +17,6 @@ pub struct Ladder {
 }
 
 pub struct NavMesh {
-    pub version: u32,
     pub areas: Vec<Area>,
     pub ladders: Vec<Ladder>,
 }
@@ -104,7 +103,7 @@ pub fn parse(b: &[u8]) -> Result<NavMesh> {
         r.skip(4 * if ver >= 35 { 8 } else { 6 })?;
         ladders.push(Ladder { top, bottom, width });
     }
-    Ok(NavMesh { version: ver, areas, ladders })
+    Ok(NavMesh { areas, ladders })
 }
 
 impl NavMesh {

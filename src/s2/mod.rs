@@ -11,7 +11,7 @@ pub mod texture;
 pub mod vpk;
 pub mod world;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -28,8 +28,6 @@ const CROP_CELL: f64 = 16.0;
 const CROP_PAD: f64 = 512.0;
 
 pub struct Extra {
-    pub map: String,
-    pub root: Option<PathBuf>,
     pub nav: Option<nav::NavMesh>,
 }
 
@@ -132,7 +130,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         }
         log(format!("{moved} spawn points raised to nav floor + {}", crate::nav::STAND_OFS));
     }
-    bsp.cs2 = Some(Box::new(Extra { map: map.clone(), root, nav: navmesh }));
+    bsp.cs2 = Some(Box::new(Extra { nav: navmesh }));
     let t1 = t0.elapsed().as_secs_f64();
 
     let lightmap = match light::bake(&fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {

@@ -26,12 +26,6 @@ impl Value {
             _ => &NULL,
         }
     }
-    pub fn at(&self, i: usize) -> &Value {
-        match self {
-            Value::Array(v) => v.get(i).unwrap_or(&NULL),
-            _ => &NULL,
-        }
-    }
     pub fn arr(&self) -> &[Value] {
         match self {
             Value::Array(v) => v,
@@ -148,10 +142,6 @@ fn lz4(src: &[u8], n: usize) -> Result<Vec<u8>> {
 
 pub fn parse(b: &[u8]) -> Result<Value> {
     parse_len(b).map(|(v, _)| v)
-}
-
-pub fn is_kv3(b: &[u8]) -> bool {
-    u32_(b, 0).is_ok_and(|m| m & 0xffffff00 == 0x4B563300)
 }
 
 pub fn parse_len(b: &[u8]) -> Result<(Value, usize)> {

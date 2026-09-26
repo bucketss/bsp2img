@@ -14,7 +14,6 @@ pub struct Attr {
 
 pub struct Buf {
     pub stride: usize,
-    pub count: usize,
     pub data: Vec<u8>,
     pub layout: Vec<Attr>,
 }
@@ -223,7 +222,7 @@ fn decode_buf(res: &Res, b: &Value, index: bool) -> Result<Buf> {
             }
         })
         .collect();
-    Ok(Buf { stride, count, data, layout })
+    Ok(Buf { stride, data, layout })
 }
 
 fn vbib(blk: &[u8]) -> Result<(Vec<Buf>, Vec<Buf>)> {
@@ -253,7 +252,7 @@ fn vbib(blk: &[u8]) -> Result<(Vec<Buf>, Vec<Buf>)> {
         let raw = slice(blk, rb + doff, total)?;
         let packed = count.checked_mul(stride).is_some_and(|w| w > total);
         let data = unpack(raw, count, stride, index, false, size & 0x8000000 != 0, packed && size & 0x4000000 == 0)?;
-        Ok(Buf { stride, count, data, layout })
+        Ok(Buf { stride, data, layout })
     };
     let (voff, vn, ioff, inn) = (u(0)?, u(4)?, u(8)?, u(12)?);
     let vbs = (0..vn).map(|i| one(voff + i * 24, false)).collect::<Result<Vec<_>>>()?;

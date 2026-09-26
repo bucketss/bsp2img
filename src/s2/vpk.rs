@@ -109,10 +109,6 @@ impl Vpk {
         Ok(Vpk { path: path.to_path_buf(), data_off: (hdr + tree) as u64, entries, own: OnceLock::new(), files })
     }
 
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.entries.keys().map(|k| k.as_str())
-    }
-
     pub fn entry(&self, name: &str) -> Option<&Entry> {
         self.entries.get(&name.to_lowercase())
     }

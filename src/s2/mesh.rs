@@ -191,7 +191,6 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             Err(_) => {
                 missing.insert(n.clone());
                 (n, Some(Material {
-                    shader: String::new(),
                     fill: Fill::Solid([255, 0, 255, 255]),
                     layer2: None,
                     mode: material::Mode::Opaque,

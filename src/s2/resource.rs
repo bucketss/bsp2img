@@ -12,7 +12,6 @@ pub struct Block {
 
 pub struct Res {
     pub data: Vec<u8>,
-    pub version: u16,
     pub blocks: Vec<Block>,
 }
 
@@ -21,7 +20,6 @@ impl Res {
         ensure!(data.len() >= 16, "resource too short");
         let hv = u16_(&data, 4)?;
         ensure!(hv == 12, "resource header version {hv}");
-        let version = u16_(&data, 6)?;
         let boff = u32_(&data, 8)? as usize;
         let n = u32_(&data, 12)? as usize;
         let mut blocks = Vec::with_capacity(n);
@@ -34,7 +32,7 @@ impl Res {
             blocks.push(Block { kind, off, size });
             p += 12;
         }
-        Ok(Res { data, version, blocks })
+        Ok(Res { data, blocks })
     }
 
     pub fn raw(&self, i: usize) -> Result<&[u8]> {
