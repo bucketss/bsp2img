@@ -158,6 +158,71 @@ fn blocks(w: usize, h: usize, bb: usize, raw: &[u8], mut put: impl FnMut(usize, 
 pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
     let (inf, m, raw) = mip_bytes(fs, name, max_dim)?;
     let (w, h) = inf.dims(m);
+    Ok(Image { w, h, rgba: decode(&inf, w, h, &raw)? })
+}
+
+pub struct Volume<T> {
+    pub w: usize,
+    pub h: usize,
+    pub d: usize,
+    pub data: Vec<T>,
+}
+
+fn slices(fs: &Fs, name: &str) -> Result<(Info, usize, usize, Vec<Vec<u8>>)> {
+    let (inf, m, raw) = mip_bytes(fs, name, usize::MAX)?;
+    let (w, h) = inf.dims(m);
+    let n = inf.layers();
+    let each = inf.mip_size(m)? / n;
+    ensure!(raw.len() >= each * n, "volume data short");
+    Ok((inf, w, h, raw.chunks_exact(each).take(n).map(|c| c.to_vec()).collect()))
+}
+
+pub fn load_volume(fs: &Fs, name: &str) -> Result<Volume<u8>> {
+    let (inf, w, h, sl) = slices(fs, name)?;
+    let d = sl.len();
+    let mut data = Vec::with_capacity(w * h * d * 4);
+    for s in &sl {
+        data.extend(decode(&inf, w, h, s)?);
+    }
+    Ok(Volume { w, h, d, data })
+}
+
+pub fn load_volume_hdr(fs: &Fs, name: &str) -> Result<Volume<u32>> {
+    let (inf, w, h, sl) = slices(fs, name)?;
+    let d = sl.len();
+    let parts: Vec<Result<Vec<u32>>> = {
+        use rayon::prelude::*;
+        sl.par_iter()
+            .map(|s| hdr_decode(&inf, w, h, s).map(|x| x.rgb.chunks_exact(3).map(|c| crate::mesh::pack_rgb9e5([c[0], c[1], c[2]])).collect()))
+            .collect()
+    };
+    let mut data = Vec::with_capacity(w * h * d);
+    for p in parts {
+        data.extend(p?);
+    }
+    Ok(Volume { w, h, d, data })
+}
+
+pub fn load_cube(fs: &Fs, name: &str, max_dim: usize) -> Result<(usize, Vec<Vec<f32>>)> {
+    let (inf, m, raw) = mip_bytes(fs, name, max_dim)?;
+    ensure!(inf.flags & CUBE != 0, "not a cube map");
+    let (w, h) = inf.dims(m);
+    let each = inf.mip_size(m)? / inf.layers();
+    ensure!(raw.len() >= each * 6, "cube data short");
+    let faces = raw
+        .chunks_exact(each)
+        .take(6)
+        .map(|c| match inf.format {
+            19 | 10 => hdr_decode(&inf, w, h, c).map(|x| x.rgb),
+            _ => decode(&inf, w, h, c).map(|px| {
+                px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]].map(|v| (v as f32 / 255.0).powf(2.2))).collect()
+            }),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((w.min(h), faces))
+}
+
+fn decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
     let mut rgba = vec![0u8; w * h * 4];
     let mut store = |bx: usize, by: usize, px: &[u8; 64]| {
         for yy in 0..4 {
@@ -171,7 +236,7 @@ pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
         }
     };
     match inf.format {
-        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(inf.format).unwrap(), &raw, |bx, by, b| {
+        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(inf.format).unwrap(), raw, |bx, by, b| {
             let mut out = [0u8; 64];
             match inf.format {
                 1 => bcdec_rs::bc1(b, &mut out, 16),
@@ -196,7 +261,7 @@ pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
             Ok(())
         })?,
         19 => {
-            let hdr = hdr_from(&inf, m, &raw)?;
+            let hdr = hdr_decode(inf, w, h, raw)?;
             for (i, c) in hdr.rgb.chunks_exact(3).enumerate() {
                 for k in 0..3 {
                     let v = c[k].max(0.0);
@@ -205,24 +270,28 @@ pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
                 rgba[i * 4 + 3] = 255;
             }
         }
-        4 => rgba.copy_from_slice(slice(&raw, 0, w * h * 4)?),
+        4 => rgba.copy_from_slice(slice(raw, 0, w * h * 4)?),
         28 => {
-            for (d, s) in rgba.chunks_exact_mut(4).zip(slice(&raw, 0, w * h * 4)?.chunks_exact(4)) {
+            for (d, s) in rgba.chunks_exact_mut(4).zip(slice(raw, 0, w * h * 4)?.chunks_exact(4)) {
                 d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
             }
         }
         3 => {
-            for (d, &s) in rgba.chunks_exact_mut(4).zip(slice(&raw, 0, w * h)?) {
+            for (d, &s) in rgba.chunks_exact_mut(4).zip(slice(raw, 0, w * h)?) {
                 d.copy_from_slice(&[s, s, s, 255]);
             }
         }
         f => bail!("texture format {f} not supported"),
     }
-    Ok(Image { w, h, rgba })
+    Ok(rgba)
 }
 
 fn hdr_from(inf: &Info, m: usize, raw: &[u8]) -> Result<Hdr> {
     let (w, h) = inf.dims(m);
+    hdr_decode(inf, w, h, raw)
+}
+
+fn hdr_decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Hdr> {
     let mut rgb = vec![0f32; w * h * 3];
     match inf.format {
         19 => blocks(w, h, 16, raw, |bx, by, b| {

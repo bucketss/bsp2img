@@ -529,7 +529,7 @@ fn material(name: &str, mode: Mode, alpha: f32, tint: [f32; 3], tex: Option<usiz
             m["alphaMode"] = json!("MASK");
             m["alphaCutoff"] = json!(0.5);
         }
-        Mode::Blend | Mode::Additive => m["alphaMode"] = json!("BLEND"),
+        Mode::Blend | Mode::Additive | Mode::Mod2x => m["alphaMode"] = json!("BLEND"),
     }
     if unlit {
         m["extensions"] = json!({"KHR_materials_unlit": {}});
@@ -543,6 +543,7 @@ fn mode_key(m: Mode) -> &'static str {
         Mode::AlphaTest => "mask",
         Mode::Blend => "blend",
         Mode::Additive => "additive",
+        Mode::Mod2x => "mod2x",
     }
 }
 
@@ -736,6 +737,7 @@ pub fn export_gltf(
     let parts: Vec<Part> = mesh
         .batches
         .par_iter()
+        .filter(|b| b.mode != Mode::Mod2x)
         .map(|b| Part {
             tex: b.tex,
             mode: b.mode,

@@ -10,6 +10,7 @@ pub enum Mode {
     AlphaTest,
     Blend,
     Additive,
+    Mod2x,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,20 +26,53 @@ pub enum Fill {
 }
 
 #[derive(Clone, Debug)]
+pub struct Layer {
+    pub tex: String,
+    pub uv: [f32; 4],
+    pub set: u32,
+}
+
+#[derive(Clone, Debug)]
 pub struct Material {
     pub fill: Fill,
-    pub layer2: Option<(String, Blend, [f32; 4])>,
+    pub layer2: Option<Layer>,
+    pub layer3: Option<Layer>,
+    pub blend: Blend,
     pub mode: Mode,
     pub alpha: f32,
     pub tint: [f32; 3],
+    pub tint_mask: Option<String>,
     pub uv_scale: [f32; 2],
     pub uv_offset: [f32; 2],
+    pub uv_set: u32,
+    pub paint: bool,
     pub decal: bool,
 }
 
-const SKIP_SHADERS: &[&str] = &["csgo_effects.vfx", "csgo_static_overlay.vfx", "sky.vfx", "csgo_sky.vfx", "tools_sprite.vfx"];
+impl Material {
+    pub fn solid(c: [u8; 4]) -> Material {
+        Material {
+            fill: Fill::Solid(c),
+            layer2: None,
+            layer3: None,
+            blend: Blend::Height,
+            mode: Mode::Opaque,
+            alpha: 1.0,
+            tint: [1.0; 3],
+            tint_mask: None,
+            uv_scale: [1.0; 2],
+            uv_offset: [0.0; 2],
+            uv_set: 0,
+            paint: false,
+            decal: false,
+        }
+    }
+}
+
+const SKIP_SHADERS: &[&str] = &["csgo_effects.vfx", "sky.vfx", "csgo_sky.vfx", "tools_sprite.vfx", "csgo_projected_decals.vfx"];
 const COLOR_PARAMS: &[&str] = &["g_tColor", "g_tColor1", "g_tColorA", "g_tLayer1Color", "g_tGlassTintColor"];
 const LAYER2_PARAMS: &[&str] = &["g_tLayer2Color", "g_tColor2", "g_tColorB"];
+const LAYER3_PARAMS: &[&str] = &["g_tLayer3Color", "g_tColor3", "g_tColorC"];
 const GLASS_ALPHA: f32 = 0.35;
 const WATER_ALPHA: f32 = 0.75;
 
@@ -58,9 +92,28 @@ fn texture(d: &Value, names: &[&str]) -> Option<String> {
     names.iter().find_map(|n| param(d, "m_textureParams", "m_pValue", n)).map(|v| v.s().to_lowercase()).filter(|s| !s.is_empty())
 }
 
+fn first_vec(d: &Value, names: &[&str]) -> Option<Vec<f64>> {
+    names.iter().find_map(|n| vector(d, n))
+}
+
+fn transform(d: &Value, scales: &[&str], offsets: &[&str]) -> [f32; 4] {
+    let s = first_vec(d, scales).map_or([1.0; 2], |v| [v[0], v[1]]);
+    let o = first_vec(d, offsets).map_or([0.0; 2], |v| [v[0], v[1]]);
+    [s[0] as f32, s[1] as f32, o[0] as f32, o[1] as f32]
+}
+
 pub fn skip_name(name: &str) -> bool {
     let n = name.to_lowercase();
     n.starts_with("materials/tools/") || n.contains("/tools/tools") || n.contains("nodraw") || n.contains("toolsblocklight")
+}
+
+fn overlay_mode(v: i64) -> Mode {
+    match v {
+        2 => Mode::AlphaTest,
+        3 | 6 => Mode::Mod2x,
+        4 => Mode::Additive,
+        _ => Mode::Blend,
+    }
 }
 
 pub fn parse(name: &str, d: &Value) -> Option<Material> {
@@ -71,7 +124,12 @@ pub fn parse(name: &str, d: &Value) -> Option<Material> {
     if shader == "generic.vfx" && name.to_lowercase().contains("tools") {
         return None;
     }
-    let mut mode = if int(d, "F_ADDITIVE_BLEND") != 0 {
+    let overlay = shader == "csgo_static_overlay.vfx";
+    let mut mode = if overlay {
+        overlay_mode(int(d, "F_BLEND_MODE"))
+    } else if shader == "csgo_decalmodulate.vfx" {
+        Mode::Mod2x
+    } else if int(d, "F_ADDITIVE_BLEND") != 0 {
         Mode::Additive
     } else if int(d, "F_TRANSLUCENT") != 0 {
         Mode::Blend
@@ -109,26 +167,39 @@ pub fn parse(name: &str, d: &Value) -> Option<Material> {
         "csgo_lightmappedgeneric.vfx" if int(d, "F_LAYERS") != 0 => Some(Blend::Painted),
         _ => None,
     };
-    let scale = vector(d, "g_vTexCoordScale").or_else(|| vector(d, "g_vTexCoordScale1")).or_else(|| vector(d, "g_vLayer1TexCoordScale"));
-    let offset = vector(d, "g_vTexCoordOffset").or_else(|| vector(d, "g_vTexCoordOffset1")).or_else(|| vector(d, "g_vLayer1TexCoordOffset"));
-    let scale2 = vector(d, "g_vTexCoordScale2").or_else(|| vector(d, "g_vLayer2TexCoordScale"));
-    let offset2 = vector(d, "g_vTexCoordOffset2").or_else(|| vector(d, "g_vLayer2TexCoordOffset"));
-    let uv2 = {
-        let (s1, o1) = (scale.as_ref().map_or([1.0; 2], |v| [v[0], v[1]]), offset.as_ref().map_or([0.0; 2], |v| [v[0], v[1]]));
-        let (s2, o2) = (scale2.map_or([1.0; 2], |v| [v[0], v[1]]), offset2.map_or([0.0; 2], |v| [v[0], v[1]]));
-        let a = [s2[0] / s1[0].max(1e-6), s2[1] / s1[1].max(1e-6)];
-        [a[0] as f32, a[1] as f32, (o2[0] - o1[0] * a[0]) as f32, (o2[1] - o1[1] * a[1]) as f32]
-    };
-    let layer2 = blend.and_then(|b| texture(d, LAYER2_PARAMS).map(|t| (t, b, uv2)));
-    let decal = int(d, "F_OVERLAY") != 0 || int(d, "F_DECAL_TEXTURE") != 0 || int(d, "F_DEPTH_BIAS") != 0;
+    let uv1 = transform(
+        d,
+        &["g_vTexCoordScale", "g_vTexCoordScale1", "g_vLayer1TexCoordScale"],
+        &["g_vTexCoordOffset", "g_vTexCoordOffset1", "g_vLayer1TexCoordOffset"],
+    );
+    let set = |n: &str| (int(d, n) - 1).clamp(0, 1) as u32;
+    let layer2 = blend.and_then(|_| texture(d, LAYER2_PARAMS)).map(|tex| Layer {
+        tex,
+        uv: transform(d, &["g_vTexCoordScale2", "g_vLayer2TexCoordScale"], &["g_vTexCoordOffset2", "g_vLayer2TexCoordOffset"]),
+        set: set("g_nUVSet2"),
+    });
+    let layer3_on = shader != "csgo_environment_blend.vfx" || int(d, "F_ENABLE_LAYER_3") != 0;
+    let layer3 = (layer2.is_some() && layer3_on).then(|| texture(d, LAYER3_PARAMS)).flatten().map(|tex| Layer {
+        tex,
+        uv: transform(d, &["g_vTexCoordScale3", "g_vLayer3TexCoordScale"], &["g_vTexCoordOffset3", "g_vLayer3TexCoordOffset"]),
+        set: set("g_nUVSet3"),
+    });
+    let tint_mask = (int(d, "F_TINT_MASK") != 0).then(|| texture(d, &["g_tTintMask"])).flatten();
+    let paint = int(d, "F_VERTEX_COLOR") != 0 || int(d, "F_PAINT_VERTEX_COLORS") != 0;
+    let decal = overlay || int(d, "F_OVERLAY") != 0 || int(d, "F_DECAL_TEXTURE") != 0 || int(d, "F_DEPTH_BIAS") != 0;
     Some(Material {
         fill,
         layer2,
+        layer3,
+        blend: blend.unwrap_or(Blend::Height),
         mode,
         alpha,
         tint,
-        uv_scale: scale.map_or([1.0; 2], |v| [v[0] as f32, v[1] as f32]),
-        uv_offset: offset.map_or([0.0; 2], |v| [v[0] as f32, v[1] as f32]),
+        tint_mask,
+        uv_scale: [uv1[0], uv1[1]],
+        uv_offset: [uv1[2], uv1[3]],
+        uv_set: set("g_nUVSet1"),
+        paint,
         decal,
     })
 }

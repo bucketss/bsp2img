@@ -307,6 +307,9 @@ impl Scene {
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
+        if let Some(x) = &self.bsp.cs2 {
+            return x.sky_material(name.unwrap_or("")).unwrap_or_else(|| "env_sky".into());
+        }
         match name {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => self.bsp.worldspawn().get("skyname").unwrap_or("desert").to_string(),
@@ -314,6 +317,9 @@ impl Scene {
     }
 
     pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
+        if let Some(x) = &self.bsp.cs2 {
+            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
+        }
         let faces = find_sky(name, &self.dirs)?;
         load_sky(&faces, &self.opts.light.tex_lut()).ok()
     }

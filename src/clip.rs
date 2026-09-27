@@ -7,21 +7,7 @@ const EDGE_EPS: f64 = 1e-4;
 const MAX_DEPTH: u32 = 48;
 
 pub fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
-    let l2 = |p: [f32; 2], q: [f32; 2]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-    let l3 = |p: [f32; 3], q: [f32; 3]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
-    let mut n = l3(a.normal, b.normal);
-    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if len > 1e-12 {
-        n = n.map(|c| c / len);
-    }
-    Vertex {
-        pos: l3(a.pos, b.pos),
-        uv: l2(a.uv, b.uv),
-        lm: l2(a.lm, b.lm),
-        bias: a.bias + (b.bias - a.bias) * t,
-        normal: n,
-        blend: a.blend + (b.blend - a.blend) * t,
-    }
+    Vertex::lerp(a, b, t)
 }
 
 pub fn split(poly: &[Vertex], axis: usize, v: f64) -> (Vec<Vertex>, Vec<Vertex>) {
