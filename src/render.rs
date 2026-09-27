@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use bytemuck::{Pod, Zeroable};
 use glam::{DMat4, DVec3};
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
 use std::sync::{Arc, Mutex};
@@ -591,7 +592,7 @@ impl Stager<'_> {
         self.add(data.len() as u64);
     }
 
-    fn packed<T: Pod>(&mut self, usage: wgpu::BufferUsages, verts: &[Vertex], f: impl Fn(&Vertex) -> T) -> wgpu::Buffer {
+    fn packed<T: Pod + Send>(&mut self, usage: wgpu::BufferUsages, verts: &[Vertex], f: impl Fn(&Vertex) -> T + Sync) -> wgpu::Buffer {
         let size = std::mem::size_of::<T>();
         let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -602,8 +603,7 @@ impl Stager<'_> {
         let per = UPLOAD_CHUNK / size;
         let mut tmp: Vec<T> = Vec::with_capacity(per.min(verts.len()));
         for (i, c) in verts.chunks(per).enumerate() {
-            tmp.clear();
-            tmp.extend(c.iter().map(&f));
+            c.par_iter().map(&f).collect_into_vec(&mut tmp);
             self.write(&buf, (i * per * size) as u64, bytemuck::cast_slice(&tmp));
         }
         buf
