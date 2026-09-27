@@ -46,7 +46,7 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn headless() -> Result<Gpu> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -54,6 +54,10 @@ impl Gpu {
             apply_limit_buckets: false,
         }))
         .context("no GPU adapter found")?;
+        crate::prof::note(|| {
+            let i = adapter.get_info();
+            format!("adapter {} ({:?})", i.name, i.backend)
+        });
         let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,
