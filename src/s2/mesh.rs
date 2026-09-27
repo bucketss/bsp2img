@@ -103,6 +103,7 @@ fn relative(uv: [f32; 4], s1: [f32; 2], o1: [f32; 2]) -> [f32; 4] {
 }
 
 pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
+    let mut tm = crate::prof::Timer::new("mesh");
     let mut names = world.models.clone();
     let mut ids: HashMap<String, u32> = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
     let mut insts: Vec<Inst> = Vec::new();
@@ -139,6 +140,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             }
         })
         .collect();
+    tm.lap("models");
     let skins: Vec<Option<usize>> =
         insts.iter().map(|it| models[it.model as usize].as_ref().and_then(|m| m.skin(&it.skin))).collect();
 
@@ -191,6 +193,23 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         });
     }
     let dropped = total - entries.len();
+    tm.lap("crop");
+    if crate::prof::on() {
+        let uniq: usize = entries
+            .par_iter()
+            .map(|e| {
+                let it = &insts[e.inst as usize];
+                let m = models[it.model as usize].as_ref().unwrap();
+                let Ok(ix) = m.index_view(&m.draws[e.dc as usize]) else { return 0 };
+                let mut v: Vec<u32> = (0..ix.len()).map(|k| ix.get(k)).collect();
+                v.sort_unstable();
+                v.dedup();
+                v.len()
+            })
+            .sum();
+        let corners: usize = entries.iter().map(|e| e.tris * 3).sum();
+        crate::prof::note(|| format!("unique vertices {uniq} of {corners} corners ({:.3} per triangle)", uniq as f64 * 3.0 / corners.max(1) as f64));
+    }
 
     let mat_of = |e: &Entry| -> String {
         let it = &insts[e.inst as usize];
@@ -214,6 +233,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         })
         .collect();
 
+    tm.lap("materials");
     let mut keys: HashMap<(String, [u8; 3], Mode, u32), usize> = HashMap::new();
     let mut groups: Vec<(String, [u8; 3], Mode, f32, Vec<usize>)> = Vec::new();
     for (ei, e) in entries.iter().enumerate() {
@@ -257,6 +277,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             (t.clone(), im)
         })
         .collect();
+    tm.lap("textures");
     for (t, im) in &decoded {
         if im.is_none() {
             missing.insert(t.clone());
@@ -321,6 +342,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     for (&ei, v) in &clipped {
         entries[ei].tris = v.len() / 3;
     }
+    tm.lap("clip");
     let probe_draws = if ctx.probes.is_some() {
         entries
             .iter()
@@ -370,6 +392,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             start = end;
         }
     }
+    tm.lap("fill");
     let plain = Material::solid([255; 4]);
     let all: Vec<usize> = (0..caster_entries.len()).collect();
     let nocast = Ctx { lm_rect: [0.0; 4], flat, probes: None };
@@ -379,7 +402,10 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         fill(models[it.model as usize].as_ref().unwrap(), e.dc as usize, it, &plain, &nocast, out)
     });
 
+    tm.lap("casters");
     let points = sample_points(&batches);
+    tm.lap("points");
+    crate::prof::note(|| format!("{} sample points", points.len()));
     let anim = vec![None; images.len()];
     Built {
         mesh: Mesh {

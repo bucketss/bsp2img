@@ -18,6 +18,7 @@ mod overview;
 mod paths;
 mod post;
 mod poster;
+mod prof;
 mod quant;
 mod reach;
 mod s2;
@@ -52,6 +53,7 @@ fn detach_console() {}
 
 fn main() {
     let cli = cli::Cli::parse();
+    prof::enable(cli.timings);
     if cli.cmd.is_none() {
         detach_console();
     }

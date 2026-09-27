@@ -55,6 +55,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `--tex-max N` | CS2 texture size limit (512) |
 | `--nearest` | Pixelated textures |
 | `--no-cull` | Draw back faces |
+| `--timings` | Log phase times (or `BSP2IMG_TIMINGS=1`) |
 
 ### iso
 

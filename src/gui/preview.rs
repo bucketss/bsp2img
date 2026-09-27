@@ -142,7 +142,13 @@ impl App {
             return;
         }
         let Some(r) = &self.renderer else { return };
-        let t = r.make_targets(w, h, fx);
+        let t = match r.make_targets(w, h, fx) {
+            Ok(t) => t,
+            Err(e) => {
+                self.log.push(format!("error: {e:#}"));
+                return;
+            }
+        };
         let mut er = self.egui_rend.write();
         let id = match &self.preview {
             Some(p) => {

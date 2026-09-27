@@ -588,7 +588,7 @@ impl TileCtx<'_> {
         let (tw, th) = (rw * ss, rh * ss);
         if self.targets.as_ref().is_none_or(|t| t.w != tw || t.h != th) {
             self.targets = None;
-            self.targets = Some(self.r.make_targets(tw, th, crate::post::needed(self.look)));
+            self.targets = Some(self.r.make_targets(tw, th, crate::post::needed(self.look))?);
         }
         let t = self.targets.as_ref().unwrap();
         let crop = Crop { x: rx0 * ss, y: ry0 * ss, w: fw * ss, h: fh * ss };

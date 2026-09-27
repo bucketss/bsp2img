@@ -85,6 +85,7 @@ fn brush_model(m: &str, map: &str) -> bool {
 
 pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(String)) -> Result<(Bsp, Mesh)> {
     let t0 = Instant::now();
+    let mut tm = crate::prof::Timer::new("cs2");
     let root = vpk::game_root(path, opts.game.as_deref());
     if root.is_none() {
         log("CS2 install not found next to the map or via --game; only the map's own files are searched".into());
@@ -154,6 +155,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky }));
     let fs = &bsp.cs2.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
+    tm.lap("world");
 
     let lightmap = match light::bake(fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {
         Ok(Some(b)) => {
@@ -169,7 +171,9 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
             None
         }
     };
+    tm.lap("lightmap");
     let crop = if opts.auto_crop { crop_box(&bsp, log) } else { None };
+    tm.lap("crop");
     let crop = crop.map(|[x0, y0, x1, y1]| [x0 - CROP_PAD, y0 - CROP_PAD, x1 + CROP_PAD, y1 + CROP_PAD]);
     let (lightmap, hdr) = lightmap.unzip();
     let probes = if hdr.is_some() {
@@ -184,7 +188,9 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         None
     };
     let nprobe = probes.as_ref().map_or(0, |p| p.count());
+    tm.lap("probes");
     let built = mesh::build(fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, crop, lightmap, hdr, probes });
+    tm.lap("mesh");
     if nprobe > 0 {
         log(format!("light probes: {nprobe} volumes, {} draws probe-lit", built.probe_draws));
     }

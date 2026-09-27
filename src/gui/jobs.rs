@@ -130,7 +130,7 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
         send(Msg::Log(format!("== export {name}")));
         let res = run_dir(&spec.out, &name).and_then(|out| {
             let mut log = |s: String| send(Msg::Log(s));
-            let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log);
+            let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log)?;
             if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {
                 spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
             }

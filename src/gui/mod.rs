@@ -315,7 +315,10 @@ impl App {
                             self.frame_cam = true;
                             self.cam_map = self.current.clone();
                         }
-                        self.renderer = Some(scene.renderer(&self.gpu, self.look.nearest));
+                        match scene.renderer(&self.gpu, self.look.nearest) {
+                            Ok(r) => self.renderer = Some(r),
+                            Err(e) => self.log.push(format!("error: {e:#}")),
+                        }
                         self.scene = Some(Arc::new(scene));
                         self.sky_loaded = None;
                         self.last_key.clear();
@@ -325,11 +328,16 @@ impl App {
             }
         }
         self.poll_job();
+        self.log.extend(crate::prof::take_gpu_errors().into_iter().map(|e| format!("gpu error: {e}")));
     }
 
     fn rebuild_renderer(&mut self) {
         if let Some(s) = &self.scene {
-            self.renderer = Some(s.renderer(&self.gpu, self.look.nearest));
+            self.renderer = None;
+            match s.renderer(&self.gpu, self.look.nearest) {
+                Ok(r) => self.renderer = Some(r),
+                Err(e) => self.log.push(format!("error: {e:#}")),
+            }
             self.sky_loaded = None;
             self.last_key.clear();
         }

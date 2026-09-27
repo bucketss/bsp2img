@@ -30,6 +30,8 @@ use crate::timing::{TimingOpts, export_timing};
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
+    #[arg(long, global = true, help = "log how long each loading and rendering phase takes")]
+    pub timings: bool,
 }
 
 #[derive(Subcommand)]
@@ -542,7 +544,7 @@ fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say)?;
         let mut tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
         if !matches!(o.kind, Anim::Day(_)) {
             scene.log_light(&o.look, &mut say);
@@ -571,7 +573,7 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say);
+        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say)?;
         reported(|rep| export_timing(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
         println!("  {:.1}s", t0.elapsed().as_secs_f64());
     }
@@ -594,7 +596,7 @@ fn kill_map(
     let res = (|| {
         let scene = Scene::load(path, &lo, gpu.max_dim, rep.log)?;
         let cuts = scene.cuts(&co, rep.log);
-        let (mut r, _) = scene.job_renderer(gpu, nearest, None, rep.log);
+        let (mut r, _) = scene.job_renderer(gpu, nearest, None, rep.log)?;
         export_kills(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, o, data, &out, rep, 0.0)
     })();
     match res {
@@ -760,7 +762,7 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say)?;
         let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
         scene.log_light(&o.look, &mut say);
         reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep))?;
@@ -789,7 +791,7 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         let mut log = |s: String| println!("  {s}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut log)?;
         let cuts = scene.cuts(&co, &mut log);
-        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut log);
+        let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut log)?;
         reported(|rep| export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, rep))?;
     }
     Ok(())
@@ -817,7 +819,7 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let (mut r, _) = scene.job_renderer(&gpu, false, None, &mut say);
+        let (mut r, _) = scene.job_renderer(&gpu, false, None, &mut say)?;
         let mut o = base.clone();
         if let Some(e) = ex.resolve(&scene.levels, &cuts) {
             say(format!("explode: split at z {}", e.planes.iter().map(|p| crate::scene::num(*p)).collect::<Vec<_>>().join(", ")));
@@ -910,7 +912,7 @@ pub fn run_poster(a: &PosterArgs) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say);
+        let (mut r, sky_tag) = scene.job_renderer(&gpu, o.look.nearest, o.look.sky_spec(), &mut say)?;
         let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
         scene.log_light(&o.look, &mut say);
         let res = reported(|rep| export_poster(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep));
@@ -948,7 +950,7 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
             let out = run_dir(&a.c.out, &name)?;
             let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
             let cuts = scene.cuts(&co, &mut say);
-            let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, a.f.nearest, None, &mut say)?;
             let res = reported(|rep| export_health(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
             if res.is_err() {
                 let _ = std::fs::remove_dir(&out);

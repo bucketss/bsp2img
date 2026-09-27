@@ -61,13 +61,28 @@ impl Gpu {
             },
             ..Default::default()
         }))?;
+        catch_errors(&device);
         Ok(Gpu { device, queue, max_dim: limits.max_texture_dimension_2d })
     }
 
     pub fn from_device(device: wgpu::Device, queue: wgpu::Queue) -> Gpu {
+        catch_errors(&device);
         let max_dim = device.limits().max_texture_dimension_2d;
         Gpu { device, queue, max_dim }
     }
+
+    pub fn guard<T>(&self, what: impl FnOnce() -> String, f: impl FnOnce() -> T) -> Result<T> {
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let v = f();
+        match pollster::block_on(scope.pop()) {
+            Some(e) => bail!("GPU out of memory ({}); try smaller --size/--ss, --tex-max, --crop or no --explode [{e}]", what()),
+            None => Ok(v),
+        }
+    }
+}
+
+fn catch_errors(dev: &wgpu::Device) {
+    dev.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| crate::prof::gpu_error(e.to_string())));
 }
 
 #[repr(C)]
@@ -496,7 +511,13 @@ fn vpos(v: &Vertex) -> DVec3 {
 }
 
 impl Renderer {
-    pub fn new(gpu: &Gpu, mesh: &Mesh, nearest: bool) -> Renderer {
+    pub fn new(gpu: &Gpu, mesh: &Mesh, nearest: bool) -> Result<Renderer> {
+        let bytes: usize = mesh.batches.iter().map(|b| b.verts.len()).sum::<usize>() * std::mem::size_of::<Vertex>();
+        gpu.guard(|| format!("{} MB of geometry", bytes >> 20), || Self::upload(gpu, mesh, nearest))
+    }
+
+    fn upload(gpu: &Gpu, mesh: &Mesh, nearest: bool) -> Renderer {
+        let mut tm = crate::prof::Timer::new("upload");
         let dev = &gpu.device;
         let shader = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("world"),
@@ -678,6 +699,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        tm.lap("pipelines");
         let tex_sampler = sampler(gpu, true, nearest, true);
         let mut tex_views: Vec<Option<wgpu::TextureView>> = Vec::new();
         for t in &mesh.textures {
@@ -687,6 +709,7 @@ impl Renderer {
                     .create_view(&Default::default())
             }));
         }
+        tm.lap("textures");
         let a = &mesh.atlas;
         let lmap_view = match &mesh.hdr {
             Some(h) => upload_texture(
@@ -730,6 +753,7 @@ impl Renderer {
         });
         let linear_clamp = sampler(gpu, false, false, false);
 
+        tm.lap("lightmap");
         let mut batches = Vec::new();
         for b in &mesh.batches {
             batches.extend(make_batch(gpu, &batch_layout, &tex_sampler, &tex_views, mesh, b, &b.verts, 0));
@@ -778,6 +802,7 @@ impl Renderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        tm.lap("geometry");
         let off_depth = texture(dev, 1, 1, DEPTH_FORMAT, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
         let light_off = Self::make_light_bind(dev, &light_layout, &light_buf, &off_depth, &cmp_sampler);
@@ -1545,7 +1570,11 @@ impl Renderer {
         self.post.run(&self.gpu, enc, look, &cam, pt, &t.depth_view, &t.color_view);
     }
 
-    pub fn make_targets(&self, w: u32, h: u32, post: bool) -> Targets {
+    pub fn make_targets(&self, w: u32, h: u32, post: bool) -> Result<Targets> {
+        self.gpu.guard(|| format!("{w}x{h} render targets"), || self.targets(w, h, post))
+    }
+
+    fn targets(&self, w: u32, h: u32, post: bool) -> Targets {
         let dev = &self.gpu.device;
         let color = texture(
             dev,
@@ -1581,7 +1610,7 @@ impl Renderer {
         if w.max(h) > self.gpu.max_dim {
             bail!("render target {w}x{h} exceeds GPU max {}; lower --size or --ss", self.gpu.max_dim);
         }
-        let t = self.make_targets(w, h, crate::post::needed(look));
+        let t = self.make_targets(w, h, crate::post::needed(look))?;
         let px = self.render_crop(&t, view, None, ss, cuts, look, time)?;
         let mut px = if ss > 1 { downsample(&px, w, h, wpx, hpx)? } else { px };
         unpremultiply(&mut px);
@@ -1604,10 +1633,12 @@ impl Renderer {
         look: &Look,
         time: f64,
     ) -> Result<Vec<u8>> {
+        let mut tm = crate::prof::Timer::new("render");
         let (w, h) = (t.w, t.h);
         let dev = self.gpu.device.clone();
         let mut enc = dev.create_command_encoder(&Default::default());
         self.draw_crop(&mut enc, t, view, crop, cuts, look, ss, time, [0.0; 4]);
+        tm.lap("encode");
         let row = (w * 4).div_ceil(256) * 256;
         let buf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
@@ -1631,6 +1662,7 @@ impl Renderer {
         });
         dev.poll(wgpu::PollType::wait_indefinitely())?;
         rx.recv()??;
+        tm.lap("gpu");
         let mut px = vec![0u8; (w * h * 4) as usize];
         {
             let data = slice.get_mapped_range()?;

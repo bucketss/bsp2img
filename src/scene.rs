@@ -130,7 +130,9 @@ pub fn num(v: f64) -> String {
 }
 
 fn levels(mesh: &Mesh, log: Log) -> Vec<(f64, f64, f64)> {
+    let mut tm = crate::prof::Timer::new("scene");
     let levels = roof_levels(mesh);
+    tm.lap("roof_levels");
     log(format!(
         "roof levels: {}",
         levels
@@ -182,7 +184,9 @@ impl Scene {
         } else {
             None
         };
+        let mut tm = crate::prof::Timer::new("goldsrc");
         let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim);
+        tm.lap("mesh");
         if !mesh.missing.is_empty() {
             log(format!("missing textures ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -266,27 +270,27 @@ impl Scene {
         Cuts { zmin: c.zmin.unwrap_or(-1e9), zmax: self.zmax(c, log), clip: c.clip_box(), use_mask: true }
     }
 
-    pub fn renderer(&self, gpu: &Gpu, nearest: bool) -> Renderer {
-        let mut r = Renderer::new(gpu, &self.mesh, nearest);
+    pub fn renderer(&self, gpu: &Gpu, nearest: bool) -> Result<Renderer> {
+        let mut r = Renderer::new(gpu, &self.mesh, nearest)?;
         r.set_mask(self.mask.clone());
         r.sun_env = sun_env(&self.bsp);
-        r
+        Ok(r)
     }
 
-    pub fn job_renderer(&self, gpu: &Gpu, nearest: bool, sky: Option<(String, f64, f64)>, log: Log) -> (Renderer, String) {
-        let mut r = self.renderer(gpu, nearest);
-        let Some((name, fov, pitch)) = sky else { return (r, String::new()) };
+    pub fn job_renderer(&self, gpu: &Gpu, nearest: bool, sky: Option<(String, f64, f64)>, log: Log) -> Result<(Renderer, String)> {
+        let mut r = self.renderer(gpu, nearest)?;
+        let Some((name, fov, pitch)) = sky else { return Ok((r, String::new())) };
         let sname = self.sky_name(Some(&name));
         match self.load_sky(&sname) {
             Some(f) => {
                 r.set_sky(Some(f), fov, pitch);
                 log(format!("sky: {sname}"));
                 let tag = if name.is_empty() { String::new() } else { format!("_{name}") };
-                (r, tag)
+                Ok((r, tag))
             }
             None => {
                 log(format!("sky: {sname} not found in gfx/env, using background"));
-                (r, String::new())
+                Ok((r, String::new()))
             }
         }
     }
