@@ -152,6 +152,7 @@ pub struct Mesh {
     pub hdr: Option<HdrLight>,
     pub casters: Vec<Vertex>,
     pub caster_idx: Vec<u32>,
+    pub point_cell: Option<f64>,
 }
 
 pub struct PointLight {
@@ -529,6 +530,7 @@ pub fn build_mesh(
         hdr: None,
         casters: Vec::new(),
         caster_idx: Vec::new(),
+        point_cell: None,
     }
 }
 

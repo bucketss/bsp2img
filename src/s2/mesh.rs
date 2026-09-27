@@ -440,6 +440,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             hdr: o.hdr,
             casters,
             caster_idx,
+            point_cell: Some(POINT_CELL),
         },
         draws: entries.len(),
         dropped,

@@ -6,8 +6,7 @@ use wgpu::util::DeviceExt;
 use std::sync::{Arc, Mutex};
 
 use crate::camera::{Basis, camera_basis, extents, ortho, persp};
-use crate::clip::clip_tris_z;
-use crate::explode::Explode;
+use crate::explode::{Explode, band_points};
 use crate::look::Look;
 use crate::mesh::{Batch, Mesh, Mode, Vertex};
 use crate::post::{Cam, NORMAL_FORMAT, Post, PostTargets};
@@ -32,6 +31,9 @@ const SHADOW_DEPTH: f64 = 0.75;
 const SHADOW_SLOPE: f32 = 1.5;
 const KEEP_MARGIN: f32 = 0.1;
 const SHADOW_CACHE: usize = 2;
+const BAND_EPS: f64 = 0.01;
+const NO_BAND: f32 = -3.0e38;
+const BAND_SLOTS: usize = 16;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -155,8 +157,21 @@ struct GpuBatch {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     count: u32,
+    zr: [f32; 2],
     bind: wgpu::BindGroup,
     frames: Vec<wgpu::BindGroup>,
+}
+
+struct Band {
+    off: u32,
+    lo: f32,
+    hi: f32,
+}
+
+impl Band {
+    fn meets(&self, zr: [f32; 2]) -> bool {
+        zr[1] > self.lo && zr[0] <= self.hi
+    }
 }
 
 struct SkyRes {
@@ -253,7 +268,6 @@ struct Guides {
 
 pub struct GpuScene {
     gpu: Gpu,
-    tex_views: Vec<Option<wgpu::TextureView>>,
     batch_layout: wgpu::BindGroupLayout,
     frame_layout: wgpu::BindGroupLayout,
     light_layout: wgpu::BindGroupLayout,
@@ -281,8 +295,9 @@ pub struct Renderer {
     orig: Option<Vec<DVec3>>,
     pt_band: Vec<u16>,
     explode: Option<Explode>,
-    exploded: Option<Vec<GpuBatch>>,
     guides: Option<Guides>,
+    frame_stride: u64,
+    band_slots: usize,
     frame_buf: wgpu::Buffer,
     frame_bind: wgpu::BindGroup,
     mask_view: Option<wgpu::TextureView>,
@@ -449,7 +464,6 @@ fn make_batch(
     b: &Batch,
     verts: &[Vertex],
     idx: &[u32],
-    band: usize,
 ) -> Option<GpuBatch> {
     let Some(Some(view)) = tex_views.get(b.tex) else { return None };
     if idx.is_empty() {
@@ -475,7 +489,7 @@ fn make_batch(
     };
     let tmask = b.tint_mask.and_then(|i| tex_views.get(i).and_then(|v| v.as_ref()));
     let u = [
-        b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], band as f32, 0.0, has2, 0.0, t[0], t[1], t[2], 1.0,
+        b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], 1.0, 0.0, has2, 0.0, t[0], t[1], t[2], 1.0,
         uv2[0], uv2[1], uv2[2], uv2[3], uv3[0], uv3[1], uv3[2], uv3[3], on3, second3, if tmask.is_some() { 1.0 } else { 0.0 }, 0.0,
     ];
     let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&u));
@@ -485,7 +499,8 @@ fn make_batch(
         Some(Some(seq)) => seq.iter().filter_map(|&i| tex_views.get(i).and_then(|v| v.as_ref())).map(make).collect(),
         _ => Vec::new(),
     };
-    Some(GpuBatch { mode: b.mode, vbuf, ibuf, count: idx.len() as u32, bind: make(view), frames })
+    let zr = verts.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |r, v| [r[0].min(v.pos[2]), r[1].max(v.pos[2])]);
+    Some(GpuBatch { mode: b.mode, vbuf, ibuf, count: idx.len() as u32, zr, bind: make(view), frames })
 }
 
 fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 4], ub: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -500,10 +515,6 @@ fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::Tex
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(v[3]) },
         ],
     })
-}
-
-fn vpos(v: &Vertex) -> DVec3 {
-    DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64)
 }
 
 const UPLOAD_CHUNK: usize = 64 << 20;
@@ -577,7 +588,16 @@ impl GpuScene {
         let frame_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
-                ubuf_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<FrameU>() as u64),
+                    },
+                    count: None,
+                },
                 tex_entry(1, wgpu::TextureViewDimension::D2),
                 samp_entry(2),
                 tex_entry(3, wgpu::TextureViewDimension::D2),
@@ -794,7 +814,7 @@ impl GpuScene {
         tm.lap("lightmap");
         let mut batches = Vec::new();
         for b in &mesh.batches {
-            batches.extend(make_batch(&mut st, &batch_layout, &tex_views, mesh, b, &b.verts, &b.idx, 0));
+            batches.extend(make_batch(&mut st, &batch_layout, &tex_views, mesh, b, &b.verts, &b.idx));
         }
         let casters = (!mesh.caster_idx.is_empty()).then(|| {
             let vbuf = st.buffer(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&mesh.casters));
@@ -806,7 +826,6 @@ impl GpuScene {
         tm.lap("geometry");
         GpuScene {
             gpu: gpu.clone(),
-            tex_views,
             batch_layout,
             frame_layout,
             light_layout,
@@ -854,8 +873,10 @@ impl Renderer {
                 mapped_at_creation: false,
             })
         };
-        let frame_buf = ubuf(std::mem::size_of::<FrameU>());
-        let shadow_frame_buf = ubuf(std::mem::size_of::<FrameU>());
+        let align = dev.limits().min_uniform_buffer_offset_alignment as u64;
+        let frame_stride = (std::mem::size_of::<FrameU>() as u64).next_multiple_of(align);
+        let frame_buf = ubuf(frame_stride as usize * BAND_SLOTS);
+        let shadow_frame_buf = ubuf(frame_stride as usize * BAND_SLOTS);
         let light_buf = ubuf(std::mem::size_of::<LightU>());
         let frame_bind = Self::make_frame_bind(&sc, &frame_buf, &sc.dummy_view, nearest);
         let shadow_frame_bind = Self::make_frame_bind(&sc, &shadow_frame_buf, &sc.dummy_view, nearest);
@@ -868,8 +889,9 @@ impl Renderer {
             orig: None,
             pt_band: Vec::new(),
             explode: None,
-            exploded: None,
             guides: None,
+            frame_stride,
+            band_slots: BAND_SLOTS,
             frame_buf,
             frame_bind,
             mask_view: None,
@@ -890,10 +912,6 @@ impl Renderer {
 
     pub fn scene(&self) -> &Arc<GpuScene> {
         &self.sc
-    }
-
-    fn batches(&self) -> &[GpuBatch] {
-        self.exploded.as_deref().unwrap_or(&self.sc.batches)
     }
 
     pub fn set_nearest(&mut self, nearest: bool) {
@@ -933,7 +951,14 @@ impl Renderer {
             label: None,
             layout: &sc.frame_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: buf,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(std::mem::size_of::<FrameU>() as u64),
+                    }),
+                },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&sc.lmap_view) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sc.linear_clamp) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(mask) },
@@ -1102,7 +1127,6 @@ impl Renderer {
             return;
         }
         if self.explode.as_ref().map(|x| &x.planes) != e.map(|x| &x.planes) {
-            self.exploded = None;
             match e {
                 None => {
                     self.orig = None;
@@ -1110,26 +1134,12 @@ impl Renderer {
                     self.points = self.sc.points.clone();
                 }
                 Some(x) => {
-                    let mut batches = Vec::new();
-                    let mut st = Stager { gpu: &self.gpu, pending: 0 };
-                    let (lay, tv) = (&self.sc.batch_layout, &self.sc.tex_views);
-                    let (mut orig, mut band) = (Vec::new(), Vec::new());
-                    for b in &mesh.batches {
-                        let soup: Vec<Vertex> = b.idx.iter().map(|&i| b.verts[i as usize]).collect();
-                        for (k, verts) in clip_tris_z(&soup, &x.planes) {
-                            orig.extend(verts.iter().map(vpos));
-                            band.extend(std::iter::repeat_n(k as u16, verts.len()));
-                            let idx: Vec<u32> = (0..verts.len() as u32).collect();
-                            batches.extend(make_batch(&mut st, lay, tv, mesh, b, &verts, &idx, k));
-                        }
-                    }
-                    st.flush();
+                    let (orig, band) = band_points(&self.sc.points, &mesh.batches, &x.planes, mesh.point_cell);
                     self.orig = Some(orig);
                     self.pt_band = band;
-                    self.exploded = Some(batches);
+                    self.reserve_bands(x.planes.len() + 1);
                 }
             }
-            *self.pts_cache.lock().unwrap() = None;
         }
         self.guides = e.filter(|x| x.guides).map(|x| self.make_guides(x.planes.len()));
         self.explode = e.cloned();
@@ -1137,6 +1147,42 @@ impl Renderer {
         if let (Some(orig), Some(x)) = (&self.orig, &self.explode) {
             self.points = orig.iter().zip(&self.pt_band).map(|(p, &b)| *p + DVec3::Z * (b as f64 * x.gap)).collect();
         }
+    }
+
+    fn reserve_bands(&mut self, n: usize) {
+        if n <= self.band_slots {
+            return;
+        }
+        let size = self.frame_stride * n as u64;
+        let make = || {
+            self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        (self.frame_buf, self.shadow_frame_buf) = (make(), make());
+        self.band_slots = n;
+        self.rebind();
+    }
+
+    fn write_bands(&self, buf: &wgpu::Buffer, fu: FrameU) -> Vec<Band> {
+        let planes: &[f64] = self.explode.as_ref().map_or(&[], |e| &e.planes);
+        let gap = self.explode.as_ref().map_or(0.0, |e| e.gap);
+        (0..=planes.len())
+            .map(|k| {
+                let lo = if k == 0 { f64::NEG_INFINITY } else { planes[k - 1] + BAND_EPS };
+                let hi = planes.get(k).map_or(f64::INFINITY, |p| p + BAND_EPS);
+                let mut f = fu;
+                f.zr[1] = f.zr[1].min(hi as f32);
+                f.view_u[3] = if k == 0 { NO_BAND } else { lo as f32 };
+                f.view_r[3] = (k as f64 * gap) as f32;
+                let off = k as u64 * self.frame_stride;
+                self.gpu.queue.write_buffer(buf, off, bytemuck::bytes_of(&f));
+                Band { off: off as u32, lo: lo as f32, hi: hi as f32 }
+            })
+            .collect()
     }
 
     fn make_guides(&self, planes: usize) -> Guides {
@@ -1346,7 +1392,7 @@ impl Renderer {
             mask_rect: rect.map(|v| v as f32),
             zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, if anim { time as f32 } else { 0.0 }],
             view_dir: v4(b.f, if anim { 1.0 } else { 0.0 }),
-            view_r: v4(b.r, self.explode.as_ref().map_or(0.0, |e| e.gap as f32)),
+            view_r: v4(b.r, 0.0),
             view_u: v4(b.u, 0.0),
             eye: match view.persp {
                 Some(p) => v4(p.eye, 1.0),
@@ -1354,7 +1400,7 @@ impl Renderer {
             },
         };
         let q = &self.gpu.queue;
-        q.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&fu));
+        let bands = self.write_bands(&self.frame_buf, fu);
         let guide = self.guides.as_ref().and_then(|g| {
             let gv = self.guide_verts(g, view, guide_w, cuts);
             if gv.is_empty() {
@@ -1417,7 +1463,7 @@ impl Renderer {
             pass.set_bind_group(0, &sky.bind, &[]);
             pass.draw(0..3, 0..1);
         }
-        pass.set_bind_group(0, &self.frame_bind, &[]);
+        pass.set_bind_group(0, &self.frame_bind, &[0]);
         pass.set_bind_group(2, light, &[]);
         let base = ni * 8 + if cull { 0 } else { 4 };
         let tick = (time * ANIM_FPS).floor().max(0.0) as usize;
@@ -1425,14 +1471,18 @@ impl Renderer {
             [(0, &[Mode::Opaque, Mode::AlphaTest][..]), (3, &[Mode::Mod2x][..]), (1, &[Mode::Blend][..]), (2, &[Mode::Additive][..])]
         {
             pass.set_pipeline(&self.sc.pipelines[base + pi]);
-            for b in self.batches().iter().filter(|b| modes.contains(&b.mode)) {
+            for b in self.sc.batches.iter().filter(|b| modes.contains(&b.mode)) {
                 let bind = if anim && !b.frames.is_empty() { &b.frames[tick % b.frames.len()] } else { &b.bind };
                 pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, b.vbuf.slice(..));
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..b.count, 0, 0..1);
+                for w in bands.iter().filter(|w| w.meets(b.zr)) {
+                    pass.set_bind_group(0, &self.frame_bind, &[w.off]);
+                    pass.draw_indexed(0..b.count, 0, 0..1);
+                }
             }
             if let (0, Some((g, n))) = (pi, &guide) {
+                pass.set_bind_group(0, &self.frame_bind, &[0]);
                 pass.set_pipeline(&self.sc.pipelines[ni * 8 + 4]);
                 pass.set_bind_group(1, &g.bind, &[]);
                 pass.set_vertex_buffer(0, g.vbuf.slice(..));
@@ -1535,11 +1585,11 @@ impl Renderer {
             mask_rect: rect.map(|v| v as f32),
             zr: [cuts.zmin as f32, cuts.zmax as f32, if mask_on { 1.0 } else { 0.0 }, 0.0],
             view_dir: v4(b.f, 0.0),
-            view_r: v4(b.r, self.explode.as_ref().map_or(0.0, |e| e.gap as f32)),
+            view_r: v4(b.r, 0.0),
             view_u: v4(b.u, 0.0),
             eye: [0.0; 4],
         };
-        self.gpu.queue.write_buffer(&self.shadow_frame_buf, 0, bytemuck::bytes_of(&fu));
+        let bands = self.write_bands(&self.shadow_frame_buf, fu);
         let mut enc = dev.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1555,13 +1605,17 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.sc.shadow_pipe);
-            pass.set_bind_group(0, &self.shadow_frame_bind, &[]);
-            for b in self.batches().iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
+            pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
+            for b in self.sc.batches.iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
                 pass.set_bind_group(1, &b.bind, &[]);
                 pass.set_vertex_buffer(0, b.vbuf.slice(..));
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..b.count, 0, 0..1);
+                for w in bands.iter().filter(|w| w.meets(b.zr)) {
+                    pass.set_bind_group(0, &self.shadow_frame_bind, &[w.off]);
+                    pass.draw_indexed(0..b.count, 0, 0..1);
+                }
             }
+            pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
             if let (Some((vbuf, ibuf, n, bind)), None) = (&self.sc.casters, &self.explode) {
                 pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));

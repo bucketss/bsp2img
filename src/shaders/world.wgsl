@@ -117,7 +117,7 @@ fn tex_uv(uv: vec2<f32>) -> vec2<f32> {
 }
 
 fn cut_away(p: vec3<f32>) -> bool {
-    if (p.z < fr.zr.x || p.z > fr.zr.y) {
+    if (p.z < fr.zr.x || p.z > fr.zr.y || p.z <= fr.view_u.w) {
         return true;
     }
     if (p.x < fr.clip_xy.x || p.y < fr.clip_xy.y || p.x > fr.clip_xy.z || p.y > fr.clip_xy.w) {

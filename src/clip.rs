@@ -70,37 +70,6 @@ pub fn fan(poly: &[Vertex], out: &mut Vec<Vertex>) {
     }
 }
 
-pub fn clip_tris_z(verts: &[Vertex], planes: &[f64]) -> Vec<(usize, Vec<Vertex>)> {
-    let mut planes = planes.to_vec();
-    planes.sort_by(f64::total_cmp);
-    planes.dedup();
-    let mut bands: Vec<(usize, Vec<Vertex>)> = (0..=planes.len()).map(|b| (b, Vec::new())).collect();
-    for tri in verts.chunks_exact(3) {
-        let (z0, z1) = range(tri, 2);
-        let first = planes.partition_point(|&p| p < z0);
-        if planes.get(first).is_none_or(|&p| p >= z1) {
-            bands[first].1.extend_from_slice(tri);
-            continue;
-        }
-        let mut rest = tri.to_vec();
-        for (k, &z) in planes.iter().enumerate().skip(first) {
-            if rest.len() < 3 {
-                break;
-            }
-            if range(&rest, 2).1 <= z {
-                fan(&rest, &mut bands[k].1);
-                rest.clear();
-                break;
-            }
-            let (lo, hi) = split(&rest, 2, z);
-            fan(&lo, &mut bands[k].1);
-            rest = hi;
-        }
-        fan(&rest, &mut bands[planes.len()].1);
-    }
-    bands
-}
-
 struct Cells<'a> {
     m: &'a HullMask,
     dx: f64,
