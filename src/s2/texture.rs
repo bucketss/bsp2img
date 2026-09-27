@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use super::buf::{half, slice, u16_, u32_};
 use super::vpk::Fs;
+use rayon::prelude::*;
 
 const HEAD: usize = 1 << 16;
 const CUBE: u16 = 0x10;
@@ -180,15 +181,31 @@ pub fn load_tex(fs: &Fs, name: &str, max_dim: usize) -> Result<Tex> {
     Ok(Tex::Plain(Image { w, h, rgba: decode(inf.format, w, h, &mip(&inf, &full, m)?)? }))
 }
 
-fn blocks(w: usize, h: usize, bb: usize, raw: &[u8], mut put: impl FnMut(usize, usize, &[u8]) -> Result<()>) -> Result<()> {
+fn blocks<T: Copy + Default + Send>(
+    w: usize,
+    h: usize,
+    bb: usize,
+    ch: usize,
+    raw: &[u8],
+    out: &mut [T],
+    dec: impl Fn(&[u8], &mut [T]) + Sync,
+) -> Result<()> {
     let (bw, bh) = (w.div_ceil(4), h.div_ceil(4));
     ensure!(raw.len() >= bw * bh * bb, "mip data short");
-    for by in 0..bh {
+    out.par_chunks_mut(w * ch * 4).enumerate().for_each(|(by, stripe)| {
+        let rows = stripe.len() / (w * ch);
+        let mut px = vec![T::default(); 16 * ch];
         for bx in 0..bw {
             let i = by * bw + bx;
-            put(bx, by, &raw[i * bb..(i + 1) * bb])?;
+            dec(&raw[i * bb..(i + 1) * bb], &mut px);
+            for yy in 0..rows {
+                for xx in 0..4.min(w - bx * 4) {
+                    let (s, d) = ((yy * 4 + xx) * ch, (yy * w + bx * 4 + xx) * ch);
+                    stripe[d..d + ch].copy_from_slice(&px[s..s + ch]);
+                }
+            }
         }
-    }
+    });
     Ok(())
 }
 
@@ -261,24 +278,12 @@ pub fn load_cube(fs: &Fs, name: &str, max_dim: usize) -> Result<(usize, Vec<Vec<
 
 fn decode(format: u8, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
     let mut rgba = vec![0u8; w * h * 4];
-    let mut store = |bx: usize, by: usize, px: &[u8; 64]| {
-        for yy in 0..4 {
-            for xx in 0..4 {
-                let (x, y) = (bx * 4 + xx, by * 4 + yy);
-                if x < w && y < h {
-                    let s = (yy * 4 + xx) * 4;
-                    rgba[(y * w + x) * 4..(y * w + x) * 4 + 4].copy_from_slice(&px[s..s + 4]);
-                }
-            }
-        }
-    };
     match format {
-        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(format).unwrap(), raw, |bx, by, b| {
-            let mut out = [0u8; 64];
+        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(format).unwrap(), 4, raw, &mut rgba, |b, out| {
             match format {
-                1 => bcdec_rs::bc1(b, &mut out, 16),
-                2 => bcdec_rs::bc3(b, &mut out, 16),
-                20 => bcdec_rs::bc7(b, &mut out, 16),
+                1 => bcdec_rs::bc1(b, out, 16),
+                2 => bcdec_rs::bc3(b, out, 16),
+                20 => bcdec_rs::bc7(b, out, 16),
                 21 => {
                     let mut o = [0u8; 32];
                     bcdec_rs::bc5(b, &mut o, 8, false);
@@ -294,8 +299,6 @@ fn decode(format: u8, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
                     }
                 }
             }
-            store(bx, by, &out);
-            Ok(())
         })?,
         19 => {
             let hdr = hdr_bc6(w, h, raw)?;
@@ -330,20 +333,7 @@ fn hdr_from(inf: &Info, m: usize, raw: &[u8]) -> Result<Hdr> {
 
 fn hdr_bc6(w: usize, h: usize, raw: &[u8]) -> Result<Hdr> {
     let mut rgb = vec![0f32; w * h * 3];
-    blocks(w, h, 16, raw, |bx, by, b| {
-        let mut fo = [0f32; 48];
-        bcdec_rs::bc6h_float(b, &mut fo, 12, false);
-        for yy in 0..4 {
-            for xx in 0..4 {
-                let (x, y) = (bx * 4 + xx, by * 4 + yy);
-                if x < w && y < h {
-                    let s = (yy * 4 + xx) * 3;
-                    rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&fo[s..s + 3]);
-                }
-            }
-        }
-        Ok(())
-    })?;
+    blocks(w, h, 16, 3, raw, &mut rgb, |b, out| bcdec_rs::bc6h_float(b, out, 12, false))?;
     Ok(Hdr { w, h, rgb })
 }
 

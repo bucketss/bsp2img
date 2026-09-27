@@ -388,10 +388,9 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     for g in &mut groups {
         g.4.sort_by_key(|&ei| tiles[ei]);
     }
-    let mut batches: Vec<Batch> = Vec::new();
-    let mut faces = 0;
-    for (gi, (mn, tq, md, alpha, list)) in groups.iter().enumerate() {
-        let mat = mats[mn].as_ref().unwrap();
+    let mut parts: Vec<(usize, usize, usize)> = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        let list = &g.4;
         let mut start = 0;
         while start < list.len() {
             let mut end = start;
@@ -400,6 +399,15 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 n += entries[list[end]].bytes();
                 end += 1;
             }
+            parts.push((gi, start, end));
+            start = end;
+        }
+    }
+    let batches: Vec<Batch> = parts
+        .par_iter()
+        .map(|&(gi, start, end)| {
+            let (mn, tq, md, alpha, list) = &groups[gi];
+            let mat = mats[mn].as_ref().unwrap();
             let part = &list[start..end];
             let (verts, idx) = gather(part, &entries, |ei, out, ix| {
                 let e = &entries[ei];
@@ -413,7 +421,6 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                     None => fill(m, e.dc as usize, it, mat, &ctx, out, ix),
                 }
             });
-            faces += idx.len() / 3;
             let mut chunks = Vec::new();
             let (mut v0, mut i0, mut v, mut i) = (0, 0, 0, 0);
             for (k, &ei) in part.iter().enumerate() {
@@ -424,7 +431,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                     (v0, i0) = (v, i);
                 }
             }
-            batches.push(Batch {
+            Batch {
                 tex: group_tex[gi],
                 mode: *md,
                 alpha: *alpha,
@@ -436,10 +443,10 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 verts,
                 idx,
                 chunks,
-            });
-            start = end;
-        }
-    }
+            }
+        })
+        .collect();
+    let faces = batches.iter().map(|b| b.idx.len() / 3).sum();
     tm.lap("fill");
     let plain = Material::solid([255; 4]);
     let all: Vec<usize> = (0..caster_entries.len()).collect();
@@ -590,7 +597,8 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [V
         Blend::Height => unorm16(v * 1.1 - 0.05),
     };
     let p: Vec<DVec3> = ids
-        .iter()
+        .par_iter()
+        .with_min_len(4096)
         .map(|&i| {
             let v = ps.get(i as usize);
             it.xf.apply(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64))
@@ -607,7 +615,7 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [V
         }
         acc.into_iter().map(|n| n.normalize_or_zero()).collect::<Vec<_>>()
     });
-    for (k, &id) in ids.iter().enumerate() {
+    out.par_iter_mut().with_min_len(4096).zip(ids.par_iter()).enumerate().for_each(|(k, (o, &id))| {
         let i = id as usize;
         let uv = uvs.map_or([0.0; 4], |s| s.get(i));
         let lm = match lms {
@@ -645,8 +653,8 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [V
             v.light = pack_rgb9e5(s.light).max(1);
             v.mask = s.mask;
         }
-        out[k] = v;
-    }
+        *o = v;
+    });
 }
 
 fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
