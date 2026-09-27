@@ -634,19 +634,18 @@ pub fn roof_levels(mesh: &Mesh) -> Vec<(f64, f64, f64)> {
     let bin_size = 16.0;
     let min_frac = 0.02;
     let gap = 32.0;
-    let mut zs = Vec::new();
-    for b in &mesh.batches {
-        for tri in b.verts.chunks_exact(3) {
-            let p: Vec<DVec3> =
-                tri.iter().map(|v| DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64)).collect();
-            let n = (p[1] - p[0]).cross(p[2] - p[0]);
-            let ln = n.length();
-            if ln <= 1e-6 || n.z / ln <= 0.7 {
-                continue;
-            }
-            zs.push(((p[0].z + p[1].z + p[2].z) / 3.0, n.z / 2.0));
-        }
-    }
+    let zs: Vec<(f64, f64)> = mesh
+        .batches
+        .par_iter()
+        .flat_map_iter(|b| {
+            b.verts.chunks_exact(3).filter_map(|tri| {
+                let p = [0, 1, 2].map(|k| DVec3::new(tri[k].pos[0] as f64, tri[k].pos[1] as f64, tri[k].pos[2] as f64));
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                let ln = n.length();
+                (ln > 1e-6 && n.z / ln > 0.7).then(|| ((p[0].z + p[1].z + p[2].z) / 3.0, n.z / 2.0))
+            })
+        })
+        .collect();
     if zs.is_empty() {
         return Vec::new();
     }

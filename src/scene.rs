@@ -8,7 +8,7 @@ use crate::light::LightParams;
 use crate::mesh::{Mesh, build_mesh, roof_levels, roof_zmax};
 use crate::paths::search_dirs;
 use crate::reach::{HullMask, analyze, hull_mask};
-use crate::render::{Cuts, Gpu, NO_CLIP, Renderer};
+use crate::render::{Cuts, Gpu, GpuScene, NO_CLIP, Renderer};
 use crate::sky::{find_sky, load_sky};
 use crate::sun::{hhmm, sun_env};
 use crate::look::Look;
@@ -270,15 +270,25 @@ impl Scene {
         Cuts { zmin: c.zmin.unwrap_or(-1e9), zmax: self.zmax(c, log), clip: c.clip_box(), use_mask: true }
     }
 
-    pub fn renderer(&self, gpu: &Gpu, nearest: bool) -> Result<Renderer> {
-        let mut r = Renderer::new(gpu, &self.mesh, nearest)?;
+    pub fn renderer(&self, gpu: &Gpu, shared: Option<&std::sync::Arc<GpuScene>>, nearest: bool) -> Result<Renderer> {
+        let mut r = match shared {
+            Some(s) => Renderer::with_scene(s.clone(), nearest),
+            None => Renderer::new(gpu, &self.mesh, nearest)?,
+        };
         r.set_mask(self.mask.clone());
         r.sun_env = sun_env(&self.bsp);
         Ok(r)
     }
 
-    pub fn job_renderer(&self, gpu: &Gpu, nearest: bool, sky: Option<(String, f64, f64)>, log: Log) -> Result<(Renderer, String)> {
-        let mut r = self.renderer(gpu, nearest)?;
+    pub fn job_renderer(
+        &self,
+        gpu: &Gpu,
+        shared: Option<&std::sync::Arc<GpuScene>>,
+        nearest: bool,
+        sky: Option<(String, f64, f64)>,
+        log: Log,
+    ) -> Result<(Renderer, String)> {
+        let mut r = self.renderer(gpu, shared, nearest)?;
         let Some((name, fov, pitch)) = sky else { return Ok((r, String::new())) };
         let sname = self.sky_name(Some(&name));
         match self.load_sky(&sname) {

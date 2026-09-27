@@ -90,7 +90,7 @@ pub fn export_iso(
     };
     let suffix = set_suffix(out, &stems, ".png");
     let upp = if o.framing == Framing::default() { iso_upp(r, cuts, &o.yaws, o.pitch, o.size) } else { 1.0 };
-    let pts = if o.framing.persp.is_some() { r.points_in(cuts) } else { Vec::new() };
+    let pts = if o.framing.persp.is_some() { r.points_in(cuts) } else { Default::default() };
     for (i, (&yaw, stem)) in yaws.iter().zip(&stems).enumerate() {
         rep.step((i + o.grid as usize) as f32 / total)?;
         let (view, w, h) = match (&o.framing.camera, o.framing.persp) {

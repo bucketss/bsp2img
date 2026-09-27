@@ -178,6 +178,7 @@ struct App {
     out: String,
     preview: Option<Preview>,
     last_key: String,
+    view_cache: Option<preview::ViewCache>,
     frame: Option<Frame>,
     drag_start: Option<Pos2>,
     job: Option<Running>,
@@ -249,6 +250,7 @@ impl App {
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),
             preview: None,
             last_key: String::new(),
+            view_cache: None,
             frame: None,
             drag_start: None,
             job: None,
@@ -271,6 +273,9 @@ impl App {
 
     fn start_load(&mut self, ctx: &egui::Context) {
         let Some(path) = self.current.clone() else { return };
+        self.renderer = None;
+        self.scene = None;
+        self.last_key.clear();
         let (tx, rx) = channel();
         self.load_rx = Some(rx);
         let opts = self.wanted_load();
@@ -315,7 +320,7 @@ impl App {
                             self.frame_cam = true;
                             self.cam_map = self.current.clone();
                         }
-                        match scene.renderer(&self.gpu, self.look.nearest) {
+                        match scene.renderer(&self.gpu, None, self.look.nearest) {
                             Ok(r) => self.renderer = Some(r),
                             Err(e) => self.log.push(format!("error: {e:#}")),
                         }
@@ -331,14 +336,9 @@ impl App {
         self.log.extend(crate::prof::take_gpu_errors().into_iter().map(|e| format!("gpu error: {e}")));
     }
 
-    fn rebuild_renderer(&mut self) {
-        if let Some(s) = &self.scene {
-            self.renderer = None;
-            match s.renderer(&self.gpu, self.look.nearest) {
-                Ok(r) => self.renderer = Some(r),
-                Err(e) => self.log.push(format!("error: {e:#}")),
-            }
-            self.sky_loaded = None;
+    fn apply_nearest(&mut self) {
+        if let Some(r) = &mut self.renderer {
+            r.set_nearest(self.look.nearest);
             self.last_key.clear();
         }
     }

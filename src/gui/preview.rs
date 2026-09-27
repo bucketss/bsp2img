@@ -6,6 +6,7 @@ use super::App;
 use crate::camera::{Camera, camera_basis, extents, top_down};
 use crate::look::Tilt;
 use crate::export::overview_params;
+use crate::overview::Overview;
 use crate::grid::{entity_marks, nice_step};
 use crate::overview;
 use crate::post;
@@ -76,6 +77,15 @@ pub struct Frame {
     rect: Rect,
     view: View,
     upp: f64,
+}
+
+pub struct ViewCache {
+    key: String,
+    view: View,
+    upp: f64,
+    cuts: Cuts,
+    clear: [f64; 4],
+    ov: Option<Overview>,
 }
 
 impl App {
@@ -236,8 +246,8 @@ impl App {
         } else {
             0.0
         };
-        let key = format!(
-            "{:?}{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{}",
+        let vkey = format!(
+            "{:?}{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{:?}",
             want,
             cuts,
             (self.mode as u8, self.yaw, self.zoom, self.pan.to_array()),
@@ -249,65 +259,73 @@ impl App {
             self.sky_loaded,
             self.ov.margin,
             self.renderer.as_ref().map(|r| r.points.len()).unwrap_or(0),
-            time
+            self.renderer.as_ref().map(|r| std::sync::Arc::as_ptr(r.scene())),
         );
+        let key = format!("{vkey}{time}");
         self.ensure_preview(wpx, hpx);
         let Some(r) = &self.renderer else { return };
-        let (view, upp, rcuts, clear) = match self.mode {
-            Mode::Iso => {
-                let b = camera_basis(self.yaw, self.iso.pitch);
-                let e = extents(&r.points_in(&cuts), &b);
-                let fit = ((e[0].1 - e[0].0) / rect.width() as f64).max((e[1].1 - e[1].0) / rect.height() as f64) * 1.08;
-                let upp = fit / self.zoom;
-                let v = View {
-                    basis: b,
-                    cx: (e[0].0 + e[0].1) / 2.0 + self.pan.dot(b.r),
-                    cy: (e[1].0 + e[1].1) / 2.0 + self.pan.dot(b.u),
-                    w: rect.width() as f64 * upp,
-                    h: rect.height() as f64 * upp,
-                    sky_yaw: Some(self.yaw),
-                    persp: None,
-                };
-                let bg = match self.look.bg {
-                    Some(c) => c.map(|v| v as f64 / 255.0),
-                    None => [0.094, 0.094, 0.1],
-                };
-                (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
-            }
-            Mode::Top => {
-                let rc = Cuts { clip: NO_CLIP, use_mask: false, ..cuts };
-                let pts = r.points_in(&rc);
-                let lo = pts.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
-                let hi = pts.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
-                let fit = ((hi.x - lo.x) / rect.width() as f64).max((hi.y - lo.y) / rect.height() as f64) * 1.08;
-                let upp = fit / self.zoom;
-                let v = View {
-                    basis: top_down(DVec3::X, DVec3::Y),
-                    cx: (lo.x + hi.x) / 2.0 + self.pan.x,
-                    cy: (lo.y + hi.y) / 2.0 + self.pan.y,
-                    w: rect.width() as f64 * upp,
-                    h: rect.height() as f64 * upp,
-                    sky_yaw: None,
-                    persp: None,
-                };
-                (v, upp, rc, [0.11, 0.11, 0.11, 1.0])
-            }
-            Mode::Overview => {
-                let Ok(ov) = overview_params(r, &cuts, &self.ov) else { return };
-                let v = overview::view(&ov);
-                let upp = v.w / rect.width() as f64;
-                (v, upp, cuts, [0.0, 1.0, 0.0, 1.0])
-            }
-            Mode::Free => {
-                let v = self.cam.view(wpx, hpx);
-                let upp = v.h / rect.height() as f64;
-                let bg = match self.look.bg {
-                    Some(c) => c.map(|v| v as f64 / 255.0),
-                    None => [0.094, 0.094, 0.1],
-                };
-                (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
-            }
-        };
+        if self.view_cache.as_ref().is_none_or(|c| c.key != vkey) {
+            let mut ov = None;
+            let (view, upp, cuts, clear) = match self.mode {
+                Mode::Iso => {
+                    let b = camera_basis(self.yaw, self.iso.pitch);
+                    let e = extents(&r.points_in(&cuts), &b);
+                    let fit = ((e[0].1 - e[0].0) / rect.width() as f64).max((e[1].1 - e[1].0) / rect.height() as f64) * 1.08;
+                    let upp = fit / self.zoom;
+                    let v = View {
+                        basis: b,
+                        cx: (e[0].0 + e[0].1) / 2.0 + self.pan.dot(b.r),
+                        cy: (e[1].0 + e[1].1) / 2.0 + self.pan.dot(b.u),
+                        w: rect.width() as f64 * upp,
+                        h: rect.height() as f64 * upp,
+                        sky_yaw: Some(self.yaw),
+                        persp: None,
+                    };
+                    let bg = match self.look.bg {
+                        Some(c) => c.map(|v| v as f64 / 255.0),
+                        None => [0.094, 0.094, 0.1],
+                    };
+                    (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
+                }
+                Mode::Top => {
+                    let rc = Cuts { clip: NO_CLIP, use_mask: false, ..cuts };
+                    let pts = r.points_in(&rc);
+                    let lo = pts.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
+                    let hi = pts.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
+                    let fit = ((hi.x - lo.x) / rect.width() as f64).max((hi.y - lo.y) / rect.height() as f64) * 1.08;
+                    let upp = fit / self.zoom;
+                    let v = View {
+                        basis: top_down(DVec3::X, DVec3::Y),
+                        cx: (lo.x + hi.x) / 2.0 + self.pan.x,
+                        cy: (lo.y + hi.y) / 2.0 + self.pan.y,
+                        w: rect.width() as f64 * upp,
+                        h: rect.height() as f64 * upp,
+                        sky_yaw: None,
+                        persp: None,
+                    };
+                    (v, upp, rc, [0.11, 0.11, 0.11, 1.0])
+                }
+                Mode::Overview => {
+                    let Ok(o) = overview_params(r, &cuts, &self.ov) else { return };
+                    let v = overview::view(&o);
+                    ov = Some(o);
+                    let upp = v.w / rect.width() as f64;
+                    (v, upp, cuts, [0.0, 1.0, 0.0, 1.0])
+                }
+                Mode::Free => {
+                    let v = self.cam.view(wpx, hpx);
+                    let upp = v.h / rect.height() as f64;
+                    let bg = match self.look.bg {
+                        Some(c) => c.map(|v| v as f64 / 255.0),
+                        None => [0.094, 0.094, 0.1],
+                    };
+                    (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
+                }
+            };
+            self.view_cache = Some(ViewCache { key: vkey, view, upp, cuts, clear, ov });
+        }
+        let c = self.view_cache.as_ref().unwrap();
+        let (view, upp, rcuts, clear) = (c.view, c.upp, c.cuts, c.clear);
         if key != self.last_key {
             let p = self.preview.as_ref().unwrap();
             let mut enc = self.gpu.device.create_command_encoder(&Default::default());
@@ -331,8 +349,8 @@ impl App {
         match self.mode {
             Mode::Top => self.overlay_top(&painter, &resp, &cuts),
             Mode::Overview => {
-                if let Some(r) = &self.renderer {
-                    if let Ok(ov) = overview_params(r, &cuts, &self.ov) {
+                if let Some(c) = &self.view_cache {
+                    if let Some(ov) = c.ov {
                         painter.text(
                             rect.left_top() + Vec2::new(6.0, 6.0),
                             Align2::LEFT_TOP,

@@ -201,7 +201,7 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
         let rebuild = app.look.nearest != d.nearest;
         app.look = d.clone();
         if rebuild {
-            app.rebuild_renderer();
+            app.apply_nearest();
         }
     }
     egui::CollapsingHeader::new("Background").default_open(true).show(ui, |ui| {
@@ -233,11 +233,11 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
             app.look.anim_textures = d.anim_textures;
             if app.look.nearest != d.nearest {
                 app.look.nearest = d.nearest;
-                app.rebuild_renderer();
+                app.apply_nearest();
             }
         }
         if ui.checkbox(&mut app.look.nearest, "Pixelated textures").changed() {
-            app.rebuild_renderer();
+            app.apply_nearest();
         }
         ui.checkbox(&mut app.look.anim_textures, "Animated textures and water");
         if app.look.anim_textures && app.renderer.as_ref().is_some_and(|r| !r.animated()) {

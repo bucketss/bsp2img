@@ -14,7 +14,7 @@ use crate::health::{HealthOpts, export_health};
 use crate::kills::{KillOpts, export_kills, load_demos};
 use crate::paths::run_dir;
 use crate::poster::{PosterOpts, export_poster};
-use crate::render::{Cuts, Gpu};
+use crate::render::{Cuts, Gpu, GpuScene};
 use crate::scene::{Report, Scene};
 use crate::spin::{AnimOpts, export_anim};
 use crate::svg::{SvgOpts, export_svg};
@@ -63,6 +63,7 @@ impl Job {
 pub struct JobSpec {
     pub job: Job,
     pub scene: Arc<Scene>,
+    pub shared: Option<Arc<GpuScene>>,
     pub gpu: Gpu,
     pub cuts: Cuts,
     pub cut_tag: String,
@@ -130,7 +131,7 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
         send(Msg::Log(format!("== export {name}")));
         let res = run_dir(&spec.out, &name).and_then(|out| {
             let mut log = |s: String| send(Msg::Log(s));
-            let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.nearest, spec.sky.clone(), &mut log)?;
+            let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.shared.as_ref(), spec.nearest, spec.sky.clone(), &mut log)?;
             if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {
                 spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
             }
@@ -169,6 +170,7 @@ impl App {
             job,
             cut_tag: self.cut_opts().tag(scene.opts.hull),
             scene,
+            shared: self.renderer.as_ref().map(|r| r.scene().clone()),
             gpu: self.gpu.clone(),
             cuts: self.cuts(),
             nearest: self.look.nearest,
