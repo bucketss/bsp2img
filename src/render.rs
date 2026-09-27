@@ -154,12 +154,50 @@ struct ShadowMap {
 
 struct GpuBatch {
     mode: Mode,
-    vbuf: wgpu::Buffer,
+    pbuf: wgpu::Buffer,
+    abuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     count: u32,
     zr: [f32; 2],
     bind: wgpu::BindGroup,
     frames: Vec<wgpu::BindGroup>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Packed {
+    uv: [f32; 2],
+    uv2: [f32; 2],
+    lm: [f32; 2],
+    nb: u32,
+    blend: [u16; 2],
+    paint: [u8; 4],
+    light: u32,
+    mask: [u8; 4],
+}
+
+impl Packed {
+    fn new(v: &Vertex) -> Packed {
+        let [x, y, z] = v.normal;
+        let l1 = x.abs() + y.abs() + z.abs();
+        let (mut ox, mut oy) = if l1 > 0.0 { (x / l1, y / l1) } else { (0.0, 0.0) };
+        if z < 0.0 {
+            let s = |c: f32| if c >= 0.0 { 1.0 } else { -1.0 };
+            (ox, oy) = ((1.0 - oy.abs()) * s(ox), (1.0 - ox.abs()) * s(oy));
+        }
+        let q = |c: f32| ((c.clamp(-1.0, 1.0) * 0.5 + 0.5) * 16383.0).round() as u32;
+        let bias = (v.bias.round().clamp(0.0, 15.0) as u32) << 28;
+        Packed {
+            uv: v.uv,
+            uv2: v.uv2,
+            lm: v.lm,
+            nb: q(ox) | (q(oy) << 14) | bias,
+            blend: v.blend,
+            paint: v.paint,
+            light: v.light,
+            mask: v.mask,
+        }
+    }
 }
 
 struct Band {
@@ -281,7 +319,7 @@ pub struct GpuScene {
     linear_clamp: wgpu::Sampler,
     cmp_sampler: wgpu::Sampler,
     pipelines: Vec<wgpu::RenderPipeline>,
-    shadow_pipe: wgpu::RenderPipeline,
+    shadow_pipe: [wgpu::RenderPipeline; 2],
     batches: Vec<GpuBatch>,
     points: Vec<DVec3>,
 }
@@ -469,7 +507,8 @@ fn make_batch(
     if idx.is_empty() {
         return None;
     }
-    let vbuf = st.buffer(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(verts));
+    let pbuf = st.packed(wgpu::BufferUsages::VERTEX, verts, |v| v.pos);
+    let abuf = st.packed(wgpu::BufferUsages::VERTEX, verts, Packed::new);
     let ibuf = st.buffer(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(idx));
     let (water, warp) = match b.warp {
         Some(w) => (1.0, w),
@@ -500,7 +539,7 @@ fn make_batch(
         _ => Vec::new(),
     };
     let zr = verts.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |r, v| [r[0].min(v.pos[2]), r[1].max(v.pos[2])]);
-    Some(GpuBatch { mode: b.mode, vbuf, ibuf, count: idx.len() as u32, zr, bind: make(view), frames })
+    Some(GpuBatch { mode: b.mode, pbuf, abuf, ibuf, count: idx.len() as u32, zr, bind: make(view), frames })
 }
 
 fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 4], ub: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -552,6 +591,24 @@ impl Stager<'_> {
         self.add(data.len() as u64);
     }
 
+    fn packed<T: Pod>(&mut self, usage: wgpu::BufferUsages, verts: &[Vertex], f: impl Fn(&Vertex) -> T) -> wgpu::Buffer {
+        let size = std::mem::size_of::<T>();
+        let buf = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: ((verts.len() * size) as u64).max(4).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT),
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let per = UPLOAD_CHUNK / size;
+        let mut tmp: Vec<T> = Vec::with_capacity(per.min(verts.len()));
+        for (i, c) in verts.chunks(per).enumerate() {
+            tmp.clear();
+            tmp.extend(c.iter().map(&f));
+            self.write(&buf, (i * per * size) as u64, bytemuck::cast_slice(&tmp));
+        }
+        buf
+    }
+
     fn texture(&mut self, w: u32, h: u32, format: wgpu::TextureFormat, levels: &[(u32, u32, &[u8])], bpp: u32) -> wgpu::TextureView {
         let t = upload_texture(self.gpu, w, h, 1, format, levels, bpp);
         self.add(levels.iter().map(|l| l.2.len() as u64).sum());
@@ -574,7 +631,7 @@ impl Stager<'_> {
 
 impl GpuScene {
     pub fn new(gpu: &Gpu, mesh: &Mesh) -> Result<Arc<GpuScene>> {
-        let bytes: usize = mesh.batches.iter().map(|b| b.verts.len() * std::mem::size_of::<Vertex>() + b.idx.len() * 4).sum();
+        let bytes: usize = mesh.batches.iter().map(|b| b.verts.len() * (12 + std::mem::size_of::<Packed>()) + b.idx.len() * 4).sum();
         gpu.guard(|| format!("{} MB of geometry", bytes >> 20), || Arc::new(Self::upload(gpu, mesh)))
     }
 
@@ -663,12 +720,16 @@ impl GpuScene {
             bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout), Some(&light_layout)],
             immediate_size: 0,
         });
-        let vbuf_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
+        let pos_layout = wgpu::VertexBufferLayout {
+            array_stride: 12,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+        };
+        let attr_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Packed>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![
-                0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Float32x3,
-                5 => Float32x2, 6 => Unorm16x2, 7 => Unorm8x4, 8 => Uint32, 9 => Unorm8x4
+                1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Unorm16x2, 6 => Unorm8x4, 7 => Uint32, 8 => Unorm8x4
             ],
         };
 
@@ -709,7 +770,7 @@ impl GpuScene {
                             module: &shader,
                             entry_point: Some("vs"),
                             compilation_options: Default::default(),
-                            buffers: &[Some(vbuf_layout.clone())],
+                            buffers: &[Some(pos_layout.clone()), Some(attr_layout.clone())],
                         },
                         primitive: wgpu::PrimitiveState {
                             topology: wgpu::PrimitiveTopology::TriangleList,
@@ -743,33 +804,37 @@ impl GpuScene {
             bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
             immediate_size: 0,
         });
-        let shadow_pipe = dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shadow"),
-            layout: Some(&shadow_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[Some(vbuf_layout.clone())],
-            },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 0, slope_scale: SHADOW_SLOPE, clamp: 0.0 },
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_shadow"),
-                compilation_options: Default::default(),
-                targets: &[],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let shadow_pipe = |pos_only: bool| {
+            let full = [Some(pos_layout.clone()), Some(attr_layout.clone())];
+            dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("shadow"),
+                layout: Some(&shadow_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(if pos_only { "vs_pos" } else { "vs" }),
+                    compilation_options: Default::default(),
+                    buffers: if pos_only { &full[..1] } else { &full },
+                },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: wgpu::DepthBiasState { constant: 0, slope_scale: SHADOW_SLOPE, clamp: 0.0 },
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(if pos_only { "fs_shadow_pos" } else { "fs_shadow" }),
+                    compilation_options: Default::default(),
+                    targets: &[],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let shadow_pipe = [shadow_pipe(true), shadow_pipe(false)];
         tm.lap("pipelines");
         let mut st = Stager { gpu, pending: 0 };
         let tex_views: Vec<Option<wgpu::TextureView>> = mesh
@@ -817,7 +882,7 @@ impl GpuScene {
             batches.extend(make_batch(&mut st, &batch_layout, &tex_views, mesh, b, &b.verts, &b.idx));
         }
         let casters = (!mesh.caster_idx.is_empty()).then(|| {
-            let vbuf = st.buffer(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&mesh.casters));
+            let vbuf = st.packed(wgpu::BufferUsages::VERTEX, &mesh.casters, |v| v.pos);
             let ibuf = st.buffer(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(&mesh.caster_idx));
             let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&[0.0f32; 28]));
             (vbuf, ibuf, mesh.caster_idx.len() as u32, batch_bind(dev, &batch_layout, [&dummy_view; 4], &ub))
@@ -1189,7 +1254,7 @@ impl Renderer {
         let dev = &self.gpu.device;
         let vbuf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (planes * GUIDE_VERTS * std::mem::size_of::<Vertex>()) as u64,
+            size: (planes * GUIDE_VERTS * (12 + std::mem::size_of::<Packed>())) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1406,7 +1471,10 @@ impl Renderer {
             if gv.is_empty() {
                 return None;
             }
-            q.write_buffer(&g.vbuf, 0, bytemuck::cast_slice(&gv));
+            let pos: Vec<[f32; 3]> = gv.iter().map(|v| v.pos).collect();
+            let attr: Vec<Packed> = gv.iter().map(Packed::new).collect();
+            q.write_buffer(&g.vbuf, 0, bytemuck::cast_slice(&pos));
+            q.write_buffer(&g.vbuf, (gv.len() * 12) as u64, bytemuck::cast_slice(&attr));
             Some((g, gv.len() as u32))
         });
         if let (Some(sky), Some(yaw)) = (&self.sky, view.sky_yaw) {
@@ -1474,7 +1542,8 @@ impl Renderer {
             for b in self.sc.batches.iter().filter(|b| modes.contains(&b.mode)) {
                 let bind = if anim && !b.frames.is_empty() { &b.frames[tick % b.frames.len()] } else { &b.bind };
                 pass.set_bind_group(1, bind, &[]);
-                pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                pass.set_vertex_buffer(0, b.pbuf.slice(..));
+                pass.set_vertex_buffer(1, b.abuf.slice(..));
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 for w in bands.iter().filter(|w| w.meets(b.zr)) {
                     pass.set_bind_group(0, &self.frame_bind, &[w.off]);
@@ -1485,7 +1554,8 @@ impl Renderer {
                 pass.set_bind_group(0, &self.frame_bind, &[0]);
                 pass.set_pipeline(&self.sc.pipelines[ni * 8 + 4]);
                 pass.set_bind_group(1, &g.bind, &[]);
-                pass.set_vertex_buffer(0, g.vbuf.slice(..));
+                pass.set_vertex_buffer(0, g.vbuf.slice(..(*n as u64 * 12)));
+                pass.set_vertex_buffer(1, g.vbuf.slice((*n as u64 * 12)..));
                 pass.draw(0..*n, 0..1);
             }
         }
@@ -1604,11 +1674,19 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.sc.shadow_pipe);
             pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
+            let mut cur = None;
             for b in self.sc.batches.iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
+                let full = b.mode == Mode::AlphaTest;
+                if cur != Some(full) {
+                    pass.set_pipeline(&self.sc.shadow_pipe[full as usize]);
+                    cur = Some(full);
+                }
                 pass.set_bind_group(1, &b.bind, &[]);
-                pass.set_vertex_buffer(0, b.vbuf.slice(..));
+                pass.set_vertex_buffer(0, b.pbuf.slice(..));
+                if full {
+                    pass.set_vertex_buffer(1, b.abuf.slice(..));
+                }
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 for w in bands.iter().filter(|w| w.meets(b.zr)) {
                     pass.set_bind_group(0, &self.shadow_frame_bind, &[w.off]);
@@ -1617,6 +1695,7 @@ impl Renderer {
             }
             pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
             if let (Some((vbuf, ibuf, n, bind)), None) = (&self.sc.casters, &self.explode) {
+                pass.set_pipeline(&self.sc.shadow_pipe[0]);
                 pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);

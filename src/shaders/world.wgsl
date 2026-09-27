@@ -80,10 +80,35 @@ fn unpack9e5(v: u32) -> vec3<f32> {
     return vec3<f32>(f32(v & 511u), f32((v >> 9u) & 511u), f32((v >> 18u) & 511u)) * d;
 }
 
+fn unpack_nb(v: u32) -> vec4<f32> {
+    let e = vec2<f32>(f32(v & 16383u), f32((v >> 14u) & 16383u)) / 16383.0 * 2.0 - 1.0;
+    var n = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    let t = max(-n.z, 0.0);
+    n.x += select(t, -t, n.x >= 0.0);
+    n.y += select(t, -t, n.y >= 0.0);
+    return vec4<f32>(normalize(n), f32(v >> 28u));
+}
+
+struct POut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) world: vec3<f32>,
+};
+
 @vertex
-fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) lm: vec2<f32>, @location(3) bias: f32, @location(4) normal: vec3<f32>,
-      @location(5) uv2: vec2<f32>, @location(6) blend: vec2<f32>, @location(7) paint: vec4<f32>, @location(8) vlight: u32, @location(9) mask: vec4<f32>) -> VOut {
+fn vs_pos(@location(0) pos: vec3<f32>) -> POut {
+    var o: POut;
+    o.pos = fr.mvp * vec4<f32>(pos + vec3<f32>(0.0, 0.0, bu.e.x * fr.view_r.w), 1.0);
+    o.world = pos;
+    return o;
+}
+
+@vertex
+fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) uv2: vec2<f32>, @location(3) lm: vec2<f32>, @location(4) nb: u32,
+      @location(5) blend: vec2<f32>, @location(6) paint: vec4<f32>, @location(7) vlight: u32, @location(8) mask: vec4<f32>) -> VOut {
     var o: VOut;
+    let nbv = unpack_nb(nb);
+    let normal = nbv.xyz;
+    let bias = nbv.w;
     let lp = pos + vec3<f32>(0.0, 0.0, bu.e.x * fr.view_r.w);
     var off = fr.view_dir.xyz * (bias * 0.25);
     if (fr.eye.w > 0.5) {
@@ -304,6 +329,13 @@ fn fs_n(i: VOut, @builtin(front_facing) front: bool) -> FOut {
     }
     o.normal = vec4<f32>(dot(n, fr.view_r.xyz), dot(n, fr.view_u.xyz), dot(n, fr.view_dir.xyz), 1.0);
     return o;
+}
+
+@fragment
+fn fs_shadow_pos(i: POut) {
+    if (cut_away(i.world)) {
+        discard;
+    }
 }
 
 @fragment
