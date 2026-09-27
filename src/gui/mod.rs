@@ -60,6 +60,7 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
         let l = adapter.limits();
         wgpu::DeviceDescriptor {
             label: Some("bsp2img"),
+            required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
             required_limits: wgpu::Limits {
                 max_texture_dimension_2d: l.max_texture_dimension_2d,
                 max_buffer_size: l.max_buffer_size,

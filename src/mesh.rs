@@ -171,6 +171,17 @@ pub struct Mesh {
     pub casters: Vec<Vertex>,
     pub caster_idx: Vec<u32>,
     pub point_cell: Option<f64>,
+    pub compressed: Vec<Option<crate::s2::texture::Compressed>>,
+}
+
+impl Mesh {
+    pub fn texture(&self, i: usize) -> Option<std::borrow::Cow<'_, Image>> {
+        let t = self.textures.get(i)?.as_ref()?;
+        match self.compressed.get(i).and_then(|c| c.as_ref()) {
+            Some(c) => c.decode().ok().map(|d| std::borrow::Cow::Owned(Image { w: d.w as u32, h: d.h as u32, rgba: d.rgba })),
+            None => Some(std::borrow::Cow::Borrowed(t)),
+        }
+    }
 }
 
 pub struct PointLight {
@@ -550,6 +561,7 @@ pub fn build_mesh(
         casters: Vec::new(),
         caster_idx: Vec::new(),
         point_cell: None,
+        compressed: Vec::new(),
     }
 }
 

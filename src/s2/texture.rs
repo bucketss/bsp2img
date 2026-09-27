@@ -23,6 +23,24 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+pub struct Compressed {
+    pub format: u8,
+    pub w: usize,
+    pub h: usize,
+    pub levels: Vec<Vec<u8>>,
+}
+
+impl Compressed {
+    pub fn decode(&self) -> Result<Image> {
+        Ok(Image { w: self.w, h: self.h, rgba: decode(self.format, self.w, self.h, &self.levels[0])? })
+    }
+}
+
+pub enum Tex {
+    Plain(Image),
+    Bc(Compressed),
+}
+
 pub struct Hdr {
     pub w: usize,
     pub h: usize,
@@ -131,16 +149,35 @@ fn mip_bytes(fs: &Fs, name: &str, max_dim: usize) -> Result<(Info, usize, Vec<u8
     let head = fs.read_limit(name, HEAD)?;
     let inf = info(&head)?;
     let m = inf.pick(max_dim);
-    let (a, b) = inf.range(m)?;
+    let (_, b) = inf.range(m)?;
     let full = if b <= head.len() { head } else { fs.read_limit(name, b)? };
-    let src = slice(&full, a, b - a).context("mip data truncated")?;
+    let raw = mip(&inf, &full, m)?;
+    Ok((inf, m, raw))
+}
+
+fn mip(inf: &Info, full: &[u8], m: usize) -> Result<Vec<u8>> {
+    let (a, b) = inf.range(m)?;
+    let src = slice(full, a, b - a).context("mip data truncated")?;
     let size = inf.mip_size(m)?;
-    let raw = if src.len() < size {
+    Ok(if src.len() < size {
         lz4_flex::block::decompress(src, size).map_err(|e| anyhow::anyhow!("lz4 mip: {e}"))?
     } else {
         src.to_vec()
-    };
-    Ok((inf, m, raw))
+    })
+}
+
+pub fn load_tex(fs: &Fs, name: &str, max_dim: usize) -> Result<Tex> {
+    let head = fs.read_limit(name, HEAD)?;
+    let inf = info(&head)?;
+    let m = inf.pick(max_dim);
+    let (_, b) = inf.range(m)?;
+    let full = if b <= head.len() { head } else { fs.read_limit(name, b)? };
+    let (w, h) = inf.dims(m);
+    if matches!(inf.format, 1 | 2 | 20) && inf.layers() == 1 && w % 4 == 0 && h % 4 == 0 {
+        let levels = (m..inf.mips).map(|k| mip(&inf, &full, k)).collect::<Result<Vec<_>>>()?;
+        return Ok(Tex::Bc(Compressed { format: inf.format, w, h, levels }));
+    }
+    Ok(Tex::Plain(Image { w, h, rgba: decode(inf.format, w, h, &mip(&inf, &full, m)?)? }))
 }
 
 fn blocks(w: usize, h: usize, bb: usize, raw: &[u8], mut put: impl FnMut(usize, usize, &[u8]) -> Result<()>) -> Result<()> {
@@ -158,7 +195,7 @@ fn blocks(w: usize, h: usize, bb: usize, raw: &[u8], mut put: impl FnMut(usize, 
 pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
     let (inf, m, raw) = mip_bytes(fs, name, max_dim)?;
     let (w, h) = inf.dims(m);
-    Ok(Image { w, h, rgba: decode(&inf, w, h, &raw)? })
+    Ok(Image { w, h, rgba: decode(inf.format, w, h, &raw)? })
 }
 
 pub struct Volume<T> {
@@ -182,7 +219,7 @@ pub fn load_volume(fs: &Fs, name: &str) -> Result<Volume<u8>> {
     let d = sl.len();
     let mut data = Vec::with_capacity(w * h * d * 4);
     for s in &sl {
-        data.extend(decode(&inf, w, h, s)?);
+        data.extend(decode(inf.format, w, h, s)?);
     }
     Ok(Volume { w, h, d, data })
 }
@@ -214,7 +251,7 @@ pub fn load_cube(fs: &Fs, name: &str, max_dim: usize) -> Result<(usize, Vec<Vec<
         .take(6)
         .map(|c| match inf.format {
             19 | 10 => hdr_decode(&inf, w, h, c).map(|x| x.rgb),
-            _ => decode(&inf, w, h, c).map(|px| {
+            _ => decode(inf.format, w, h, c).map(|px| {
                 px.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]].map(|v| (v as f32 / 255.0).powf(2.2))).collect()
             }),
         })
@@ -222,7 +259,7 @@ pub fn load_cube(fs: &Fs, name: &str, max_dim: usize) -> Result<(usize, Vec<Vec<
     Ok((w.min(h), faces))
 }
 
-fn decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
+fn decode(format: u8, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
     let mut rgba = vec![0u8; w * h * 4];
     let mut store = |bx: usize, by: usize, px: &[u8; 64]| {
         for yy in 0..4 {
@@ -235,10 +272,10 @@ fn decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
             }
         }
     };
-    match inf.format {
-        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(inf.format).unwrap(), raw, |bx, by, b| {
+    match format {
+        1 | 2 | 20 | 21 | 27 => blocks(w, h, block_bytes(format).unwrap(), raw, |bx, by, b| {
             let mut out = [0u8; 64];
-            match inf.format {
+            match format {
                 1 => bcdec_rs::bc1(b, &mut out, 16),
                 2 => bcdec_rs::bc3(b, &mut out, 16),
                 20 => bcdec_rs::bc7(b, &mut out, 16),
@@ -261,7 +298,7 @@ fn decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Vec<u8>> {
             Ok(())
         })?,
         19 => {
-            let hdr = hdr_decode(inf, w, h, raw)?;
+            let hdr = hdr_bc6(w, h, raw)?;
             for (i, c) in hdr.rgb.chunks_exact(3).enumerate() {
                 for k in 0..3 {
                     let v = c[k].max(0.0);
@@ -291,34 +328,40 @@ fn hdr_from(inf: &Info, m: usize, raw: &[u8]) -> Result<Hdr> {
     hdr_decode(inf, w, h, raw)
 }
 
-fn hdr_decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Hdr> {
+fn hdr_bc6(w: usize, h: usize, raw: &[u8]) -> Result<Hdr> {
     let mut rgb = vec![0f32; w * h * 3];
-    match inf.format {
-        19 => blocks(w, h, 16, raw, |bx, by, b| {
-            let mut fo = [0f32; 48];
-            bcdec_rs::bc6h_float(b, &mut fo, 12, false);
-            for yy in 0..4 {
-                for xx in 0..4 {
-                    let (x, y) = (bx * 4 + xx, by * 4 + yy);
-                    if x < w && y < h {
-                        let s = (yy * 4 + xx) * 3;
-                        rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&fo[s..s + 3]);
-                    }
+    blocks(w, h, 16, raw, |bx, by, b| {
+        let mut fo = [0f32; 48];
+        bcdec_rs::bc6h_float(b, &mut fo, 12, false);
+        for yy in 0..4 {
+            for xx in 0..4 {
+                let (x, y) = (bx * 4 + xx, by * 4 + yy);
+                if x < w && y < h {
+                    let s = (yy * 4 + xx) * 3;
+                    rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&fo[s..s + 3]);
                 }
             }
-            Ok(())
-        })?,
+        }
+        Ok(())
+    })?;
+    Ok(Hdr { w, h, rgb })
+}
+
+fn hdr_decode(inf: &Info, w: usize, h: usize, raw: &[u8]) -> Result<Hdr> {
+    match inf.format {
+        19 => hdr_bc6(w, h, raw),
         10 => {
             let src = slice(raw, 0, w * h * 8)?;
+            let mut rgb = vec![0f32; w * h * 3];
             for i in 0..w * h {
                 for k in 0..3 {
                     rgb[i * 3 + k] = half(u16::from_le_bytes([src[i * 8 + k * 2], src[i * 8 + k * 2 + 1]]));
                 }
             }
+            Ok(Hdr { w, h, rgb })
         }
         f => bail!("HDR texture format {f} not supported"),
     }
-    Ok(Hdr { w, h, rgb })
 }
 
 pub fn load_hdr(fs: &Fs, name: &str, max_dim: usize) -> Result<Hdr> {

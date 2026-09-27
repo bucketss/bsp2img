@@ -261,13 +261,8 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         .into_iter()
         .collect();
     tex_names.sort();
-    let decoded: HashMap<String, Option<Image>> = tex_names
-        .par_iter()
-        .map(|t| {
-            let im = texture::load(fs, &format!("{t}_c"), o.tex_max).ok().map(|i| Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba });
-            (t.clone(), im)
-        })
-        .collect();
+    let decoded: HashMap<String, Option<texture::Tex>> =
+        tex_names.par_iter().map(|t| (t.clone(), texture::load_tex(fs, &format!("{t}_c"), o.tex_max).ok())).collect();
     tm.lap("textures");
     for (t, im) in &decoded {
         if im.is_none() {
@@ -276,6 +271,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     }
 
     let mut images: Vec<Option<Image>> = Vec::new();
+    let mut compressed: Vec<Option<texture::Compressed>> = Vec::new();
     let mut tex_ids: HashMap<String, usize> = HashMap::new();
     let mut tex_label: Vec<String> = Vec::new();
     let mut group_tex = Vec::with_capacity(groups.len());
@@ -288,10 +284,16 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         let label = mn.rsplit('/').next().unwrap_or(mn).trim_end_matches(".vmat").to_string();
         let mut add = |src: String, fill: &Fill| {
             *tex_ids.entry(src).or_insert_with(|| {
-                images.push(Some(match fill {
-                    Fill::Texture(t) => decoded.remove(t).flatten().unwrap_or_else(checker),
-                    Fill::Solid(c) => Image { w: 4, h: 4, rgba: c.repeat(16) },
-                }));
+                let (im, bc) = match fill {
+                    Fill::Texture(t) => match decoded.remove(t).flatten() {
+                        Some(texture::Tex::Plain(i)) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
+                        Some(texture::Tex::Bc(c)) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
+                        None => (checker(), None),
+                    },
+                    Fill::Solid(c) => (Image { w: 4, h: 4, rgba: c.repeat(16) }, None),
+                };
+                images.push(Some(im));
+                compressed.push(bc);
                 tex_label.push(label.clone());
                 images.len() - 1
             })
@@ -468,6 +470,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             casters,
             caster_idx,
             point_cell: Some(POINT_CELL),
+            compressed,
         },
         draws: entries.len(),
         dropped,

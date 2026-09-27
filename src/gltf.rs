@@ -64,7 +64,7 @@ struct Part<'a> {
     alpha: f32,
     tint: [f32; 3],
     verts: Vec<Vertex>,
-    image: Option<&'a Image>,
+    image: Option<std::borrow::Cow<'a, Image>>,
 }
 
 struct Chart {
@@ -311,7 +311,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool) -
                         (0..3).map(|i| w[i] * f(&v[i])[1] as f64).sum(),
                     )
                 };
-                let t = match part.image {
+                let t = match part.image.as_deref() {
                     Some(img) => sample(img, mix(|v| v.uv), true, nearest),
                     None => [255.0; 4],
                 };
@@ -744,7 +744,7 @@ pub fn export_gltf(
             alpha: b.alpha,
             tint: b.tint,
             verts: clip_tris_cuts(b.tris(), cuts, scene.mask.as_ref()),
-            image: mesh.textures.get(b.tex).and_then(|t| t.as_ref()),
+            image: mesh.texture(b.tex),
         })
         .filter(|p| !p.verts.is_empty())
         .collect();
@@ -811,7 +811,7 @@ pub fn export_gltf(
             let mut texs: HashMap<usize, usize> = HashMap::new();
             let mut mats: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
             for p in &parts {
-                let t = p.image.map(|img| {
+                let t = p.image.as_deref().map(|img| {
                     *texs.entry(p.tex).or_insert_with(|| {
                         model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                         model.texs.len() - 1

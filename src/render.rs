@@ -57,7 +57,7 @@ impl Gpu {
         let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,
-            required_features: wgpu::Features::empty(),
+            required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
             required_limits: wgpu::Limits {
                 max_texture_dimension_2d: limits.max_texture_dimension_2d,
                 max_buffer_size: limits.max_buffer_size,
@@ -674,6 +674,36 @@ impl Stager<'_> {
         t.create_view(&Default::default())
     }
 
+    fn compressed(&mut self, c: &crate::s2::texture::Compressed) -> wgpu::TextureView {
+        let (format, bb) = match c.format {
+            1 => (wgpu::TextureFormat::Bc1RgbaUnorm, 8),
+            2 => (wgpu::TextureFormat::Bc3RgbaUnorm, 16),
+            _ => (wgpu::TextureFormat::Bc7RgbaUnorm, 16),
+        };
+        let tex = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: c.w as u32, height: c.h as u32, depth_or_array_layers: 1 },
+            mip_level_count: c.levels.len() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (l, data) in c.levels.iter().enumerate() {
+            let (bw, bh) = (((c.w >> l).max(1)).div_ceil(4) as u32, ((c.h >> l).max(1)).div_ceil(4) as u32);
+            let n = (bw * bh) as usize * bb;
+            self.gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: l as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &data[..n.min(data.len())],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bw * bb as u32), rows_per_image: Some(bh) },
+                wgpu::Extent3d { width: bw * 4, height: bh * 4, depth_or_array_layers: 1 },
+            );
+            self.add(n as u64);
+        }
+        tex.create_view(&Default::default())
+    }
+
     fn add(&mut self, n: u64) {
         self.pending += n;
         if self.pending >= UPLOAD_FLUSH {
@@ -896,18 +926,33 @@ impl GpuScene {
         let shadow_pipe = [shadow_pipe(true), shadow_pipe(false)];
         tm.lap("pipelines");
         let mut st = Stager { gpu, pending: 0 };
-        let tex_views: Vec<Option<wgpu::TextureView>> = mesh
-            .textures
-            .iter()
-            .map(|t| {
-                t.as_ref().map(|im| {
-                    let mips = mip_chain(im.w, im.h, &im.rgba);
-                    let levels: Vec<(u32, u32, &[u8])> =
-                        std::iter::once((im.w, im.h, &im.rgba[..])).chain(mips.iter().map(|(w, h, d)| (*w, *h, &d[..]))).collect();
-                    st.texture(im.w, im.h, wgpu::TextureFormat::Rgba8Unorm, &levels, 4)
-                })
+        let bc = gpu.device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
+        let comp = |i: usize| mesh.compressed.get(i).and_then(|c| c.as_ref()).filter(|_| bc);
+        let plain: Vec<Option<(std::borrow::Cow<crate::mesh::Image>, Vec<(u32, u32, Vec<u8>)>)>> = (0..mesh.textures.len())
+            .into_par_iter()
+            .map(|i| {
+                if comp(i).is_some() {
+                    return None;
+                }
+                let im = mesh.texture(i)?;
+                let mips = mip_chain(im.w, im.h, &im.rgba);
+                Some((im, mips))
             })
             .collect();
+        let tex_views: Vec<Option<wgpu::TextureView>> = plain
+            .iter()
+            .enumerate()
+            .map(|(i, p)| match (p, comp(i)) {
+                (Some((im, mips)), _) => {
+                    let levels: Vec<(u32, u32, &[u8])> =
+                        std::iter::once((im.w, im.h, &im.rgba[..])).chain(mips.iter().map(|(w, h, d)| (*w, *h, &d[..]))).collect();
+                    Some(st.texture(im.w, im.h, wgpu::TextureFormat::Rgba8Unorm, &levels, 4))
+                }
+                (None, Some(c)) => Some(st.compressed(c)),
+                (None, None) => None,
+            })
+            .collect();
+        drop(plain);
         tm.lap("textures");
         let a = &mesh.atlas;
         let lmap_view = match &mesh.hdr {
