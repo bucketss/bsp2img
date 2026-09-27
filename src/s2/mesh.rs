@@ -10,10 +10,12 @@ use super::probe::Probes;
 use super::texture;
 use super::vpk::Fs;
 use super::world::{BLOCK_LIGHT, World, Xf};
-use crate::mesh::{Batch, HdrLight, Image, Mesh, Mode, Vertex, pack_rgb9e5, unorm16};
+use crate::mesh::{Batch, Chunk, HdrLight, Image, Mesh, Mode, Vertex, pack_rgb9e5, unorm16};
 
 const BATCH_BYTES: usize = 240 << 20;
 const POINT_CELL: f64 = 32.0;
+const CHUNK_TILE: f64 = 1024.0;
+const TILE_SAMPLES: usize = 64;
 const TINT_LEVELS: f32 = 255.0;
 
 pub struct Lightmap {
@@ -370,6 +372,20 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     } else {
         0
     };
+    let tiles: Vec<(i32, i32)> = entries
+        .par_iter()
+        .enumerate()
+        .map(|(ei, e)| {
+            let c = match clipped.get(&ei) {
+                Some(v) => v.iter().fold(DVec3::ZERO, |a, v| a + DVec3::new(v.pos[0] as f64, v.pos[1] as f64, 0.0)) / v.len().max(1) as f64,
+                None => centre(&insts[e.inst as usize], models[insts[e.inst as usize].model as usize].as_ref().unwrap(), e.dc as usize),
+            };
+            ((c.x / CHUNK_TILE).floor() as i32, (c.y / CHUNK_TILE).floor() as i32)
+        })
+        .collect();
+    for g in &mut groups {
+        g.4.sort_by_key(|&ei| tiles[ei]);
+    }
     let mut batches: Vec<Batch> = Vec::new();
     let mut faces = 0;
     for (gi, (mn, tq, md, alpha, list)) in groups.iter().enumerate() {
@@ -396,6 +412,16 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 }
             });
             faces += idx.len() / 3;
+            let mut chunks = Vec::new();
+            let (mut v0, mut i0, mut v, mut i) = (0, 0, 0, 0);
+            for (k, &ei) in part.iter().enumerate() {
+                v += entries[ei].verts;
+                i += entries[ei].tris * 3;
+                if part.get(k + 1).is_none_or(|&n| tiles[n] != tiles[ei]) {
+                    chunks.push(Chunk::new(&verts[v0..v], i0, i - i0));
+                    (v0, i0) = (v, i);
+                }
+            }
             batches.push(Batch {
                 tex: group_tex[gi],
                 mode: *md,
@@ -407,6 +433,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 tint_mask: group_tm[gi],
                 verts,
                 idx,
+                chunks,
             });
             start = end;
         }
@@ -472,6 +499,21 @@ fn gather(part: &[usize], entries: &[Entry], f: impl Fn(usize, &mut [Vertex], &m
         ix.iter_mut().for_each(|x| *x += base);
     });
     (verts, idx)
+}
+
+fn centre(it: &Inst, m: &Model, dc: usize) -> DVec3 {
+    let c = &m.draws[dc];
+    let (Some(ps), Ok(ix)) = (m.stream(c, "POSITION", 0), m.index_view(c)) else { return it.xf.t };
+    let n = ix.len();
+    if n == 0 {
+        return it.xf.t;
+    }
+    let step = n.div_ceil(TILE_SAMPLES);
+    let (sum, cnt) = (0..n).step_by(step).fold((DVec3::ZERO, 0.0), |(s, k), j| {
+        let v = ps.get(ix.get(j) as usize);
+        (s + it.xf.apply(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)), k + 1.0)
+    });
+    sum / cnt
 }
 
 fn span(ix: &Indices) -> (u32, u32) {

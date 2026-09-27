@@ -120,6 +120,24 @@ pub struct Batch {
     pub tint_mask: Option<usize>,
     pub verts: Vec<Vertex>,
     pub idx: Vec<u32>,
+    pub chunks: Vec<Chunk>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Chunk {
+    pub first: u32,
+    pub count: u32,
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+}
+
+impl Chunk {
+    pub fn new(verts: &[Vertex], first: usize, count: usize) -> Chunk {
+        let (lo, hi) = verts.iter().fold(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]), |(lo, hi), v| {
+            (std::array::from_fn(|k| lo[k].min(v.pos[k])), std::array::from_fn(|k| hi[k].max(v.pos[k])))
+        });
+        Chunk { first: first as u32, count: count as u32, lo, hi }
+    }
 }
 
 impl Batch {
@@ -503,6 +521,7 @@ pub fn build_mesh(
                 tint_mask: None,
                 verts: Vec::new(),
                 idx: Vec::new(),
+                chunks: Vec::new(),
             });
             batches.len() - 1
         });

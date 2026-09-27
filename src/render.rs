@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use crate::camera::{Basis, camera_basis, extents, ortho, persp};
 use crate::explode::{Explode, band_points};
 use crate::look::Look;
-use crate::mesh::{Batch, Mesh, Mode, Vertex};
+use crate::mesh::{Batch, Chunk, Mesh, Mode, Vertex};
 use crate::post::{Cam, NORMAL_FORMAT, Post, PostTargets};
 use crate::reach::HullMask;
 use crate::sun::{Sun, SunEnv, baked_sun, sun_at};
@@ -35,6 +35,7 @@ const SHADOW_CACHE: usize = 2;
 const BAND_EPS: f64 = 0.01;
 const NO_BAND: f32 = -3.0e38;
 const BAND_SLOTS: usize = 16;
+const CULL_PAD: f64 = 2.0;
 
 #[derive(Clone)]
 pub struct Gpu {
@@ -153,12 +154,65 @@ struct ShadowMap {
     depth: f64,
 }
 
+struct GpuChunk {
+    first: u32,
+    count: u32,
+    lo: DVec3,
+    hi: DVec3,
+}
+
+struct Cull {
+    m: DMat4,
+    zmin: f64,
+    zmax: f64,
+    clip: [f64; 4],
+}
+
+impl Cull {
+    fn new(m: &DMat4, cuts: &Cuts) -> Cull {
+        Cull { m: *m, zmin: cuts.zmin, zmax: cuts.zmax, clip: cuts.clip }
+    }
+
+    fn keeps(&self, c: &GpuChunk, w: &Band) -> bool {
+        let [x0, y0, x1, y1] = self.clip;
+        if c.hi.z < self.zmin || c.lo.z > self.zmax || c.hi.z <= w.lo as f64 || c.lo.z > w.hi as f64 {
+            return false;
+        }
+        if c.hi.x < x0 || c.lo.x > x1 || c.hi.y < y0 || c.lo.y > y1 {
+            return false;
+        }
+        let lift = DVec3::Z * w.lift;
+        let (lo, hi) = (c.lo - DVec3::splat(CULL_PAD) + lift, c.hi + DVec3::splat(CULL_PAD) + lift);
+        let mut out = [true; 6];
+        for i in 0..8 {
+            let p = DVec3::new(if i & 1 == 0 { lo.x } else { hi.x }, if i & 2 == 0 { lo.y } else { hi.y }, if i & 4 == 0 { lo.z } else { hi.z });
+            let q = self.m * p.extend(1.0);
+            let o = [q.x < -q.w, q.x > q.w, q.y < -q.w, q.y > q.w, q.z < 0.0, q.z > q.w];
+            for k in 0..6 {
+                out[k] &= o[k];
+            }
+        }
+        !out.contains(&true)
+    }
+
+    fn ranges(&self, b: &GpuBatch, w: &Band) -> Vec<std::ops::Range<u32>> {
+        let mut out: Vec<std::ops::Range<u32>> = Vec::new();
+        for c in b.chunks.iter().filter(|c| self.keeps(c, w)) {
+            match out.last_mut() {
+                Some(r) if r.end == c.first => r.end += c.count,
+                _ => out.push(c.first..c.first + c.count),
+            }
+        }
+        out
+    }
+}
+
 struct GpuBatch {
     mode: Mode,
+    chunks: Vec<GpuChunk>,
     pbuf: wgpu::Buffer,
     abuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
-    count: u32,
     zr: [f32; 2],
     bind: wgpu::BindGroup,
     frames: Vec<wgpu::BindGroup>,
@@ -205,6 +259,7 @@ struct Band {
     off: u32,
     lo: f32,
     hi: f32,
+    lift: f64,
 }
 
 impl Band {
@@ -540,7 +595,11 @@ fn make_batch(
         _ => Vec::new(),
     };
     let zr = verts.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |r, v| [r[0].min(v.pos[2]), r[1].max(v.pos[2])]);
-    Some(GpuBatch { mode: b.mode, pbuf, abuf, ibuf, count: idx.len() as u32, zr, bind: make(view), frames })
+    let whole = [Chunk::new(verts, 0, idx.len())];
+    let chunks = if b.chunks.is_empty() { &whole[..] } else { &b.chunks[..] };
+    let dv = |p: [f32; 3]| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+    let chunks = chunks.iter().map(|c| GpuChunk { first: c.first, count: c.count, lo: dv(c.lo), hi: dv(c.hi) }).collect();
+    Some(GpuBatch { mode: b.mode, chunks, pbuf, abuf, ibuf, zr, bind: make(view), frames })
 }
 
 fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 4], ub: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -1245,7 +1304,7 @@ impl Renderer {
                 f.view_r[3] = (k as f64 * gap) as f32;
                 let off = k as u64 * self.frame_stride;
                 self.gpu.queue.write_buffer(buf, off, bytemuck::bytes_of(&f));
-                Band { off: off as u32, lo: lo as f32, hi: hi as f32 }
+                Band { off: off as u32, lo: lo as f32, hi: hi as f32, lift: k as f64 * gap }
             })
             .collect()
     }
@@ -1466,6 +1525,7 @@ impl Renderer {
         };
         let q = &self.gpu.queue;
         let bands = self.write_bands(&self.frame_buf, fu);
+        let cl = Cull::new(m, cuts);
         let guide = self.guides.as_ref().and_then(|g| {
             let gv = self.guide_verts(g, view, guide_w, cuts);
             if gv.is_empty() {
@@ -1546,8 +1606,13 @@ impl Renderer {
                 pass.set_vertex_buffer(1, b.abuf.slice(..));
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 for w in bands.iter().filter(|w| w.meets(b.zr)) {
-                    pass.set_bind_group(0, &self.frame_bind, &[w.off]);
-                    pass.draw_indexed(0..b.count, 0, 0..1);
+                    let rs = cl.ranges(b, w);
+                    if !rs.is_empty() {
+                        pass.set_bind_group(0, &self.frame_bind, &[w.off]);
+                    }
+                    for r in rs {
+                        pass.draw_indexed(r, 0, 0..1);
+                    }
                 }
             }
             if let (0, Some((g, n))) = (pi, &guide) {
@@ -1660,6 +1725,7 @@ impl Renderer {
             eye: [0.0; 4],
         };
         let bands = self.write_bands(&self.shadow_frame_buf, fu);
+        let cl = Cull::new(&m, cuts);
         let mut enc = dev.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1689,8 +1755,13 @@ impl Renderer {
                 }
                 pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 for w in bands.iter().filter(|w| w.meets(b.zr)) {
-                    pass.set_bind_group(0, &self.shadow_frame_bind, &[w.off]);
-                    pass.draw_indexed(0..b.count, 0, 0..1);
+                    let rs = cl.ranges(b, w);
+                    if !rs.is_empty() {
+                        pass.set_bind_group(0, &self.shadow_frame_bind, &[w.off]);
+                    }
+                    for r in rs {
+                        pass.draw_indexed(r, 0, 0..1);
+                    }
                 }
             }
             pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
