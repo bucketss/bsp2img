@@ -163,7 +163,7 @@ impl Cells<'_> {
     }
 }
 
-pub fn clip_tris_cuts(verts: &[Vertex], cuts: &Cuts, mask: Option<&HullMask>) -> Vec<Vertex> {
+pub fn clip_tris_cuts<'a>(tris: impl Iterator<Item = [&'a Vertex; 3]>, cuts: &Cuts, mask: Option<&HullMask>) -> Vec<Vertex> {
     let mask = mask.filter(|m| cuts.use_mask && m.nx > 0 && m.ny > 0);
     let cells = mask.map(|m| Cells {
         m,
@@ -171,9 +171,9 @@ pub fn clip_tris_cuts(verts: &[Vertex], cuts: &Cuts, mask: Option<&HullMask>) ->
         dy: (m.rect[3] - m.rect[1]) / m.ny as f64,
     });
     let [x0, y0, x1, y1] = cuts.clip;
-    let mut out = Vec::with_capacity(verts.len());
-    for tri in verts.chunks_exact(3) {
-        let mut p = tri.to_vec();
+    let mut out = Vec::new();
+    for tri in tris {
+        let mut p = tri.map(|v| *v).to_vec();
         p = keep_above(p, 2, cuts.zmin);
         p = keep_below(p, 2, cuts.zmax);
         p = keep_above(p, 0, x0);

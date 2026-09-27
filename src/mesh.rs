@@ -119,6 +119,17 @@ pub struct Batch {
     pub layer3: Option<(usize, [f32; 4], bool)>,
     pub tint_mask: Option<usize>,
     pub verts: Vec<Vertex>,
+    pub idx: Vec<u32>,
+}
+
+impl Batch {
+    pub fn tris(&self) -> impl Iterator<Item = [&Vertex; 3]> + '_ {
+        tris(&self.verts, &self.idx)
+    }
+}
+
+pub fn tris<'a>(verts: &'a [Vertex], idx: &'a [u32]) -> impl Iterator<Item = [&'a Vertex; 3]> + 'a {
+    idx.chunks_exact(3).map(move |t| [&verts[t[0] as usize], &verts[t[1] as usize], &verts[t[2] as usize]])
 }
 
 #[derive(Clone)]
@@ -140,6 +151,7 @@ pub struct Mesh {
     pub names: Vec<String>,
     pub hdr: Option<HdrLight>,
     pub casters: Vec<Vertex>,
+    pub caster_idx: Vec<u32>,
 }
 
 pub struct PointLight {
@@ -479,14 +491,25 @@ pub fn build_mesh(
         };
         let key = (r.tex, r.mode, r.alpha.to_bits(), r.warp.map(|w| w.map(f32::to_bits)));
         let bi = *index.entry(key).or_insert_with(|| {
-            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, tint: [1.0; 3], layer2: None, layer3: None, tint_mask: None, verts: Vec::new() });
+            batches.push(Batch {
+                tex: r.tex,
+                mode: r.mode,
+                alpha: r.alpha,
+                warp: r.warp,
+                tint: [1.0; 3],
+                layer2: None,
+                layer3: None,
+                tint_mask: None,
+                verts: Vec::new(),
+                idx: Vec::new(),
+            });
             batches.len() - 1
         });
-        let out = &mut batches[bi].verts;
-        for i in 1..n - 1 {
-            out.push(vert(0));
-            out.push(vert(i));
-            out.push(vert(i + 1));
+        let b = &mut batches[bi];
+        let base = b.verts.len() as u32;
+        b.verts.extend((0..n).map(vert));
+        for i in 1..n as u32 - 1 {
+            b.idx.extend([base, base + i, base + i + 1]);
         }
     }
     for b in &batches {
@@ -505,6 +528,7 @@ pub fn build_mesh(
         names: Vec::new(),
         hdr: None,
         casters: Vec::new(),
+        caster_idx: Vec::new(),
     }
 }
 
@@ -638,7 +662,7 @@ pub fn roof_levels(mesh: &Mesh) -> Vec<(f64, f64, f64)> {
         .batches
         .par_iter()
         .flat_map_iter(|b| {
-            b.verts.chunks_exact(3).filter_map(|tri| {
+            b.tris().filter_map(|tri| {
                 let p = [0, 1, 2].map(|k| DVec3::new(tri[k].pos[0] as f64, tri[k].pos[1] as f64, tri[k].pos[2] as f64));
                 let n = (p[1] - p[0]).cross(p[2] - p[0]);
                 let ln = n.length();

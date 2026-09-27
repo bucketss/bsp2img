@@ -153,6 +153,7 @@ struct ShadowMap {
 struct GpuBatch {
     mode: Mode,
     vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
     count: u32,
     bind: wgpu::BindGroup,
     frames: Vec<wgpu::BindGroup>,
@@ -261,7 +262,7 @@ pub struct GpuScene {
     shmask_view: wgpu::TextureView,
     lamp_buf: wgpu::Buffer,
     hdr: Option<HdrInfo>,
-    casters: Option<(wgpu::Buffer, u32, wgpu::BindGroup)>,
+    casters: Option<(wgpu::Buffer, wgpu::Buffer, u32, wgpu::BindGroup)>,
     dummy_view: wgpu::TextureView,
     linear_clamp: wgpu::Sampler,
     cmp_sampler: wgpu::Sampler,
@@ -447,13 +448,15 @@ fn make_batch(
     mesh: &Mesh,
     b: &Batch,
     verts: &[Vertex],
+    idx: &[u32],
     band: usize,
 ) -> Option<GpuBatch> {
     let Some(Some(view)) = tex_views.get(b.tex) else { return None };
-    if verts.is_empty() {
+    if idx.is_empty() {
         return None;
     }
     let vbuf = st.buffer(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(verts));
+    let ibuf = st.buffer(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(idx));
     let (water, warp) = match b.warp {
         Some(w) => (1.0, w),
         None => (0.0, [0.0; 4]),
@@ -482,7 +485,7 @@ fn make_batch(
         Some(Some(seq)) => seq.iter().filter_map(|&i| tex_views.get(i).and_then(|v| v.as_ref())).map(make).collect(),
         _ => Vec::new(),
     };
-    Some(GpuBatch { mode: b.mode, vbuf, count: verts.len() as u32, bind: make(view), frames })
+    Some(GpuBatch { mode: b.mode, vbuf, ibuf, count: idx.len() as u32, bind: make(view), frames })
 }
 
 fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 4], ub: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -560,7 +563,7 @@ impl Stager<'_> {
 
 impl GpuScene {
     pub fn new(gpu: &Gpu, mesh: &Mesh) -> Result<Arc<GpuScene>> {
-        let bytes: usize = mesh.batches.iter().map(|b| b.verts.len()).sum::<usize>() * std::mem::size_of::<Vertex>();
+        let bytes: usize = mesh.batches.iter().map(|b| b.verts.len() * std::mem::size_of::<Vertex>() + b.idx.len() * 4).sum();
         gpu.guard(|| format!("{} MB of geometry", bytes >> 20), || Arc::new(Self::upload(gpu, mesh)))
     }
 
@@ -791,12 +794,13 @@ impl GpuScene {
         tm.lap("lightmap");
         let mut batches = Vec::new();
         for b in &mesh.batches {
-            batches.extend(make_batch(&mut st, &batch_layout, &tex_views, mesh, b, &b.verts, 0));
+            batches.extend(make_batch(&mut st, &batch_layout, &tex_views, mesh, b, &b.verts, &b.idx, 0));
         }
-        let casters = (!mesh.casters.is_empty()).then(|| {
+        let casters = (!mesh.caster_idx.is_empty()).then(|| {
             let vbuf = st.buffer(wgpu::BufferUsages::VERTEX, bytemuck::cast_slice(&mesh.casters));
+            let ibuf = st.buffer(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(&mesh.caster_idx));
             let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&[0.0f32; 28]));
-            (vbuf, mesh.casters.len() as u32, batch_bind(dev, &batch_layout, [&dummy_view; 4], &ub))
+            (vbuf, ibuf, mesh.caster_idx.len() as u32, batch_bind(dev, &batch_layout, [&dummy_view; 4], &ub))
         });
         st.flush();
         tm.lap("geometry");
@@ -1111,10 +1115,12 @@ impl Renderer {
                     let (lay, tv) = (&self.sc.batch_layout, &self.sc.tex_views);
                     let (mut orig, mut band) = (Vec::new(), Vec::new());
                     for b in &mesh.batches {
-                        for (k, verts) in clip_tris_z(&b.verts, &x.planes) {
+                        let soup: Vec<Vertex> = b.idx.iter().map(|&i| b.verts[i as usize]).collect();
+                        for (k, verts) in clip_tris_z(&soup, &x.planes) {
                             orig.extend(verts.iter().map(vpos));
                             band.extend(std::iter::repeat_n(k as u16, verts.len()));
-                            batches.extend(make_batch(&mut st, lay, tv, mesh, b, &verts, k));
+                            let idx: Vec<u32> = (0..verts.len() as u32).collect();
+                            batches.extend(make_batch(&mut st, lay, tv, mesh, b, &verts, &idx, k));
                         }
                     }
                     st.flush();
@@ -1423,7 +1429,8 @@ impl Renderer {
                 let bind = if anim && !b.frames.is_empty() { &b.frames[tick % b.frames.len()] } else { &b.bind };
                 pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, b.vbuf.slice(..));
-                pass.draw(0..b.count, 0..1);
+                pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..b.count, 0, 0..1);
             }
             if let (0, Some((g, n))) = (pi, &guide) {
                 pass.set_pipeline(&self.sc.pipelines[ni * 8 + 4]);
@@ -1552,12 +1559,14 @@ impl Renderer {
             for b in self.batches().iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
                 pass.set_bind_group(1, &b.bind, &[]);
                 pass.set_vertex_buffer(0, b.vbuf.slice(..));
-                pass.draw(0..b.count, 0..1);
+                pass.set_index_buffer(b.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..b.count, 0, 0..1);
             }
-            if let (Some((vbuf, n, bind)), None) = (&self.sc.casters, &self.explode) {
+            if let (Some((vbuf, ibuf, n, bind)), None) = (&self.sc.casters, &self.explode) {
                 pass.set_bind_group(1, bind, &[]);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
-                pass.draw(0..*n, 0..1);
+                pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..*n, 0, 0..1);
             }
         }
         self.gpu.queue.submit([enc.finish()]);

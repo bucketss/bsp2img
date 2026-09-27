@@ -743,7 +743,7 @@ pub fn export_gltf(
             mode: b.mode,
             alpha: b.alpha,
             tint: b.tint,
-            verts: clip_tris_cuts(&b.verts, cuts, scene.mask.as_ref()),
+            verts: clip_tris_cuts(b.tris(), cuts, scene.mask.as_ref()),
             image: mesh.textures.get(b.tex).and_then(|t| t.as_ref()),
         })
         .filter(|p| !p.verts.is_empty())
