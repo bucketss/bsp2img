@@ -18,7 +18,7 @@ use crate::phys::{Mask, Phys, PhysStats};
 use crate::radar::DEFAULT;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
 use crate::s2::radar as s2radar;
-use crate::s2::{Extra, LoadStats};
+use crate::extra::{Extra, LoadStats};
 use crate::scene::{Report, Scene, num};
 use crate::sky::find_sky;
 use crate::wad::TextureSource;
@@ -437,7 +437,7 @@ fn walk(bsp: &Bsp, o: &HealthOpts, t: &[DVec3], ct: &[DVec3]) -> Result<Walk> {
 }
 
 pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
-    if let Some(x) = &scene.bsp.cs2 {
+    if let Some(x) = &scene.bsp.extra {
         return gather_cs2(scene, x, name, o);
     }
     let bsp = &scene.bsp;
@@ -682,7 +682,7 @@ fn gather_cs2(scene: &Scene, x: &Extra, name: &str, o: &HealthOpts) -> Health {
     let has_sky = bsp.entities.iter().any(|e| e.class() == "env_sky");
     let sky = x.sky.clone().unwrap_or_else(|| if has_sky { "env_sky".into() } else { "none".into() });
     let st = &x.stats;
-    let (missing_textures, missing_materials): (Vec<String>, Vec<String>) = st.missing.iter().cloned().partition(|m| m.ends_with(".vtex"));
+    let (missing_textures, missing_materials): (Vec<String>, Vec<String>) = st.missing.iter().cloned().partition(|m| m.ends_with(".vtex") || m.ends_with(".vtf"));
     let marks = crate::grid::entity_marks(bsp);
     let comp = ["T", "CT"].map(|l| marks.iter().filter(|m| m.spawn && m.label == l && m.comp != Some(false)).count());
     let disabled = ["info_player_terrorist", "info_player_counterterrorist"].map(|c| st.disabled.iter().filter(|d| d.0 == c).count());

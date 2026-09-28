@@ -256,7 +256,7 @@ impl App {
     fn form_overview(&mut self, ui: &mut egui::Ui) {
         ui.add(egui::Slider::new(&mut self.ov.margin, 0.0..=0.3).text("margin"));
         ui.add(egui::Slider::new(&mut self.ov.ss, 1..=4).text("supersample"));
-        let cs2 = self.is_cs2();
+        let cs2 = self.modern();
         if !cs2 {
             ui.checkbox(&mut self.ov.png, "Also write PNG");
         }
@@ -302,7 +302,7 @@ impl App {
         ui.add(egui::Slider::new(&mut self.timing.cell, 4.0..=32.0).text("walk grid units"));
         ui.add(egui::Slider::new(&mut self.timing.interval, 1.0..=10.0).text("contour s"));
         ui.add(egui::Slider::new(&mut self.timing.size, 512..=4096).text("size px"));
-        if self.is_cs2() {
+        if self.modern() {
             ui.horizontal(|ui| {
                 ui.label("Backdrop");
                 ui.radio_value(&mut self.timing.base, crate::grid::Backdrop::Render, "render");
@@ -398,7 +398,7 @@ impl App {
             ui.add(egui::Slider::new(&mut self.kills.presence_every, 0.1..=5.0).text("sample every s"));
         }
         ui.add(egui::Slider::new(&mut self.kills.size, 512..=4096).text("size px"));
-        if self.is_cs2() {
+        if self.modern() {
             ui.horizontal(|ui| {
                 ui.label("Backdrop");
                 ui.radio_value(&mut self.kills.base, crate::grid::Backdrop::Render, "render");

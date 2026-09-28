@@ -23,10 +23,7 @@ pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
         } else {
             vec![format!("{arg}.bsp"), format!("{arg}.vpk")]
         };
-        let mut roots = vec![game.to_path_buf()];
-        if game.join("game").is_dir() {
-            roots.push(game.join("game"));
-        }
+        let roots = roots(game);
         let mut cands = Vec::new();
         for root in roots {
             cands.push(root.clone());
@@ -139,13 +136,18 @@ fn cs2_maps(files: Vec<PathBuf>) -> Vec<PathBuf> {
     out
 }
 
-pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
-    let mut roots = vec![game.to_path_buf()];
-    if game.join("game").is_dir() {
-        roots.push(game.join("game"));
+fn roots(game: &Path) -> Vec<PathBuf> {
+    let sub = game.join("game");
+    match (sub.is_dir(), crate::s2::vpk::is_root(&sub)) {
+        (true, true) => vec![sub, game.to_path_buf()],
+        (true, false) => vec![game.to_path_buf(), sub],
+        _ => vec![game.to_path_buf()],
     }
+}
+
+pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
     let mut dirs = Vec::new();
-    for root in roots {
+    for root in roots(game) {
         dirs.push(root.clone());
         if let Ok(rd) = std::fs::read_dir(&root) {
             let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join("maps").is_dir()).collect();
@@ -157,22 +159,23 @@ pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
         }
     }
     let mut out: Vec<(String, PathBuf)> = Vec::new();
+    let mut bsps = Vec::new();
     let mut vpks = Vec::new();
     for d in dirs {
         let Ok(rd) = std::fs::read_dir(d.join("maps")) else { continue };
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")) {
-                let n = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                if !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&n)) {
-                    out.push((n, p));
-                }
+                bsps.push(p);
             } else if crate::s2::is_vpk(&p) {
                 vpks.push(p);
             }
         }
     }
-    for p in cs2_maps(vpks) {
+    let cs2_first = roots(game).first().is_some_and(|r| crate::s2::vpk::is_root(r));
+    let cs2 = cs2_maps(vpks);
+    let (first, second) = if cs2_first { (cs2, bsps) } else { (bsps, cs2) };
+    for p in first.into_iter().chain(second) {
         let n = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         if !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&n)) {
             out.push((n, p));

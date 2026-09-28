@@ -159,7 +159,12 @@ pub struct Scene {
 impl Scene {
     pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: Log) -> Result<Scene> {
         if crate::s2::is_vpk(path) {
-            return Self::load_cs2(path, opts, max_dim, log);
+            let (bsp, mesh) = crate::s2::load(path, opts, max_dim, log)?;
+            return Self::load_extra(bsp, mesh, opts, log);
+        }
+        if crate::s1::is_source(path) {
+            let (bsp, mesh) = crate::s1::load(path, opts, max_dim, log)?;
+            return Self::load_extra(bsp, mesh, opts, log);
         }
         let bsp = Bsp::load(path)?;
         let dirs = search_dirs(path, opts.game.as_deref(), &opts.wad_dirs);
@@ -224,8 +229,7 @@ impl Scene {
         Ok(Scene { bsp, mesh, levels, mask, dirs, opts: opts.clone() })
     }
 
-    fn load_cs2(path: &Path, opts: &LoadOpts, max_dim: u32, log: Log) -> Result<Scene> {
-        let (bsp, mesh) = crate::s2::load(path, opts, max_dim, log)?;
+    fn load_extra(bsp: Bsp, mesh: Mesh, opts: &LoadOpts, log: Log) -> Result<Scene> {
         if !mesh.missing.is_empty() {
             log(format!("missing ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -321,7 +325,10 @@ impl Scene {
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
-        if let Some(x) = &self.bsp.cs2 {
+        if let Some(x) = &self.bsp.extra {
+            if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
+                return name.filter(|n| !n.is_empty()).map(str::to_string).or_else(|| x.sky.clone()).unwrap_or_else(|| "none".into());
+            }
             return x.sky_material(name.unwrap_or("")).unwrap_or_else(|| "env_sky".into());
         }
         match name {
@@ -331,7 +338,10 @@ impl Scene {
     }
 
     pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
-        if let Some(x) = &self.bsp.cs2 {
+        if let Some(x) = &self.bsp.extra {
+            if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
+                return crate::s1::sky::load(&x.fs, name).ok();
+            }
             return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
         }
         let faces = find_sky(name, &self.dirs)?;

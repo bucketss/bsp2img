@@ -1,6 +1,6 @@
 # bsp2img
 
-Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
+Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
 
 ## CS2
 
@@ -12,6 +12,10 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `<addon>/<map>` | `csgo_addons\<addon>\maps\<map>.vpk` or loose `maps\<map>\world.vwrld_c` |
 | `workshop/<map>`, `<id>/<map>` | Subscribed workshop map in `steamapps\workshop\content\730` |
 | folder or `world.vwrld_c` | Loose compiled map |
+
+## CS:S and CS:GO
+
+`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces only so far: no displacements, props or lightmaps. `--sky` draws the map's `skyname`.
 
 ## GUI
 
@@ -28,7 +32,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `peel` | Animation lifting roof levels off one by one |
 | `slice` | Animation raising a height cut from floor to sky |
 | `poster` | Print-size tiled PNG with title block, legend and scale bar |
-| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2 radar `.png` per vertical section and `.txt`, on the official framing |
+| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2, CS:S and CS:GO radar `.png` per vertical section and `.txt`, on the official framing |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV and CS2 demos |
 | `health` | Asset, compile, engine limit, spawn, collision and overview report; `health_summary.csv` for several maps |
@@ -59,7 +63,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `--brightness`, `--light-scale` | Brighten lighting |
 | `--gamma`, `--texgamma`, `--lightgamma` | Gamma (2.5, 2, 2.5) |
 | `--all-styles` | Include switchable lights |
-| `--tex-max N` | CS2 texture size limit (512) |
+| `--tex-max N` | CS2 and Source texture size limit (512) |
 | `--nearest` | Pixelated textures |
 | `--no-cull` | Draw back faces |
 | `--timings` | Log phase times (or `BSP2IMG_TIMINGS=1`) |

@@ -179,7 +179,7 @@ impl Nav {
     }
 
     pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<Nav> {
-        if let Some(x) = &bsp.cs2 {
+        if let Some(x) = &bsp.extra {
             let Some(m) = &x.nav else { bail!("map has no nav mesh") };
             let gate = std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height");
             let phys = (gate && collide).then(|| x.phys());

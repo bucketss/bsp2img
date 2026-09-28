@@ -156,7 +156,7 @@ impl RadarSource {
 }
 
 pub fn official(bsp: &Bsp) -> Option<&Official> {
-    bsp.cs2.as_ref().and_then(|x| x.radar.as_ref())
+    bsp.extra.as_ref().and_then(|x| x.radar.as_ref())
 }
 
 pub fn radar_params(r: &Renderer, bsp: &Bsp, cuts: &Cuts, o: &OverviewOpts) -> Result<(Radar, RadarSource, Option<Official>)> {
@@ -227,7 +227,7 @@ fn export_radar(
         }
     }
     let mut sent = Vec::new();
-    let fs = bsp.cs2.as_ref().map(|x| &x.fs);
+    let fs = bsp.extra.as_ref().map(|x| &x.fs);
     let total = secs.len() as f32 + 0.5;
     for (i, s) in secs.iter().enumerate() {
         rep.step((i as f32 + 0.3) / total)?;
@@ -309,7 +309,7 @@ pub fn export_overview(
     let addon = match o.addon.trim() {
         "" => None,
         _ if !bsp.is_cs2() => anyhow::bail!("compiling into an addon is for CS2 maps only"),
-        a => Some(Addon::find(bsp.cs2.as_ref().and_then(|x| x.root.as_deref()), a)?),
+        a => Some(Addon::find(bsp.extra.as_ref().and_then(|x| x.root.as_deref()), a)?),
     };
     if o.grid {
         let f = free_name(out, &format!("{name}_grid"), ".png");
@@ -318,7 +318,7 @@ pub fn export_overview(
         rep.log(format!("  {}", f.display()));
         rep.step(0.3)?;
     }
-    if bsp.is_cs2() {
+    if bsp.modern() {
         return export_radar(r, bsp, name, cuts, o, out, files, addon, rep);
     }
     let ov = overview_params(r, cuts, o)?;

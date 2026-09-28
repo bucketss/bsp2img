@@ -205,8 +205,22 @@ pub fn read_miptex(data: &[u8], ofs: usize) -> Option<MipTex> {
     Some(MipTex { name, width: w, height: h, rgba })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Engine {
+    GoldSrc,
+    Source(u32),
+    Cs2,
+}
+
+impl Engine {
+    pub fn modern(self) -> bool {
+        self != Engine::GoldSrc
+    }
+}
+
 pub struct Bsp {
     pub path: PathBuf,
+    pub engine: Engine,
     pub entities: Vec<Entity>,
     pub planes: Vec<Plane>,
     pub vertices: Vec<DVec3>,
@@ -222,7 +236,7 @@ pub struct Bsp {
     pub lighting: Vec<u8>,
     pub miptex: Vec<MipTex>,
     pub lump_len: [usize; 15],
-    pub cs2: Option<Box<crate::s2::Extra>>,
+    pub extra: Option<Box<crate::extra::Extra>>,
 }
 
 fn lump<'a, T>(r: &Rd<'a>, l: (usize, usize), size: usize, f: impl Fn(&Rd<'a>, usize) -> T) -> Result<Vec<T>> {
@@ -332,6 +346,7 @@ impl Bsp {
 
         let bsp = Bsp {
             path: path.to_path_buf(),
+            engine: Engine::GoldSrc,
             entities,
             planes,
             vertices,
@@ -347,7 +362,7 @@ impl Bsp {
             lighting,
             miptex,
             lump_len: std::array::from_fn(|i| lumps[i].1),
-            cs2: None,
+            extra: None,
         };
         bsp.validate()?;
         Ok(bsp)
@@ -414,9 +429,10 @@ impl Bsp {
         Ok(())
     }
 
-    pub fn empty(path: &Path) -> Bsp {
+    pub fn empty(path: &Path, engine: Engine) -> Bsp {
         Bsp {
             path: path.to_path_buf(),
+            engine,
             entities: Vec::new(),
             planes: Vec::new(),
             vertices: Vec::new(),
@@ -432,12 +448,20 @@ impl Bsp {
             lighting: Vec::new(),
             miptex: Vec::new(),
             lump_len: [0; 15],
-            cs2: None,
+            extra: None,
         }
     }
 
+    pub fn engine(&self) -> Engine {
+        self.engine
+    }
+
     pub fn is_cs2(&self) -> bool {
-        self.cs2.is_some()
+        self.engine == Engine::Cs2
+    }
+
+    pub fn modern(&self) -> bool {
+        self.engine.modern()
     }
 
     pub fn name(&self) -> String {

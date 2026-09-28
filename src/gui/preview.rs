@@ -236,15 +236,15 @@ impl App {
         self.last_key.clear();
     }
 
-    pub(super) fn is_cs2(&self) -> bool {
-        self.scene.as_ref().is_some_and(|s| s.bsp.is_cs2())
+    pub(super) fn modern(&self) -> bool {
+        self.scene.as_ref().is_some_and(|s| s.bsp.modern())
     }
 
     fn radar_texture(&mut self, ctx: &egui::Context, sec: &str) -> Option<egui::TextureId> {
         let s = self.scene.clone()?;
         let key = format!("{:p}|{sec}", std::sync::Arc::as_ptr(&s));
         if self.radar_tex.as_ref().is_none_or(|(k, _)| *k != key) {
-            let x = s.bsp.cs2.as_ref()?;
+            let x = s.bsp.extra.as_ref()?;
             let map = s.bsp.name().to_lowercase();
             let t = match crate::s2::radar::image(&x.fs, &map, sec, 2048) {
                 Ok(Some((n, im))) => {
@@ -322,7 +322,7 @@ impl App {
     }
 
     pub(super) fn central(&mut self, ui: &mut egui::Ui) {
-        let cs2 = self.is_cs2();
+        let cs2 = self.modern();
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.mode, Mode::Iso, "Isometric");
             ui.selectable_value(&mut self.mode, Mode::Top, "Top");
@@ -759,7 +759,7 @@ impl App {
             sec.name
         );
         shadow(rect.left_top() + Vec2::new(6.0, 6.0), Align2::LEFT_TOP, &label, Color32::WHITE);
-        if let Some(e) = s.bsp.cs2.as_ref().and_then(|x| x.radar_err.as_ref()) {
+        if let Some(e) = s.bsp.extra.as_ref().and_then(|x| x.radar_err.as_ref()) {
             shadow(rect.left_top() + Vec2::new(6.0, 24.0), Align2::LEFT_TOP, &format!("overview txt: {e}"), Color32::from_rgb(255, 120, 90));
         }
         if let Some(p) = resp.hover_pos().filter(|p| rect.contains(*p)) {
