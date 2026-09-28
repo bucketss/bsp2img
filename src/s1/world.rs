@@ -91,6 +91,7 @@ pub struct Built {
     pub brush_ents: usize,
     pub lightmap: Option<(u32, u32)>,
     pub notes: Vec<String>,
+    pub tex_ids: HashMap<String, usize>,
 }
 
 pub struct Draw {
@@ -595,5 +596,6 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         brush_ents: draws.len() - 1,
         lightmap,
         notes,
+        tex_ids: ids,
     }
 }

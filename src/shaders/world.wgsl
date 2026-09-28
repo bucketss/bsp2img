@@ -260,6 +260,9 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     }
     t = vec4<f32>(t.rgb * i.paint.rgb, t.a * i.paint.a);
     var l = textureSampleLevel(lmap, lsamp, i.lm, 0.0);
+    if (i.vlight.w > 0.5 && lu.hdr.w < 0.5) {
+        l = vec4<f32>(i.vlight.rgb, 1.0);
+    }
     let p = i.world;
     let unlit = bu.e.y > 0.5;
     if (unlit) {
