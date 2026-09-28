@@ -645,3 +645,38 @@ impl Nav {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use glam::DAffine3;
+
+    use super::*;
+    use crate::navmesh::Area;
+    use crate::phys::{Builder, Class};
+
+    fn quad(x0: f32, x1: f32, z: f32) -> Area {
+        Area { poly: vec![[x0, 0.0, z], [x1, 0.0, z], [x1, 32.0, z], [x0, 32.0, z]], crouch: false, conns: Vec::new() }
+    }
+
+    fn drops(low: f32, extra: &[([f64; 3], [f64; 3])]) -> (usize, usize) {
+        let m = NavMesh { areas: vec![quad(0.0, 32.0, 0.0), quad(32.0, 96.0, low)], ladders: Vec::new() };
+        let mut b = Builder::default();
+        let v = |a: [f64; 3]| DVec3::from_array(a);
+        b.aabb(v([-64.0, -64.0, -16.0]), v([32.0, 96.0, 0.0]), &DAffine3::IDENTITY, Class::Solid);
+        b.aabb(v([-64.0, -64.0, low as f64 - 16.0]), v([160.0, 96.0, low as f64]), &DAffine3::IDENTITY, Class::Solid);
+        for &(lo, hi) in extra {
+            b.aabb(v(lo), v(hi), &DAffine3::IDENTITY, Class::Clip);
+        }
+        let p = b.finish();
+        let nav = Nav::from_areas(&m, 8.0, 250.0, true, Some(&p)).unwrap();
+        (nav.drops.unwrap().len(), nav.removed.unwrap().len())
+    }
+
+    #[test]
+    fn drops_follow_collision() {
+        assert_eq!(drops(-200.0, &[]), (4, 0));
+        assert_eq!(drops(-200.0, &[([32.0, -64.0, -16.0], [34.0, 96.0, 40.0])]), (0, 4));
+        assert_eq!(drops(-200.0, &[([32.0, -64.0, -110.0], [160.0, 96.0, -100.0])]), (0, 4));
+        assert_eq!(drops(-700.0, &[]), (0, 4));
+        assert_eq!(drops(-10.0, &[]), (0, 8));
+    }
+}
