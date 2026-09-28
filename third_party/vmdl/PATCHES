@@ -1,0 +1,12 @@
+Upstream: https://github.com/icewind1991/vmdl (crates.io vmdl 0.2.0, MIT)
+Copied: src, README.md
+
+Patches:
+- src/shared.rs: FixedString accepts a name that fills all LEN bytes without a NUL
+  (`.ok_or(StringError::NotNullTerminated)?` -> `.unwrap_or(LEN)`); CS:GO autocombine models need it
+- src/mdl/raw/mod.rs: body part models are read with the 148-byte mstudiomodel_t stride
+  (was 144, so every model after the first in a body part was misread)
+- src/lib.rs: #![allow(warnings, clippy::all)] added as the first line
+- Cargo.toml: dev-dependencies, examples, benches, tests and profile deleted
+
+Updating: re-copy src from upstream, re-apply these patches, then load every CS:GO prop model.

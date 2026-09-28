@@ -30,6 +30,7 @@ bcdec_rs = "0.2"
 memmap2 = "0.9"
 lzma-rs = "0.3"
 demoparser = { package = "parser", path = "third_party/demoparser/parser" }
+vmdl = { path = "third_party/vmdl" }
 
 [build-dependencies]
 embed-resource = "3"

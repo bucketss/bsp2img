@@ -2,9 +2,15 @@ pub mod bsp;
 pub mod dds;
 pub mod entities;
 pub mod fs;
+#[allow(dead_code)]
+pub mod model;
 pub mod nav;
 pub mod radar;
 pub mod sky;
+#[allow(dead_code)]
+pub mod sprp;
+#[allow(dead_code)]
+pub mod vhv;
 pub mod vmt;
 pub mod vtf;
 pub mod world;
