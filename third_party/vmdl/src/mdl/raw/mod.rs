@@ -26,7 +26,7 @@ impl BodyPartHeader {
         index_range(
             self.model_index,
             self.model_count,
-            size_of::<ModelHeader>() - size_of::<FixedString<0>>(),
+            size_of::<ModelHeader>(),
         )
     }
 }
