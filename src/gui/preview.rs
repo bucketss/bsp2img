@@ -58,14 +58,19 @@ pub enum Overlay {
 }
 
 impl Overlay {
-    pub const ALL: [(Overlay, &'static str); 3] = [(Overlay::Off, "off"), (Overlay::Over, "over"), (Overlay::Under, "under")];
+    pub const ALL: [(Overlay, &'static str); 3] = [(Overlay::Off, "Off"), (Overlay::Over, "Over"), (Overlay::Under, "Under")];
 
     pub fn key(self) -> &'static str {
-        Overlay::ALL.iter().find(|(s, _)| *s == self).map_or("off", |(_, n)| *n)
+        Overlay::ALL.iter().find(|(s, _)| *s == self).map_or("Off", |(_, n)| *n)
     }
 
     pub fn from_key(k: &str) -> Option<Overlay> {
         Overlay::ALL.iter().find(|(_, n)| n.eq_ignore_ascii_case(k.trim())).map(|(s, _)| *s)
+    }
+
+    fn step(self, by: usize) -> Overlay {
+        let i = Overlay::ALL.iter().position(|(s, _)| *s == self).unwrap_or(0);
+        Overlay::ALL[(i + by) % Overlay::ALL.len()].0
     }
 }
 
@@ -304,12 +309,15 @@ impl App {
                 }
             });
             ui.separator();
-            ui.label("Official radar");
-            for (o, n) in Overlay::ALL {
-                ui.selectable_value(&mut self.radar_overlay, o, n);
+            let b = ui
+                .button(format!("Official radar: {}", self.radar_overlay.key()))
+                .on_hover_text("click: next, right-click: previous. Over = drawn over our render, Under = drawn under it");
+            if b.clicked() {
+                self.radar_overlay = self.radar_overlay.step(1);
+            } else if b.secondary_clicked() {
+                self.radar_overlay = self.radar_overlay.step(2);
             }
             ui.add_enabled(self.radar_overlay != Overlay::Off, egui::Slider::new(&mut self.radar_opacity, 0.0..=1.0).text("opacity"));
-            ui.checkbox(&mut self.radar_icons, "Icons").on_hover_text("rings: the txt's CTSpawn/TSpawn/bombA/bombB keys; dots and boxes: this map's spawns and bombsites in the section");
         });
     }
 
@@ -340,7 +348,7 @@ impl App {
                     self.frame_free();
                 }
             }
-            if self.mode == Mode::Top {
+            if matches!(self.mode, Mode::Top | Mode::Overview) {
                 let b = ui
                     .button(format!("Spawns: {}", self.top_spawns.key()))
                     .on_hover_text("click: next, right-click: previous. Comp = the lowest-priority spawns each team fills first (CS2); a black dot marks them");
@@ -561,6 +569,9 @@ impl App {
                 }
             }
             Mode::Overview => {
+                if let Some(f) = &self.frame {
+                    self.overlay_marks(&painter, f, &|_| true);
+                }
                 if let Some(c) = &self.view_cache {
                     if let Some(ov) = c.ov {
                         painter.text(
@@ -629,30 +640,34 @@ impl App {
         let _ = rect;
     }
 
-    fn overlay_top(&self, painter: &egui::Painter, resp: &egui::Response, cuts: &Cuts) {
-        let Some(f) = &self.frame else { return };
+    fn overlay_marks(&self, painter: &egui::Painter, f: &Frame, keep: &dyn Fn(&Marker) -> bool) {
+        let bottom = self.mode == Mode::Overview;
         let rect = f.rect;
-        let (x0, y1) = to_world(f, rect.left_top());
-        let (x1, y0) = to_world(f, rect.right_bottom());
-        let step = nice_step((x1 - x0).max(y1 - y0));
         let font = FontId::monospace(11.0);
-        let mut gx = (x0 / step).ceil() * step;
-        while self.top_grid && gx < x1 {
-            let p = to_screen(f, gx, 0.0);
-            let major = gx == 0.0 || gx % (step * 4.0) == 0.0;
-            let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
-            painter.line_segment([Pos2::new(p.x, rect.top()), Pos2::new(p.x, rect.bottom())], Stroke::new(1.0, c));
-            painter.text(Pos2::new(p.x + 3.0, rect.top() + 3.0), Align2::LEFT_TOP, format!("x {gx:.0}"), font.clone(), Color32::WHITE);
-            gx += step;
+        let axis = |v: DVec3| if v.x.abs() > 0.5 { ("x", v.x.signum()) } else { ("y", v.y.signum()) };
+        let ((ha, hs), (va, vs)) = (axis(f.view.basis.r), axis(f.view.basis.u));
+        let (hw, hh) = (rect.width() as f64 * f.upp / 2.0, rect.height() as f64 * f.upp / 2.0);
+        let (a0, a1, b0, b1) = (f.view.cx - hw, f.view.cx + hw, f.view.cy - hh, f.view.cy + hh);
+        let step = nice_step((a1 - a0).max(b1 - b0));
+        let line = |w: f64| {
+            let major = w == 0.0 || w % (step * 4.0) == 0.0;
+            if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) }
+        };
+        let c = rect.center();
+        let mut a = (a0 / step).ceil() * step;
+        while self.top_grid && a < a1 {
+            let (w, x) = (a * hs + 0.0, c.x + ((a - f.view.cx) / f.upp) as f32);
+            painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, line(w)));
+            let (at, al) = if bottom { (Pos2::new(x + 3.0, rect.bottom() - 3.0), Align2::LEFT_BOTTOM) } else { (Pos2::new(x + 3.0, rect.top() + 3.0), Align2::LEFT_TOP) };
+            painter.text(at, al, format!("{ha} {w:.0}"), font.clone(), Color32::WHITE);
+            a += step;
         }
-        let mut gy = (y0 / step).ceil() * step;
-        while self.top_grid && gy < y1 {
-            let p = to_screen(f, 0.0, gy);
-            let major = gy == 0.0 || gy % (step * 4.0) == 0.0;
-            let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
-            painter.line_segment([Pos2::new(rect.left(), p.y), Pos2::new(rect.right(), p.y)], Stroke::new(1.0, c));
-            painter.text(Pos2::new(rect.left() + 3.0, p.y + 3.0), Align2::LEFT_TOP, format!("y {gy:.0}"), font.clone(), Color32::WHITE);
-            gy += step;
+        let mut b = (b0 / step).ceil() * step;
+        while self.top_grid && b < b1 {
+            let (w, y) = (b * vs + 0.0, c.y - ((b - f.view.cy) / f.upp) as f32);
+            painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0, line(w)));
+            painter.text(Pos2::new(rect.left() + 3.0, y + 3.0), Align2::LEFT_TOP, format!("{va} {w:.0}"), font.clone(), Color32::WHITE);
+            b += step;
         }
         if let Some(s) = &self.scene {
             let shown = |m: &Marker| match (m.spawn, self.top_spawns) {
@@ -661,7 +676,7 @@ impl App {
                 (true, SpawnShow::Comp) => m.comp != Some(false),
                 (true, SpawnShow::None) => false,
             };
-            for m in entity_marks(&s.bsp).into_iter().filter(shown) {
+            for m in entity_marks(&s.bsp).into_iter().filter(|m| shown(m) && keep(m)) {
                 let c = Color32::from_rgb(m.color[0], m.color[1], m.color[2]);
                 if let Some(b) = m.bbox {
                     let r = Rect::from_two_pos(to_screen(f, b[0], b[1]), to_screen(f, b[2], b[3]));
@@ -676,6 +691,14 @@ impl App {
                 }
             }
         }
+    }
+
+    fn overlay_top(&self, painter: &egui::Painter, resp: &egui::Response, cuts: &Cuts) {
+        let Some(f) = &self.frame else { return };
+        let rect = f.rect;
+        let (x0, y1) = to_world(f, rect.left_top());
+        let (x1, y0) = to_world(f, rect.right_bottom());
+        self.overlay_marks(painter, f, &|_| true);
         let shade = Color32::from_rgba_unmultiplied(200, 0, 0, 90);
         if cuts.clip != NO_CLIP {
             let [cx0, cy0, cx1, cy1] = cuts.clip;
@@ -715,8 +738,10 @@ impl App {
             painter.text(p + Vec2::splat(1.0), a, t, font.clone(), Color32::BLACK);
             painter.text(p, a, t, font.clone(), c);
         };
-        let fr = rv.frame;
         let sec = &rv.sec;
+        let in_sec = |z: f64| sec.frame.is_some() || rv.info.as_ref().and_then(|i| i.section_for(z)).is_none_or(|x| x.name.eq_ignore_ascii_case(&sec.name));
+        self.overlay_marks(painter, f, &|m| in_sec(m.pos.z));
+        let fr = rv.frame;
         let what = if sec.frame.is_some() { "own framing".to_string() } else { sec.range() };
         let label = format!(
             "pos_x {}  pos_y {}  scale {}  ({})  section: {} ({what})",
@@ -735,51 +760,21 @@ impl App {
             let (px, py) = fr.world_to_px(wx, wy, overview::RADAR as f64);
             shadow(rect.right_bottom() - Vec2::new(8.0, 8.0), Align2::RIGHT_BOTTOM, &format!("{wx:.0}, {wy:.0}  radar px {px:.0} {py:.0}"), Color32::WHITE);
         }
-        if !self.radar_icons {
-            return;
-        }
-        let small = FontId::monospace(11.0);
-        let in_sec = |z: f64| sec.frame.is_some() || rv.info.as_ref().and_then(|i| i.section_for(z)).is_none_or(|x| x.name.eq_ignore_ascii_case(&sec.name));
-        for m in entity_marks(&s.bsp).into_iter().filter(|m| (m.spawn || m.label == "BOMB") && in_sec(m.pos.z)) {
-            let c = Color32::from_rgb(m.color[0], m.color[1], m.color[2]);
-            match m.bbox {
-                Some(b) => {
-                    let r = Rect::from_two_pos(to_screen(f, b[0], b[1]), to_screen(f, b[2], b[3]));
-                    painter.rect_stroke(r, 0.0, Stroke::new(2.0, c), StrokeKind::Inside);
-                }
-                None => {
-                    painter.circle(to_screen(f, m.pos.x, m.pos.y), 3.0, c, Stroke::new(1.0, Color32::BLACK));
-                }
-            }
-        }
-        let Some(info) = &rv.info else { return };
-        for (n, _) in &info.icons {
-            let Some((x, y)) = info.icon_world(n) else { continue };
-            let l = n.to_lowercase();
-            let (c, t) = match l.as_str() {
-                "ctspawn" => (crate::grid::CT, "CT".to_string()),
-                "tspawn" => (crate::grid::T, "T".to_string()),
-                _ if l.starts_with("bomb") => ([255, 140, 0], n[4..].to_uppercase()),
-                _ if l.starts_with("hostage") => (crate::grid::HOSTAGE, format!("H{}", &n[7..])),
-                _ => ([220, 220, 220], n.clone()),
-            };
-            let c = Color32::from_rgb(c[0], c[1], c[2]);
-            let p = to_screen(f, x, y);
-            painter.circle_stroke(p, 9.0, Stroke::new(3.0, Color32::BLACK));
-            painter.circle_stroke(p, 9.0, Stroke::new(2.0, c));
-            painter.text(p + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, t, small.clone(), c);
-        }
     }
 }
 
 fn to_world(f: &Frame, p: Pos2) -> (f64, f64) {
     let c = f.rect.center();
-    (f.view.cx + (p.x - c.x) as f64 * f.upp, f.view.cy - (p.y - c.y) as f64 * f.upp)
+    let (a, b) = (f.view.cx + (p.x - c.x) as f64 * f.upp, f.view.cy - (p.y - c.y) as f64 * f.upp);
+    let w = f.view.basis.r * a + f.view.basis.u * b;
+    (w.x, w.y)
 }
 
 fn to_screen(f: &Frame, x: f64, y: f64) -> Pos2 {
     let c = f.rect.center();
-    Pos2::new(c.x + ((x - f.view.cx) / f.upp) as f32, c.y - ((y - f.view.cy) / f.upp) as f32)
+    let p = DVec3::new(x, y, 0.0);
+    let (a, b) = (p.dot(f.view.basis.r), p.dot(f.view.basis.u));
+    Pos2::new(c.x + ((a - f.view.cx) / f.upp) as f32, c.y - ((b - f.view.cy) / f.upp) as f32)
 }
 
 #[cfg(test)]

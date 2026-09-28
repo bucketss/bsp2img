@@ -530,7 +530,6 @@ impl App {
             format!("top_objectives={}", self.top_objectives),
             format!("radar_overlay={}", self.radar_overlay.key()),
             format!("radar_opacity={}", self.radar_opacity),
-            format!("radar_icons={}", self.radar_icons),
         ];
         lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
@@ -595,7 +594,6 @@ impl App {
                     "top_objectives" => put(&mut self.top_objectives, v),
                     "radar_overlay" => self.radar_overlay = super::Overlay::from_key(v).unwrap_or(self.radar_overlay),
                     "radar_opacity" => put(&mut self.radar_opacity, v),
-                    "radar_icons" => put(&mut self.radar_icons, v),
                     "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },
