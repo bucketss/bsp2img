@@ -522,6 +522,9 @@ impl App {
             format!("top_spawns={}", self.top_spawns.key()),
             format!("top_grid={}", self.top_grid),
             format!("top_objectives={}", self.top_objectives),
+            format!("radar_overlay={}", self.radar_overlay.key()),
+            format!("radar_opacity={}", self.radar_opacity),
+            format!("radar_icons={}", self.radar_icons),
         ];
         lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
@@ -584,6 +587,9 @@ impl App {
                     "top_spawns" => self.top_spawns = super::SpawnShow::from_key(v).unwrap_or(self.top_spawns),
                     "top_grid" => put(&mut self.top_grid, v),
                     "top_objectives" => put(&mut self.top_objectives, v),
+                    "radar_overlay" => self.radar_overlay = super::Overlay::from_key(v).unwrap_or(self.radar_overlay),
+                    "radar_opacity" => put(&mut self.radar_opacity, v),
+                    "radar_icons" => put(&mut self.radar_icons, v),
                     "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },
@@ -595,6 +601,7 @@ impl App {
         let yaws: Vec<String> = self.iso.yaws.iter().map(|y| y.to_string()).collect();
         self.yaws_text = yaws.join(" ");
         self.kill_weapons = self.kills.weapons.join(",");
+        self.split_text = self.ov.split.key();
         self.cfg_saved = self.cfg_text();
     }
 

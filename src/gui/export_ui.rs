@@ -256,8 +256,29 @@ impl App {
     fn form_overview(&mut self, ui: &mut egui::Ui) {
         ui.add(egui::Slider::new(&mut self.ov.margin, 0.0..=0.3).text("margin"));
         ui.add(egui::Slider::new(&mut self.ov.ss, 1..=4).text("supersample"));
-        ui.checkbox(&mut self.ov.png, "Also write PNG");
+        let cs2 = self.is_cs2();
+        if !cs2 {
+            ui.checkbox(&mut self.ov.png, "Also write PNG");
+        }
         ui.checkbox(&mut self.ov.grid, "Also write grid preview");
+        if cs2 {
+            ui.checkbox(&mut self.ov.fit, "Fit to the geometry instead of the official overview");
+            ui.horizontal(|ui| {
+                ui.label("Sections");
+                let r = ui.add(egui::TextEdit::singleline(&mut self.split_text).hint_text("official").desired_width(120.0));
+                if r.changed()
+                    && let Ok(s) = crate::radar::Split::parse(&self.split_text)
+                {
+                    self.ov.split = s;
+                }
+                if crate::radar::Split::parse(&self.split_text).is_err() {
+                    ui.colored_label(egui::Color32::from_rgb(255, 120, 90), "official, auto, none or heights z,z");
+                }
+            });
+            ui.checkbox(&mut self.ov.tga, "Also write 32-bit TGA");
+            ui.checkbox(&mut self.ov.official, "Also write the official radar images");
+            ui.weak("CS2: one <map>[_section]_radar.png per vertical section, and <map>.txt with sections and icon keys. Framing is shared with the Overview view.");
+        }
         ui.horizontal(|ui| {
             let mut on = self.ov.from_txt.is_some();
             if ui.checkbox(&mut on, "Reuse framing from .txt").changed() {

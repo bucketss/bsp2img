@@ -24,10 +24,6 @@ impl Section {
         Section { name: DEFAULT.into(), alt_min: -OPEN, alt_max: OPEN, frame: None }
     }
 
-    pub fn is_default(&self) -> bool {
-        self.name.eq_ignore_ascii_case(DEFAULT)
-    }
-
     pub fn cuts(&self, c: &Cuts) -> Cuts {
         Cuts { zmin: c.zmin.max(self.alt_min), zmax: c.zmax.min(self.alt_max), ..*c }
     }
