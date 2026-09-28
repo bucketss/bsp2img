@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use serde_json::{Value, json};
 
 use crate::clip::clip_tris_cuts;
-use crate::mesh::{Image, Mode, Vertex};
+use crate::mesh::{Image, Mode, Vertex, unpack_rgb9e5};
 use crate::paths::{Partial, free_name};
 use crate::render::Cuts;
 use crate::scene::{Report, Scene};
@@ -20,6 +20,7 @@ const PAD: u32 = 2;
 const SUPER: usize = 2;
 const CHART_WASTE: f64 = 2.0;
 const CHART_SLACK: f64 = 16.0;
+const MAX_TEXEL_RAISE: f64 = 64.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lighting {
@@ -92,9 +93,9 @@ fn tri_area(t: &[Vertex]) -> f64 {
     (dv(t[1].pos) - dv(t[0].pos)).cross(dv(t[2].pos) - dv(t[0].pos)).length() / 2.0
 }
 
-fn make_charts(parts: &[Part], texel: f64) -> Vec<Chart> {
+fn make_charts(parts: &[Part], texel: f64, skip: &[bool]) -> Vec<Chart> {
     let mut charts: Vec<Chart> = Vec::new();
-    for (pi, p) in parts.iter().enumerate() {
+    for (pi, p) in parts.iter().enumerate().filter(|(pi, _)| !skip[*pi]) {
         let mut key = None;
         let mut area = 0.0;
         for (ti, t) in p.verts.chunks_exact(3).enumerate() {
@@ -153,10 +154,15 @@ fn shelf(charts: &mut [Chart], width: u32) -> u32 {
     (y + row).div_ceil(4) * 4
 }
 
-fn layout(parts: &[Part], texel: f64, log: &mut dyn FnMut(String)) -> (Vec<Chart>, u32, u32, f64) {
+fn layout(parts: &[Part], texel: f64, skip: &[bool], log: &mut dyn FnMut(String)) -> Result<(Vec<Chart>, u32, u32, f64)> {
+    let first = texel;
     let mut texel = texel;
     loop {
-        let mut charts = make_charts(parts, texel);
+        let mut charts = make_charts(parts, texel, skip);
+        let least = (1 + 2 * PAD) as f64;
+        if charts.len() as f64 * least * least > MAX_ATLAS as f64 * MAX_ATLAS as f64 {
+            bail!("{} charts do not fit a {MAX_ATLAS}x{MAX_ATLAS} baked atlas at any texel size; use --lighting none (glTF: separate)", charts.len());
+        }
         let area: f64 = charts.iter().map(|c| c.size.0 as f64 * c.size.1 as f64).sum();
         let widest = charts.iter().map(|c| c.size.0).max().unwrap_or(1);
         let mut width = ((area * 1.1).sqrt().ceil() as u32).max(widest).next_power_of_two().clamp(64, MAX_ATLAS);
@@ -174,7 +180,10 @@ fn layout(parts: &[Part], texel: f64, log: &mut dyn FnMut(String)) -> (Vec<Chart
         }
         if let Some((_, w)) = best {
             let h = shelf(&mut charts, w);
-            return (charts, w, h.max(4), texel);
+            return Ok((charts, w, h.max(4), texel));
+        }
+        if texel > first * MAX_TEXEL_RAISE {
+            bail!("{} charts do not fit a {MAX_ATLAS}x{MAX_ATLAS} baked atlas even at {texel:.0} units per texel; use --lighting none (glTF: separate)", charts.len());
         }
         texel *= (h as f64 / MAX_ATLAS as f64).sqrt().max(1.05);
         log(format!("  atlas would be {MAX_ATLAS}x{h}; raising texel to {texel:.2} units"));
@@ -231,7 +240,46 @@ impl Bary {
     }
 }
 
-fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool) -> Vec<u8> {
+#[derive(Clone, Copy)]
+struct VertexLight {
+    curve: Option<[f32; 3]>,
+}
+
+impl VertexLight {
+    fn tone(&self, e: [f64; 3]) -> [f64; 3] {
+        let Some([k, g3, p]) = self.curve.map(|c| c.map(|v| v as f64)) else { return e };
+        e.map(|e| {
+            let v = (e * k).max(0.0);
+            let f = if v <= g3 { v / g3 * 0.125 } else { 0.125 + (v - g3) / (1.0 - g3) * 0.875 };
+            f.powf(p)
+        })
+    }
+
+    fn at(&self, v: &[Vertex], w: [f64; 3]) -> Option<[f64; 4]> {
+        if v.iter().any(|x| x.light == 0) {
+            return None;
+        }
+        let mut e = [0.0; 3];
+        for (i, x) in v.iter().enumerate() {
+            let c = unpack_rgb9e5(x.light);
+            for k in 0..3 {
+                e[k] += w[i] * c[k] as f64;
+            }
+        }
+        let t = self.tone(e);
+        Some([t[0] * 255.0, t[1] * 255.0, t[2] * 255.0, 255.0])
+    }
+
+    fn color(&self, v: &Vertex) -> [f32; 3] {
+        if v.light == 0 {
+            return [1.0; 3];
+        }
+        let c = unpack_rgb9e5(v.light);
+        self.tone([c[0] as f64, c[1] as f64, c[2] as f64]).map(|x| x.clamp(0.0, 1.0) as f32)
+    }
+}
+
+fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, vl: Option<VertexLight>) -> Vec<u8> {
     let (cw, ch) = (c.size.0 as usize, c.size.1 as usize);
     let local = |v: &Vertex| {
         let p = dv(v.pos);
@@ -315,7 +363,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool) -
                     Some(img) => sample(img, mix(|v| v.uv), true, nearest),
                     None => [255.0; 4],
                 };
-                let l = sample(lmap, mix(|v| v.lm), false, false);
+                let l = vl.and_then(|x| x.at(v, w)).unwrap_or_else(|| sample(lmap, mix(|v| v.lm), false, false));
                 for i in 0..3 {
                     acc[i] += t[i] * part.tint[i] as f64 * l[i] / 255.0;
                 }
@@ -478,33 +526,35 @@ struct Indexed {
     nrm: Vec<f32>,
     t0: Vec<f32>,
     t1: Vec<f32>,
+    col: Vec<f32>,
     idx: Vec<u32>,
 }
 
-fn indexed(verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool) -> Indexed {
-    let mut map: HashMap<[u32; 10], u32> = HashMap::new();
+fn indexed(verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool, vl: Option<VertexLight>) -> Indexed {
+    let mut map: HashMap<[u32; 13], u32> = HashMap::new();
     let mut o = Indexed::default();
     for (ti, tri) in verts.chunks_exact(3).enumerate() {
-        let conv: Vec<([f32; 3], [f32; 3], [f32; 2], [f32; 2])> = tri
+        let conv: Vec<([f32; 3], [f32; 3], [f32; 2], [f32; 2], [f32; 3])> = tri
             .iter()
             .enumerate()
             .map(|(k, v)| {
                 let n = dv(v.normal);
                 let p = dv(v.pos) + n * (v.bias as f64 * NUDGE);
-                (to_gltf(p), [n.x as f32, n.z as f32, -n.y as f32], uv0(ti * 3 + k, v), if uv1 { v.lm } else { [0.0; 2] })
+                (to_gltf(p), [n.x as f32, n.z as f32, -n.y as f32], uv0(ti * 3 + k, v), if uv1 { v.lm } else { [0.0; 2] }, vl.map_or([0.0; 3], |x| x.color(v)))
             })
             .collect();
         let d = |i: usize| DVec3::new(conv[i].0[0] as f64, conv[i].0[1] as f64, conv[i].0[2] as f64);
         if (d(1) - d(0)).cross(d(2) - d(0)).length_squared() <= 1e-16 {
             continue;
         }
-        for (p, n, a, b) in conv {
-            let key = [p[0], p[1], p[2], n[0], n[1], n[2], a[0], a[1], b[0], b[1]].map(f32::to_bits);
+        for (p, n, a, b, c) in conv {
+            let key = [p[0], p[1], p[2], n[0], n[1], n[2], a[0], a[1], b[0], b[1], c[0], c[1], c[2]].map(f32::to_bits);
             let i = *map.entry(key).or_insert_with(|| {
                 o.pos.extend(p);
                 o.nrm.extend(n);
                 o.t0.extend(a);
                 o.t1.extend(b);
+                o.col.extend(c);
                 (o.pos.len() / 3 - 1) as u32
             });
             o.idx.push(i);
@@ -580,13 +630,14 @@ struct Prim<'a> {
     verts: &'a [Vertex],
     uv: Option<Vec<[f32; 2]>>,
     mat: usize,
+    color: Option<VertexLight>,
 }
 
 impl Prim<'_> {
     fn indexed(&self, uv1: bool) -> Indexed {
         match &self.uv {
-            Some(uv) => indexed(self.verts, &|i, _| uv[i], uv1),
-            None => indexed(self.verts, &|_, v| v.uv, uv1),
+            Some(uv) => indexed(self.verts, &|i, _| uv[i], uv1, self.color),
+            None => indexed(self.verts, &|_, v| v.uv, uv1, self.color),
         }
     }
 }
@@ -634,6 +685,9 @@ fn write_glb(m: &Model, name: &str, nearest: bool, rep: &mut Report) -> Result<V
         });
         if uv1 {
             attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false));
+        }
+        if p.color.is_some() {
+            attrs["COLOR_0"] = json!(doc.floats(&ix.col, 3, false));
         }
         let indices = doc.indices(&ix.idx);
         doc.prims.push(json!({"attributes": attrs, "indices": indices, "material": p.mat, "mode": 4}));
@@ -758,10 +812,12 @@ pub fn export_gltf(
         mesh.names.get(t).or(scene.bsp.miptex.get(t).map(|m| &m.name)).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("tex{t}"))
     };
     let mut model = Model { texs: Vec::new(), mats: Vec::new(), prims: Vec::new(), unlit: o.lighting == Lighting::Baked };
+    let vl = matches!(scene.bsp.engine(), crate::bsp::Engine::Source(_)).then(|| VertexLight { curve: mesh.hdr.as_ref().map(|h| h.curve) });
     match o.lighting {
         Lighting::Baked => {
             let mut log = |s: String| rep.log(s);
-            let (mut charts, aw, ah, texel) = layout(&parts, o.texel, &mut log);
+            let direct: Vec<bool> = parts.iter().map(|p| !o.obj && vl.is_some() && p.verts.iter().all(|v| v.light != 0)).collect();
+            let (mut charts, aw, ah, texel) = layout(&parts, o.texel, &direct, &mut log)?;
             let used: f64 = charts.iter().map(|c| c.size.0 as f64 * c.size.1 as f64).sum();
             rep.log(format!(
                 "  atlas {aw}x{ah} at {texel:.2} units per texel, {} charts, {:.0}% used",
@@ -770,7 +826,7 @@ pub fn export_gltf(
             ));
             rep.step(0.2)?;
             let baked: Vec<Vec<u8>> =
-                charts.par_iter().map(|c| bake_chart(c, &parts[c.part], &mesh.atlas, texel, o.nearest)).collect();
+                charts.par_iter().map(|c| bake_chart(c, &parts[c.part], &mesh.atlas, texel, o.nearest, vl)).collect();
             rep.step(0.6)?;
             let mut atlas = Image { w: aw, h: ah, rgba: vec![0u8; (aw * ah * 4) as usize] };
             let mut uvs: Vec<Vec<[f32; 2]>> = parts.iter().map(|p| vec![[0.0; 2]; p.verts.len()]).collect();
@@ -794,13 +850,29 @@ pub fn export_gltf(
             drop(baked);
             model.texs.push(Tex { name: "atlas".into(), img: Pixels::Owned(atlas), repeat: false });
             let mut mats: HashMap<(Mode, u32), usize> = HashMap::new();
-            for (p, uv) in parts.iter().zip(uvs) {
+            let mut texs: HashMap<usize, usize> = HashMap::new();
+            let mut own: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
+            for ((p, uv), d) in parts.iter().zip(uvs).zip(&direct) {
+                if *d {
+                    let t = p.image.as_deref().map(|img| {
+                        *texs.entry(p.tex).or_insert_with(|| {
+                            model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
+                            model.texs.len() - 1
+                        })
+                    });
+                    let m = *own.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits))).or_insert_with(|| {
+                        model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion: None });
+                        model.mats.len() - 1
+                    });
+                    model.prims.push(Prim { verts: &p.verts, uv: None, mat: m, color: vl });
+                    continue;
+                }
                 let m = *mats.entry((p.mode, p.alpha.to_bits())).or_insert_with(|| {
                     let label = format!("{}_{:.0}", mode_key(p.mode), p.alpha * 255.0);
                     model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tint: [1.0; 3], tex: Some(0), occlusion: None });
                     model.mats.len() - 1
                 });
-                model.prims.push(Prim { verts: &p.verts, uv: Some(uv), mat: m });
+                model.prims.push(Prim { verts: &p.verts, uv: Some(uv), mat: m, color: None });
             }
         }
         Lighting::Separate | Lighting::None => {
@@ -809,19 +881,21 @@ pub fn export_gltf(
                 model.texs.len() - 1
             });
             let mut texs: HashMap<usize, usize> = HashMap::new();
-            let mut mats: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
+            let mut mats: HashMap<(usize, Mode, u32, [u32; 3], bool), usize> = HashMap::new();
             for p in &parts {
+                let color = vl.filter(|_| lm.is_some() && p.verts.iter().all(|v| v.light != 0));
                 let t = p.image.as_deref().map(|img| {
                     *texs.entry(p.tex).or_insert_with(|| {
                         model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                         model.texs.len() - 1
                     })
                 });
-                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits))).or_insert_with(|| {
-                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion: lm });
+                let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits), color.is_some())).or_insert_with(|| {
+                    let occlusion = if color.is_some() { None } else { lm };
+                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion });
                     model.mats.len() - 1
                 });
-                model.prims.push(Prim { verts: &p.verts, uv: None, mat: m });
+                model.prims.push(Prim { verts: &p.verts, uv: None, mat: m, color });
             }
         }
     }
