@@ -511,7 +511,11 @@ impl App {
             format!("bg_last={}", hex(self.bg_last)),
             format!("log_open={}", self.log_open),
             format!("cam_export={}", self.cam_export),
+            format!("top_spawns={}", self.top_spawns.key()),
+            format!("top_grid={}", self.top_grid),
+            format!("top_objectives={}", self.top_objectives),
         ];
+        lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
             ("load", &self.wanted_load()),
             ("look", &self.look),
@@ -569,6 +573,10 @@ impl App {
                     "bg_last" => self.bg_last = parse_color(v).unwrap_or(self.bg_last),
                     "log_open" => put(&mut self.log_open, v),
                     "cam_export" => put(&mut self.cam_export, v),
+                    "top_spawns" => self.top_spawns = super::SpawnShow::from_key(v).unwrap_or(self.top_spawns),
+                    "top_grid" => put(&mut self.top_grid, v),
+                    "top_objectives" => put(&mut self.top_objectives, v),
+                    "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },
             }

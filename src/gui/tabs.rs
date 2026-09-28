@@ -34,7 +34,7 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
         ui.label("Game");
-        let r = ui.add(egui::TextEdit::singleline(&mut app.game).desired_width(200.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut app.game).desired_width(170.0));
         if r.lost_focus() {
             app.refresh_maps();
         }
@@ -43,6 +43,32 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
                 app.game = d.to_string_lossy().into_owned();
                 app.refresh_maps();
             }
+        }
+        let mut chosen = None;
+        let recent = ui.add_enabled_ui(!app.recent.is_empty(), |ui| {
+            ui.menu_button("Recent", |ui| {
+                for g in &app.recent {
+                    let b = egui::Button::new(g.as_str()).selected(*g == app.game).wrap_mode(egui::TextWrapMode::Extend);
+                    if ui.add(b).clicked() {
+                        chosen = Some(g.clone());
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Clear list").clicked() {
+                    chosen = Some(String::new());
+                    ui.close();
+                }
+            })
+        });
+        recent.response.on_hover_text("recent map folders");
+        match chosen {
+            Some(g) if g.is_empty() => app.recent.clear(),
+            Some(g) => {
+                app.game = g;
+                app.refresh_maps();
+            }
+            None => {}
         }
     });
     ui.horizontal(|ui| {

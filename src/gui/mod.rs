@@ -33,7 +33,7 @@ use crate::timing::TimingOpts;
 
 use export_ui::Exporter;
 use jobs::Running;
-use preview::{Frame, Mode, Preview};
+use preview::{Frame, Mode, Preview, SpawnShow};
 
 pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()> {
     let mode = match view {
@@ -91,6 +91,8 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+const RECENT_MAX: usize = 10;
+
 enum Msg {
     Log(String),
     Loaded(Box<Result<Scene, String>>),
@@ -124,6 +126,7 @@ struct App {
     gpu: Gpu,
     egui_rend: Arc<RwLock<egui_wgpu::Renderer>>,
     game: String,
+    recent: Vec<String>,
     maps: Vec<(String, PathBuf)>,
     filter: String,
     current: Option<PathBuf>,
@@ -143,6 +146,9 @@ struct App {
     log_open: bool,
     tab: Tab,
     mode: Mode,
+    top_spawns: SpawnShow,
+    top_grid: bool,
+    top_objectives: bool,
     yaw: f64,
     zoom: f64,
     pan: DVec3,
@@ -196,6 +202,7 @@ impl App {
             gpu,
             egui_rend: rs.renderer.clone(),
             game: String::new(),
+            recent: Vec::new(),
             maps: Vec::new(),
             filter: String::new(),
             current: None,
@@ -215,6 +222,9 @@ impl App {
             log_open: true,
             tab: Tab::Map,
             mode: Mode::Iso,
+            top_spawns: SpawnShow::All,
+            top_grid: true,
+            top_objectives: true,
             yaw: 45.0,
             zoom: 1.0,
             pan: DVec3::ZERO,
@@ -266,6 +276,12 @@ impl App {
 
     fn refresh_maps(&mut self) {
         self.maps = if self.game.is_empty() { Vec::new() } else { list_maps(Path::new(&self.game)) };
+        if !self.maps.is_empty() {
+            let g = self.game.clone();
+            self.recent.retain(|r| Path::new(r) != Path::new(&g));
+            self.recent.insert(0, g);
+            self.recent.truncate(RECENT_MAX);
+        }
     }
 
     fn map_name(&self) -> Option<String> {

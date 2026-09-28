@@ -7,7 +7,7 @@ use crate::camera::{Camera, camera_basis, extents, top_down};
 use crate::look::Tilt;
 use crate::export::overview_params;
 use crate::overview::Overview;
-use crate::grid::{entity_marks, nice_step};
+use crate::grid::{Marker, entity_marks, nice_step};
 use crate::overview;
 use crate::post;
 use crate::render::{Cuts, NO_CLIP, Targets, View, wgpu};
@@ -18,6 +18,34 @@ pub enum Mode {
     Top,
     Overview,
     Free,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum SpawnShow {
+    All,
+    Comp,
+    None,
+}
+
+impl SpawnShow {
+    const ALL: [(SpawnShow, &'static str); 3] = [(SpawnShow::All, "All"), (SpawnShow::Comp, "Comp"), (SpawnShow::None, "None")];
+
+    pub fn key(self) -> &'static str {
+        SpawnShow::ALL.iter().find(|(s, _)| *s == self).map_or("All", |(_, n)| *n)
+    }
+
+    pub fn from_key(k: &str) -> Option<SpawnShow> {
+        match k.trim() {
+            "true" => Some(SpawnShow::All),
+            "false" => Some(SpawnShow::None),
+            k => SpawnShow::ALL.iter().find(|(_, n)| n.eq_ignore_ascii_case(k)).map(|(s, _)| *s),
+        }
+    }
+
+    fn step(self, by: usize) -> SpawnShow {
+        let i = SpawnShow::ALL.iter().position(|(s, _)| *s == self).unwrap_or(0);
+        SpawnShow::ALL[(i + by) % SpawnShow::ALL.len()].0
+    }
 }
 
 const FLY_SPEED: f64 = 0.25;
@@ -197,6 +225,18 @@ impl App {
                 if self.mode == Mode::Free {
                     self.frame_free();
                 }
+            }
+            if self.mode == Mode::Top {
+                let b = ui
+                    .button(format!("Spawns: {}", self.top_spawns.key()))
+                    .on_hover_text("click: next, right-click: previous. Comp = the lowest-priority spawns each team fills first (CS2); a black dot marks them");
+                if b.clicked() {
+                    self.top_spawns = self.top_spawns.step(1);
+                } else if b.secondary_clicked() {
+                    self.top_spawns = self.top_spawns.step(2);
+                }
+                ui.checkbox(&mut self.top_grid, "Grid");
+                ui.checkbox(&mut self.top_objectives, "Objectives");
             }
             ui.weak(match self.mode {
                 Mode::Iso => "drag rotate, right-drag pan, wheel zoom",
@@ -425,7 +465,7 @@ impl App {
         let step = nice_step((x1 - x0).max(y1 - y0));
         let font = FontId::monospace(11.0);
         let mut gx = (x0 / step).ceil() * step;
-        while gx < x1 {
+        while self.top_grid && gx < x1 {
             let p = to_screen(f, gx, 0.0);
             let major = gx == 0.0 || gx % (step * 4.0) == 0.0;
             let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
@@ -434,7 +474,7 @@ impl App {
             gx += step;
         }
         let mut gy = (y0 / step).ceil() * step;
-        while gy < y1 {
+        while self.top_grid && gy < y1 {
             let p = to_screen(f, 0.0, gy);
             let major = gy == 0.0 || gy % (step * 4.0) == 0.0;
             let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
@@ -443,14 +483,24 @@ impl App {
             gy += step;
         }
         if let Some(s) = &self.scene {
-            for m in entity_marks(&s.bsp) {
+            let shown = |m: &Marker| match (m.spawn, self.top_spawns) {
+                (false, _) => self.top_objectives,
+                (true, SpawnShow::All) => true,
+                (true, SpawnShow::Comp) => m.comp != Some(false),
+                (true, SpawnShow::None) => false,
+            };
+            for m in entity_marks(&s.bsp).into_iter().filter(shown) {
                 let c = Color32::from_rgb(m.color[0], m.color[1], m.color[2]);
                 if let Some(b) = m.bbox {
                     let r = Rect::from_two_pos(to_screen(f, b[0], b[1]), to_screen(f, b[2], b[3]));
                     painter.rect_stroke(r, 0.0, Stroke::new(2.0, c), StrokeKind::Inside);
                     painter.text(r.center(), Align2::CENTER_CENTER, m.label, font.clone(), c);
                 } else {
-                    painter.circle(to_screen(f, m.pos.x, m.pos.y), 4.0, c, Stroke::new(1.0, Color32::BLACK));
+                    let p = to_screen(f, m.pos.x, m.pos.y);
+                    painter.circle(p, 4.0, c, Stroke::new(1.0, Color32::BLACK));
+                    if m.comp == Some(true) {
+                        painter.circle_filled(p, 1.6, Color32::BLACK);
+                    }
                 }
             }
         }
