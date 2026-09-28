@@ -17,6 +17,7 @@ mod nav;
 mod navmesh;
 mod overview;
 mod paths;
+mod phys;
 mod post;
 mod poster;
 mod prof;

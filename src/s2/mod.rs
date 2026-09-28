@@ -6,6 +6,7 @@ pub mod material;
 pub mod mesh;
 pub mod model;
 pub mod nav;
+pub mod phys;
 pub mod probe;
 pub mod resource;
 pub mod sky;
@@ -14,6 +15,7 @@ pub mod vpk;
 pub mod world;
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -34,9 +36,18 @@ pub struct Extra {
     pub nav: Option<crate::navmesh::NavMesh>,
     pub fs: vpk::Fs,
     pub sky: Option<String>,
+    pub phys_src: phys::Src,
+    phys: OnceLock<Result<crate::phys::Phys, String>>,
 }
 
 impl Extra {
+    pub fn phys(&self) -> Result<&crate::phys::Phys> {
+        self.phys
+            .get_or_init(|| phys::load(&self.fs, &self.phys_src).map_err(|e| format!("{e:#}")))
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("collision: {e}"))
+    }
+
     pub fn sky_material(&self, name: &str) -> Option<String> {
         sky::resolve(&self.fs, name).or_else(|| self.sky.clone())
     }
@@ -152,7 +163,8 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         .iter()
         .filter(|e| e.kv.get("classname").is_some_and(|c| c == "env_sky"))
         .find_map(|e| e.kv.get("skyname").and_then(|n| sky::resolve(&fs, n)));
-    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky }));
+    let phys_src = phys::Src::new(&map, &lumps.ents);
+    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new() }));
     let fs = &bsp.cs2.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");

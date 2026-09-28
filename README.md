@@ -4,7 +4,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 
 ## CS2
 
-`--game` is the CS2 `game` folder or the install folder above it. `health` and `stl` are GoldSrc only. `--sky` draws the map's `env_sky`; NAME may be another sky material.
+`--game` is the CS2 `game` folder or the install folder above it. `health` is GoldSrc only. `--sky` draws the map's `env_sky`; NAME may be another sky material.
 
 ## GUI
 
