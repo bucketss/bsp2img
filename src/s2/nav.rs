@@ -2,24 +2,9 @@ use anyhow::{Result, bail, ensure};
 
 use super::buf::Rd;
 use super::kv3;
+use crate::navmesh::{Area, Ladder, NavMesh};
 
-pub const CROUCH: u64 = 0x10000;
-
-pub struct Area {
-    pub poly: Vec<[f32; 3]>,
-    pub flags: u64,
-}
-
-pub struct Ladder {
-    pub top: [f32; 3],
-    pub bottom: [f32; 3],
-    pub width: f32,
-}
-
-pub struct NavMesh {
-    pub areas: Vec<Area>,
-    pub ladders: Vec<Ladder>,
-}
+const CROUCH: u64 = 0x10000;
 
 fn skip_kv3(r: &mut Rd) -> Result<()> {
     r.align(8);
@@ -72,16 +57,22 @@ pub fn parse(b: &[u8]) -> Result<NavMesh> {
     let na = r.u32()? as usize;
     ensure!(na * 20 <= b.len(), "nav area count");
     let mut areas = Vec::with_capacity(na);
+    let mut ids = Vec::with_capacity(na);
     for _ in 0..na {
-        let _id = r.u32()?;
+        ids.push(r.u32()?);
         let flags = r.u64()?;
         let _hull = r.u8()?;
         let pi = r.u32()? as usize;
         r.f32()?;
         let Some(poly) = polys.get(pi) else { bail!("nav polygon index") };
+        let mut conns = Vec::new();
         for _ in 0..poly.len() {
             let n = r.u32()? as usize;
-            r.skip(n * 8)?;
+            ensure!(n * 8 <= b.len(), "nav connection count");
+            for _ in 0..n {
+                conns.push(r.u32()?);
+                r.u32()?;
+            }
         }
         r.u8()?;
         r.u32()?;
@@ -89,7 +80,7 @@ pub fn parse(b: &[u8]) -> Result<NavMesh> {
             let n = r.u32()? as usize;
             r.skip(n * 4)?;
         }
-        areas.push(Area { poly: poly.iter().map(|&i| corners[i]).collect(), flags });
+        areas.push(Area { poly: poly.iter().map(|&i| corners[i]).collect(), crouch: flags & CROUCH != 0, conns });
     }
     let nl = r.u32()? as usize;
     ensure!(nl * 40 <= b.len(), "nav ladder count");
@@ -100,35 +91,75 @@ pub fn parse(b: &[u8]) -> Result<NavMesh> {
         let top = r.vec3()?;
         let bottom = r.vec3()?;
         r.f32()?;
-        r.skip(4 * if ver >= 35 { 8 } else { 6 })?;
-        ladders.push(Ladder { top, bottom, width });
+        r.u32()?;
+        let top_areas = (0..4).map(|_| r.u32()).collect::<Result<Vec<_>>>()?;
+        let bottom_areas = (0..if ver >= 35 { 3 } else { 1 }).map(|_| r.u32()).collect::<Result<Vec<_>>>()?;
+        ladders.push(Ladder { top, bottom, width, top_areas, bottom_areas });
     }
-    Ok(NavMesh { areas, ladders })
+    Ok(NavMesh::from_ids(&ids, areas, ladders))
 }
 
-impl NavMesh {
-    pub fn floor_below(&self, x: f32, y: f32, zmax: f32) -> Option<f32> {
-        let mut best: Option<f32> = None;
-        for a in &self.areas {
-            let p = &a.poly;
-            for i in 1..p.len().saturating_sub(1) {
-                let (a, b, c) = (p[0], p[i], p[i + 1]);
-                let d = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
-                if d.abs() < 1e-6 {
-                    continue;
-                }
-                let w0 = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / d;
-                let w1 = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / d;
-                let w2 = 1.0 - w0 - w1;
-                if w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4 {
-                    continue;
-                }
-                let z = w0 * a[2] + w1 * b[2] + w2 * c[2];
-                if z <= zmax && best.is_none_or(|b| z > b) {
-                    best = Some(z);
-                }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_way_connection() {
+        let mut b = Vec::new();
+        let u = |b: &mut Vec<u8>, v: u32| b.extend_from_slice(&v.to_le_bytes());
+        let f = |b: &mut Vec<u8>, v: f32| b.extend_from_slice(&v.to_le_bytes());
+        for v in [0xFEEDFACE, 31, 0, 0, 6] {
+            u(&mut b, v);
+        }
+        for (x, y, z) in [(0.0, 0.0, 0.0), (32.0, 0.0, 0.0), (32.0, 32.0, 0.0), (0.0, 32.0, 0.0), (64.0, 0.0, -80.0), (64.0, 32.0, -80.0)] {
+            f(&mut b, x);
+            f(&mut b, y);
+            f(&mut b, z);
+        }
+        u(&mut b, 2);
+        for poly in [[0, 1, 2, 3], [1, 4, 5, 2]] {
+            b.push(4);
+            for i in poly {
+                u(&mut b, i);
             }
         }
-        best
+        u(&mut b, 2);
+        for (id, pi, flags, edges) in [(10u32, 0u32, 0u64, [0u32, 1, 0, 0]), (20, 1, CROUCH, [0, 0, 0, 0])] {
+            u(&mut b, id);
+            b.extend_from_slice(&flags.to_le_bytes());
+            b.push(0);
+            u(&mut b, pi);
+            f(&mut b, 0.0);
+            for n in edges {
+                u(&mut b, n);
+                for _ in 0..n {
+                    u(&mut b, 20);
+                    u(&mut b, 0);
+                }
+            }
+            b.push(0);
+            for _ in 0..3 {
+                u(&mut b, 0);
+            }
+        }
+        u(&mut b, 1);
+        u(&mut b, 7);
+        f(&mut b, 16.0);
+        for v in [32.0, 16.0, 0.0, 64.0, 16.0, -80.0, 80.0] {
+            f(&mut b, v);
+        }
+        for v in [0, 10, 99, 0, 0, 20] {
+            u(&mut b, v);
+        }
+        u(&mut b, 0);
+        let m = parse(&b).unwrap();
+        assert_eq!(m.areas.len(), 2);
+        assert_eq!(m.areas[0].conns, vec![1]);
+        assert!(m.areas[1].conns.is_empty());
+        assert!(!m.areas[0].crouch && m.areas[1].crouch);
+        assert_eq!(m.areas[1].poly[1], [64.0, 0.0, -80.0]);
+        assert_eq!(m.ladders.len(), 1);
+        assert_eq!((m.ladders[0].top_areas.clone(), m.ladders[0].bottom_areas.clone()), (vec![0], vec![1]));
+        assert_eq!(m.ladders[0].bottom, [64.0, 16.0, -80.0]);
     }
 }

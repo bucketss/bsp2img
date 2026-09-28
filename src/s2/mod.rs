@@ -31,7 +31,7 @@ const CROP_PAD: f64 = 512.0;
 const REACH_MIN: f64 = 0.5;
 
 pub struct Extra {
-    pub nav: Option<nav::NavMesh>,
+    pub nav: Option<crate::navmesh::NavMesh>,
     pub fs: vpk::Fs,
     pub sky: Option<String>,
 }

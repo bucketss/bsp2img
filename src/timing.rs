@@ -194,6 +194,32 @@ fn percentile(mut v: Vec<f32>, q: f64) -> f64 {
     (v[((v.len() - 1) as f64 * q) as usize] as f64).max(1.0)
 }
 
+fn nav_debug(nav: &Nav, removed: &[(u32, u32)], base: &[u8], g: &crate::grid::GridFrame, f: &Path) -> Result<()> {
+    let mut pm = Pixmap::from_vec(base.to_vec(), tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?)
+        .context("pixmap")?;
+    let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
+    let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
+    let mut level = 0;
+    for &(u, v) in removed {
+        let (u, v) = (u as usize, v as usize);
+        let (x0, y0) = nav.cell_xy(nav.col[u] as usize);
+        let (x1, y1) = nav.cell_xy(nav.col[v] as usize);
+        let flat = (nav.nodes[v].z - nav.nodes[u].z).abs() <= STEP;
+        level += flat as usize;
+        let c = if flat { [255, 150, 0] } else { [255, 40, 40] };
+        let (a, b) = ((sx(x0), sy(y0)), (sx(x1), sy(y1)));
+        line(&mut pm, a, (a.0 + 4.0 * (b.0 - a.0), a.1 + 4.0 * (b.1 - a.1)), c, 255, 2.0);
+    }
+    let text = Text::new(14.0);
+    let title = format!("removed nav links: {} height changes (red), {level} level (orange)", removed.len() - level);
+    let (tw, th) = text.size(&title);
+    rect(&mut pm, 4.0, 4.0, tw + 14.0, th + 12.0, [0, 0, 0], 200);
+    text.draw(&mut pm, 9.0, 8.0, &title, [255, 255, 255]);
+    let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    image::RgbImage::from_raw(g.wpx, g.hpx, rgb).context("image")?.save(f)?;
+    Ok(())
+}
+
 pub fn export_timing(
     r: &mut Renderer,
     bsp: &Bsp,
@@ -227,11 +253,12 @@ pub fn export_timing(
     rep.step(0.5)?;
     let reach = (0..nav.len()).filter(|&n| dt[n].is_finite() || dct[n].is_finite()).count();
     rep.log(format!(
-        "  nav: {} floor cells, {} reachable, {} ladders, {} blocking entities, spawns placed T {}/{} CT {}/{} ({:.1}s)",
+        "  nav: {} floor cells, {} reachable, {} ladders, {} blocking entities{}, spawns placed T {}/{} CT {}/{} ({:.1}s)",
         nav.len(),
         reach,
         nav.ladders,
         nav.blockers,
+        nav.removed.as_ref().map_or(String::new(), |r| format!(", {} links removed by nav connections", r.len())),
         st.len(),
         count("info_player_deathmatch"),
         sct.len(),
@@ -260,6 +287,13 @@ pub fn export_timing(
     }
 
     let (g, base) = dark_base(r, cuts, o.size)?;
+    let mut files = Partial::default();
+    if let Some(removed) = nav.removed.as_ref().filter(|_| std::env::var("BSP2IMG_NAV_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0")) {
+        let f = free_name(out, &format!("{name}{cut_tag}_navlinks"), ".png");
+        files.add(f.clone());
+        nav_debug(&nav, removed, &base, &g, &f)?;
+        rep.log(format!("  {}", f.display()));
+    }
     let field = sample_field(&nav, &dt, &dct, cuts.zmax, &g);
     let firsts: Vec<f32> = (0..field.t.len()).map(|i| field.first(i)).collect();
     let tmax_both = percentile(firsts, 0.98);
@@ -272,7 +306,6 @@ pub fn export_timing(
     let text = Text::new(14.0);
     let small = Text::new(12.0);
 
-    let mut files = Partial::default();
     for (k, (suffix, kind, tmax)) in [
         ("", Kind::Both, tmax_both),
         ("_t", Kind::Team(true), tmax_t),
