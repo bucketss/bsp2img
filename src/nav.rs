@@ -7,9 +7,15 @@ use rayon::prelude::*;
 
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
 use crate::navmesh::{Links, NavMesh};
+use crate::phys::{Mask, Phys};
 
 pub const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
+pub const MAX_DROP: f32 = 655.0;
+const HEAD: f32 = 72.0;
+const THIN: f64 = 4.0;
+const SAMPLE: f64 = 2.0;
+const REACH: f64 = 32.0;
 pub const JUMP_COST: f64 = 0.2;
 const DUCK_SPEED: f64 = 0.333;
 pub const LADDER_SPEED: f64 = 200.0;
@@ -121,6 +127,8 @@ pub struct Nav {
     node_areas: Vec<u32>,
     area_start: Vec<u32>,
     pub removed: Option<Vec<(u32, u32)>>,
+    pub drops: Option<Vec<(u32, u32)>>,
+    pub warn: Option<String>,
     pub ladders: usize,
     pub blockers: usize,
 }
@@ -152,11 +160,19 @@ impl NavTri {
 
 impl Nav {
     pub fn build(bsp: &Bsp, cell: f64, speed: f64) -> Result<Nav> {
+        Nav::build_with(bsp, cell, speed, true)
+    }
+
+    pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<Nav> {
         if let Some(x) = &bsp.cs2 {
-            return match &x.nav {
-                Some(m) => Nav::from_areas(m, cell, speed, std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height")),
-                None => bail!("map has no nav mesh"),
-            };
+            let Some(m) = &x.nav else { bail!("map has no nav mesh") };
+            let gate = std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height");
+            let phys = (gate && collide).then(|| x.phys());
+            let mut nav = Nav::from_areas(m, cell, speed, gate, phys.as_ref().and_then(|p| p.as_ref().ok()).copied())?;
+            if let Some(Err(e)) = phys {
+                nav.warn = Some(format!("{e:#}; drops without a nav connection stay blocked"));
+            }
+            return Ok(nav);
         }
         if bsp.clipnodes.is_empty() {
             bail!("map has no collision hulls");
@@ -203,7 +219,7 @@ impl Nav {
         Ok(nav)
     }
 
-    pub fn from_areas(m: &NavMesh, cell: f64, speed: f64, gate: bool) -> Result<Nav> {
+    pub fn from_areas(m: &NavMesh, cell: f64, speed: f64, gate: bool, phys: Option<&Phys>) -> Result<Nav> {
         if m.areas.is_empty() {
             bail!("map has no nav mesh areas");
         }
@@ -269,7 +285,7 @@ impl Nav {
             })
             .collect();
         let links = gate.then(|| Links::new(m));
-        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0, links.as_ref());
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0, links.as_ref().map(|g| (g, phys)));
         for l in &m.ladders {
             let (t, b) = (v(&l.top), v(&l.bottom));
             let w = DVec3::new(l.width as f64 / 2.0, l.width as f64 / 2.0, 0.0);
@@ -287,7 +303,7 @@ impl Nav {
         ny: usize,
         cols: Vec<Vec<(Node, Vec<u32>)>>,
         blockers: usize,
-        links: Option<&Links>,
+        gate: Option<(&Links, Option<&Phys>)>,
     ) -> Nav {
         let mut start = Vec::with_capacity(nx * ny + 1);
         let mut nodes = Vec::new();
@@ -320,6 +336,8 @@ impl Nav {
             node_areas,
             area_start,
             removed: None,
+            drops: None,
+            warn: None,
             ladders: 0,
             blockers,
         };
@@ -329,25 +347,34 @@ impl Nav {
                 let c = nav.col[u] as usize;
                 let (i, j) = ((c / ny) as i64, (c % ny) as i64);
                 let mut cut = Vec::new();
+                let mut back = Vec::new();
                 let o = DIRS.map(|(dx, dy)| {
                     let (a, b) = (i + dx, j + dy);
                     if a < 0 || b < 0 || a >= nx as i64 || b >= ny as i64 {
                         return NONE;
                     }
                     let c = a as usize * ny + b as usize;
-                    let v = match (nav.link(u, c, |_| true), links) {
-                        (Some(v), Some(g)) if !nav.allowed(g, u, v) => {
-                            cut.push((u as u32, v as u32));
-                            nav.link(u, c, |w| nav.allowed(g, u, w))
+                    let v = match (nav.link(u, c, |_| true), gate) {
+                        (Some(v), Some((g, phys))) if !nav.allowed(g, u, v) => {
+                            let drop = |w: usize| phys.is_some_and(|p| nav.drop_open(p, u, w));
+                            if !drop(v) {
+                                cut.push((u as u32, v as u32));
+                            }
+                            let w = nav.link(u, c, |w| nav.allowed(g, u, w) || drop(w));
+                            if let Some(w) = w.filter(|&w| !nav.allowed(g, u, w)) {
+                                back.push((u as u32, w as u32));
+                            }
+                            w
                         }
                         (v, _) => v,
                     };
                     v.map_or(NONE, |v| v as u32)
                 });
-                (o, cut)
+                (o, cut, back)
             })
             .collect();
-        nav.removed = links.map(|_| res.iter().flat_map(|r| r.1.iter().copied()).collect());
+        nav.removed = gate.map(|_| res.iter().flat_map(|r| r.1.iter().copied()).collect());
+        nav.drops = gate.and_then(|g| g.1).map(|_| res.iter().flat_map(|r| r.2.iter().copied()).collect());
         nav.orth = res.into_iter().map(|r| r.0).collect();
         nav.extra = vec![Vec::new(); nav.nodes.len()];
         nav
@@ -364,6 +391,35 @@ impl Nav {
         let (x0, y0) = self.cell_xy(self.col[u] as usize);
         let (x1, y1) = self.cell_xy(self.col[v] as usize);
         g.allowed(self.areas(u), self.areas(v), DVec2::new(x0, y0), DVec2::new(x1, y1), self.nodes[u].z, self.nodes[v].z)
+    }
+
+    fn drop_open(&self, p: &Phys, u: usize, v: usize) -> bool {
+        let (a, b) = (self.nodes[u], self.nodes[v]);
+        let dz = a.z - b.z;
+        if dz <= STEP || dz > MAX_DROP {
+            return false;
+        }
+        let (x0, y0) = self.cell_xy(self.col[u] as usize);
+        let (x1, y1) = self.cell_xy(self.col[v] as usize);
+        let p0 = DVec2::new(x0, y0);
+        let Some(d) = (DVec2::new(x1, y1) - p0).try_normalize() else { return false };
+        let top = a.z + HEAD;
+        let mut iv = Vec::new();
+        let mut free = |q: DVec2, lo: f32| {
+            p.column(q.x, q.y, Mask::PLAYER, &mut iv);
+            !iv.iter().any(|&(z0, z1)| z0 < top && z1 > lo)
+        };
+        let side = [-THIN, 0.0, THIN];
+        for k in 1..=(REACH / SAMPLE) as usize {
+            let q = p0 + d * (k as f64 * SAMPLE);
+            if !side.iter().all(|&s| free(q + d.perp() * s, a.z + STEP)) {
+                return false;
+            }
+            if side.iter().all(|&s| side.iter().all(|&r| free(q + d * s + d.perp() * r, b.z + STEP))) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn len(&self) -> usize {
@@ -586,5 +642,41 @@ impl Nav {
             }
         }
         dist
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use glam::DAffine3;
+
+    use super::*;
+    use crate::navmesh::Area;
+    use crate::phys::{Builder, Class};
+
+    fn quad(x0: f32, x1: f32, z: f32) -> Area {
+        Area { poly: vec![[x0, 0.0, z], [x1, 0.0, z], [x1, 32.0, z], [x0, 32.0, z]], crouch: false, conns: Vec::new() }
+    }
+
+    fn drops(low: f32, extra: &[([f64; 3], [f64; 3])]) -> (usize, usize) {
+        let m = NavMesh { areas: vec![quad(0.0, 32.0, 0.0), quad(32.0, 96.0, low)], ladders: Vec::new() };
+        let mut b = Builder::default();
+        let v = |a: [f64; 3]| DVec3::from_array(a);
+        b.aabb(v([-64.0, -64.0, -16.0]), v([32.0, 96.0, 0.0]), &DAffine3::IDENTITY, Class::Solid);
+        b.aabb(v([-64.0, -64.0, low as f64 - 16.0]), v([160.0, 96.0, low as f64]), &DAffine3::IDENTITY, Class::Solid);
+        for &(lo, hi) in extra {
+            b.aabb(v(lo), v(hi), &DAffine3::IDENTITY, Class::Clip);
+        }
+        let p = b.finish();
+        let nav = Nav::from_areas(&m, 8.0, 250.0, true, Some(&p)).unwrap();
+        (nav.drops.unwrap().len(), nav.removed.unwrap().len())
+    }
+
+    #[test]
+    fn drops_follow_collision() {
+        assert_eq!(drops(-200.0, &[]), (4, 0));
+        assert_eq!(drops(-200.0, &[([32.0, -64.0, -16.0], [34.0, 96.0, 40.0])]), (0, 4));
+        assert_eq!(drops(-200.0, &[([32.0, -64.0, -110.0], [160.0, 96.0, -100.0])]), (0, 4));
+        assert_eq!(drops(-700.0, &[]), (0, 4));
+        assert_eq!(drops(-10.0, &[]), (0, 8));
     }
 }

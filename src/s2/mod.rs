@@ -59,7 +59,7 @@ impl Extra {
 
 fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
     let t = Instant::now();
-    let nav = crate::nav::Nav::build(bsp, CROP_CELL, 250.0).ok()?;
+    let nav = crate::nav::Nav::build_with(bsp, CROP_CELL, 250.0, false).ok()?;
     let Some(mut reach) = crate::reach::nav_reach(&nav, bsp, 250.0) else {
         log("auto crop: no spawn points on the nav mesh, using whole map".into());
         return None;
