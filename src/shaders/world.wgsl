@@ -298,6 +298,9 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     if (lu.dir.w > 0.0 && !unlit && mode != 3) {
         lr = relight(lr, i.lpos, n);
     }
+    if (lu.shadow0.w > 0.0 && lu.dir.w > 0.0 && !unlit) {
+        t = vec4<f32>(mix(t.rgb, pow(max(t.rgb, vec3<f32>(0.0)), vec3<f32>(lu.shadow0.w)), clamp(lu.dir.w, 0.0, 1.0)), t.a);
+    }
     let c = t.rgb * tint * lr;
     var a = 1.0;
     if (mode >= 2) {

@@ -408,6 +408,7 @@ pub struct Renderer {
     shadow: Mutex<Vec<ShadowMap>>,
     pts_cache: Mutex<Option<(String, Arc<Vec<DVec3>>)>>,
     pub sun_env: SunEnv,
+    pub tex_gamma: f32,
 }
 
 fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
@@ -1077,6 +1078,7 @@ impl Renderer {
             shadow: Mutex::new(Vec::new()),
             pts_cache: Mutex::new(None),
             sun_env: SunEnv::default(),
+            tex_gamma: 0.0,
             nearest,
             sc,
             gpu,
@@ -1701,6 +1703,8 @@ impl Renderer {
             Some(h) => ([h.curve[0], h.curve[1], h.curve[2], 1.0], [h.sun[0], h.sun[1], h.sun[2], h.lamps as f32]),
             None => ([0.0; 4], [0.0; 4]),
         };
+        let mut shadow0 = sh(&b);
+        shadow0[3] = if sun.is_some() { self.tex_gamma } else { 0.0 };
         let lu = LightU {
             mvp: a.mvp.as_mat4().to_cols_array(),
             dir: sun.map_or([0.0; 4], |s| v(s.dir, look.relight.clamp(0.0, 1.0) as f32)),
@@ -1711,7 +1715,7 @@ impl Renderer {
             dir0: v(base.dir, 0.0),
             color0: f(base.color, 0.0),
             ambient0: f(base.ambient, 0.0),
-            shadow0: sh(&b),
+            shadow0,
             hdr,
             sun: hsun,
         };
