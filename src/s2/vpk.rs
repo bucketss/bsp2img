@@ -255,6 +255,26 @@ impl Src {
             Src::Dir(d) => d.path(k).map(|p| read_file(&p, limit)),
         }
     }
+
+    fn names_with(&self, p: &str, out: &mut Vec<String>) {
+        match self {
+            Src::Vpk(v) => out.extend(v.entries.keys().filter(|n| n.starts_with(p)).cloned()),
+            Src::Dir(d) => {
+                let (dir, _) = p.rsplit_once('/').unwrap_or(("", p));
+                if dir.split('/').any(|c| c == "..") {
+                    return;
+                }
+                let Ok(rd) = std::fs::read_dir(d.root.join(dir)) else { return };
+                for e in rd.flatten().filter(|e| e.path().is_file()) {
+                    let n = e.file_name().to_string_lossy().to_lowercase();
+                    let n = if dir.is_empty() { n } else { format!("{dir}/{n}") };
+                    if n.starts_with(p) {
+                        out.push(n);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub struct Fs {
@@ -273,7 +293,10 @@ impl Fs {
 
     pub fn names_with(&self, prefix: &str) -> Vec<String> {
         let p = prefix.to_lowercase();
-        let mut v: Vec<String> = self.paks.iter().flat_map(|k| k.entries.keys().filter(|n| n.starts_with(&p)).cloned()).collect();
+        let mut v = Vec::new();
+        for s in &self.srcs {
+            s.names_with(&p, &mut v);
+        }
         v.sort();
         v.dedup();
         v
