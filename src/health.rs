@@ -69,7 +69,6 @@ const SPAWNS_FOR_32_SLOTS: usize = 16;
 const M2_PER_UNIT2: f64 = 0.0254 * 0.0254;
 const OPEN_SPOTS: usize = 3;
 const COMP_MIN: usize = 5;
-const SPAWN_GAP: f64 = 128.0;
 const PLAYER_HALF: f64 = 16.0;
 const PLAYER_HEIGHT: f64 = 72.0;
 const BOX_LIFT: f64 = 2.0;
@@ -935,11 +934,6 @@ impl Health {
                 w.push(format!("{n} competitive {team} spawns (fewer than {COMP_MIN})"));
             }
         }
-        for (team, g) in [("T", c.gaps[0]), ("CT", c.gaps[1])] {
-            if let Some((d, p)) = g.filter(|g| g.0 < SPAWN_GAP) {
-                w.push(format!("{team} spawns {d:.0} units apart near {:.0} {:.0} (under {SPAWN_GAP:.0})", p.x, p.y));
-            }
-        }
         match &self.nav {
             Ok(n) if !n.off_ground.is_empty() => w.push(format!("{} spawns off the nav mesh", n.off_ground.len())),
             Err(e) => w.push(format!("nav: {e}")),
@@ -955,11 +949,6 @@ impl Health {
         }
         if !self.sky_found {
             w.push(format!("sky {} missing", self.sky));
-        }
-        if let Ok(k) = &c.collision
-            && k.holes > 0
-        {
-            w.push(format!("{} reachable nav cells have no collision floor ({} clusters)", k.holes, k.nclusters));
         }
         let r = &c.radar;
         match (&r.err, r.txt) {
@@ -1404,7 +1393,7 @@ fn cs2_facts(h: &Health, c: &Cs2Health) -> Vec<(String, [u8; 3])> {
         Err(_) => v.push(("spawns in collision: unknown".into(), AMBER)),
     }
     if let Some(g) = c.gaps.iter().flatten().map(|g| g.0).reduce(f64::min) {
-        v.push((format!("closest spawns: {g:.0} units"), if g >= SPAWN_GAP { GREEN } else { AMBER }));
+        v.push((format!("closest spawns: {g:.0} units"), white));
     }
     let obj: Vec<String> = h.objectives.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{n} {k}")).collect();
     v.push((format!("objectives: {}", list(&obj)), if obj.is_empty() { AMBER } else { white }));
@@ -1412,9 +1401,9 @@ fn cs2_facts(h: &Health, c: &Cs2Health) -> Vec<(String, [u8; 3])> {
     match &c.collision {
         Ok(k) if k.checked > 0 => v.push((
             format!("collision holes: {} cells in {} clusters", k.holes, k.nclusters),
-            if k.holes == 0 { GREEN } else { AMBER },
+            white,
         )),
-        Ok(_) => v.push(("collision holes: unknown".into(), AMBER)),
+        Ok(_) => v.push(("collision holes: unknown".into(), white)),
         Err(_) => v.push(("collision: failed to load".into(), RED)),
     }
     let r = &c.radar;
