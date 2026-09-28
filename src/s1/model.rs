@@ -161,7 +161,7 @@ fn build(mdl_b: &[u8], vvd_b: &[u8], vtx_b: &[u8]) -> Result<Model> {
                             bail!("triangle strips are not supported");
                         }
                         let tri: Vec<usize> = st.indices().collect();
-                        if tri.len() % 3 != 0 {
+                        if !tri.len().is_multiple_of(3) {
                             bail!("strip index count {} is not a multiple of 3", tri.len());
                         }
                         for t in tri.chunks_exact(3) {
