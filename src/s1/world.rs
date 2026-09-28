@@ -3,11 +3,14 @@ use std::collections::{BTreeSet, HashMap};
 use glam::{DMat3, DVec3};
 use rayon::prelude::*;
 
-use super::bsp::{SURF_HIDDEN, World};
+use super::bsp::{Map, SURF_HIDDEN, World};
+use super::disp;
+use super::light::{self, Block, FULL, Lighting};
 use super::vmt::{self, Material};
 use super::vtf;
 use crate::bsp::Entity;
-use crate::mesh::{Batch, Image, Mesh, Mode, Vertex};
+use crate::light::LightParams;
+use crate::mesh::{Batch, Image, Mesh, Mode, Vertex, unorm16};
 use crate::s2::texture::{Compressed, Tex};
 use crate::s2::vpk::Fs;
 
@@ -71,9 +74,12 @@ impl MatStats {
     }
 }
 
-pub struct Opts {
+pub struct Opts<'a> {
     pub tex_max: usize,
     pub crop: Option<[f64; 4]>,
+    pub map: &'a Map,
+    pub light: &'a LightParams,
+    pub lm_cap: usize,
 }
 
 pub struct Built {
@@ -83,6 +89,8 @@ pub struct Built {
     pub dropped: usize,
     pub displacements: usize,
     pub brush_ents: usize,
+    pub lightmap: Option<(u32, u32)>,
+    pub notes: Vec<String>,
 }
 
 pub struct Draw {
@@ -167,25 +175,37 @@ fn solid(c: [f32; 3]) -> Image {
     Image { w: 4, h: 4, rgba: [px[0], px[1], px[2], 255].repeat(16) }
 }
 
+type Key = (usize, Mode, u32, [u32; 3]);
+
 struct Poly {
-    key: (usize, Mode, u32, [u32; 3]),
-    pts: Vec<(DVec3, [f64; 2])>,
-    normal: DVec3,
+    key: Key,
+    verts: Vec<Vertex>,
+    idx: Vec<u32>,
+    block: usize,
 }
 
-fn clip(mut poly: Vec<(DVec3, [f64; 2])>, [x0, y0, x1, y1]: [f64; 4]) -> Vec<(DVec3, [f64; 2])> {
+struct DispPoly {
+    key: Key,
+    draw: usize,
+    grid: disp::Grid,
+    block: usize,
+    uv: [DVec3; 2],
+    uv0: [f64; 2],
+    size: [f64; 2],
+}
+
+fn clip(mut poly: Vec<Vertex>, [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
     for (axis, s, d) in [(0, 1.0, x0), (0, -1.0, -x1), (1, 1.0, y0), (1, -1.0, -y1)] {
-        let side = |p: &DVec3| s * p[axis] - d;
+        let side = |v: &Vertex| s * v.pos[axis] as f64 - d;
         let input = std::mem::take(&mut poly);
         for i in 0..input.len() {
             let (a, b) = (&input[i], &input[(i + 1) % input.len()]);
-            let (sa, sb) = (side(&a.0), side(&b.0));
+            let (sa, sb) = (side(a), side(b));
             if sa >= 0.0 {
                 poly.push(*a);
             }
             if (sa >= 0.0) != (sb >= 0.0) {
-                let t = sa / (sa - sb);
-                poly.push((a.0 + (b.0 - a.0) * t, [a.1[0] + (b.1[0] - a.1[0]) * t, a.1[1] + (b.1[1] - a.1[1]) * t]));
+                poly.push(Vertex::lerp(a, b, (sa / (sa - sb)) as f32));
             }
         }
         if poly.len() < 3 {
@@ -195,22 +215,53 @@ fn clip(mut poly: Vec<(DVec3, [f64; 2])>, [x0, y0, x1, y1]: [f64; 4]) -> Vec<(DV
     poly
 }
 
+fn inside(p: [f32; 3], [x0, y0, x1, y1]: [f64; 4]) -> bool {
+    (x0..=x1).contains(&(p[0] as f64)) && (y0..=y1).contains(&(p[1] as f64))
+}
+
+fn f3(v: DVec3) -> [f32; 3] {
+    [v.x as f32, v.y as f32, v.z as f32]
+}
+
 pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     let mut tm = crate::prof::Timer::new("source");
+    let mut notes = Vec::new();
     let mats = materials(fs, w);
     tm.lap("materials");
+    let lighting = match Lighting::open(o.map, w, o.light.all_styles) {
+        Ok(l) => {
+            if let Some(l) = &l {
+                let (a, b) = l.check(w);
+                if a < b {
+                    notes.push(format!("lightmap layout: {a} of {b} face spans match"));
+                }
+            }
+            l
+        }
+        Err(e) => {
+            notes.push(format!("lightmaps: {e:#}"));
+            None
+        }
+    };
+    let disps = match w.faces.iter().any(|f| f.dispinfo >= 0).then(|| disp::read(o.map)) {
+        Some(Ok(d)) => Some(d),
+        Some(Err(e)) => {
+            notes.push(format!("displacements: {e:#}"));
+            None
+        }
+        None => None,
+    };
+    tm.lap("lumps");
     let draws = draws(w, ents);
     let mut used: BTreeSet<usize> = BTreeSet::new();
     let mut polys: Vec<Poly> = Vec::new();
-    let (mut total, mut disps) = (0, 0);
-    for d in &draws {
+    let mut dpolys: Vec<DispPoly> = Vec::new();
+    let mut blocks: Vec<Block> = vec![Block::solid([FULL; 3])];
+    let (mut total, mut disp_bad, mut unlit) = (0, 0, 0);
+    for (di, d) in draws.iter().enumerate() {
         let m = &w.models[d.model];
         for fi in m.first_face as usize..(m.first_face + m.num_faces) as usize {
             let f = &w.faces[fi];
-            if f.dispinfo >= 0 {
-                disps += 1;
-                continue;
-            }
             if f.num_edges < 3 {
                 continue;
             }
@@ -233,36 +284,132 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
             };
             let alpha = if matches!(mode, Mode::Blend | Mode::Additive) { alpha } else { 1.0 };
             total += 1;
+            let key = (tdi, mode, alpha.to_bits(), d.tint.map(f32::to_bits));
+            let fullbright = mode == Mode::Additive || mats[tdi].as_ref().is_ok_and(|m| m.shader == "unlitgeneric");
+            let lf = lighting.as_ref().map(|l| &l.faces[fi]);
+            let block = match lighting.as_ref().filter(|_| !fullbright).and_then(|l| l.sample(w, fi)) {
+                Some(b) => {
+                    blocks.push(b);
+                    blocks.len() - 1
+                }
+                None => {
+                    unlit += 1;
+                    0
+                }
+            };
             let (tw, th) = (td.width.max(1) as f64, td.height.max(1) as f64);
             let sv = DVec3::new(ti.s[0] as f64, ti.s[1] as f64, ti.s[2] as f64);
             let tv = DVec3::new(ti.t[0] as f64, ti.t[1] as f64, ti.t[2] as f64);
-            let mut pts: Vec<(DVec3, [f64; 2])> = w
+            if f.dispinfo >= 0 {
+                let g = disps.as_ref().and_then(|ds| disp::grid(w, ds, f.dispinfo as usize, fi));
+                let Some(grid) = g else {
+                    disp_bad += 1;
+                    continue;
+                };
+                let size = lf.map_or([0.0; 2], |f| [f.lm_size[0].max(0) as f64, f.lm_size[1].max(0) as f64]);
+                dpolys.push(DispPoly { key, draw: di, grid, block, uv: [sv / tw, tv / th], uv0: [ti.s[3] as f64 / tw, ti.t[3] as f64 / th], size });
+                used.insert(tdi);
+                continue;
+            }
+            let ls = DVec3::new(ti.lm_s[0] as f64, ti.lm_s[1] as f64, ti.lm_s[2] as f64);
+            let lt = DVec3::new(ti.lm_t[0] as f64, ti.lm_t[1] as f64, ti.lm_t[2] as f64);
+            let mins = lf.map_or([0.0; 2], |f| [f.lm_mins[0] as f64, f.lm_mins[1] as f64]);
+            let normal = (d.rot * w.face_normal(fi)).normalize_or_zero();
+            let mut verts: Vec<Vertex> = w
                 .face_points(fi)
                 .into_iter()
-                .map(|p| (d.apply(p), [(p.dot(sv) + ti.s[3] as f64) / tw, (p.dot(tv) + ti.t[3] as f64) / th]))
+                .map(|p| Vertex {
+                    pos: f3(d.apply(p)),
+                    uv: [((p.dot(sv) + ti.s[3] as f64) / tw) as f32, ((p.dot(tv) + ti.t[3] as f64) / th) as f32],
+                    lm: [(p.dot(ls) + ti.lm_s[3] as f64 - mins[0]) as f32, (p.dot(lt) + ti.lm_t[3] as f64 - mins[1]) as f32],
+                    normal: f3(normal),
+                    ..Vertex::BLANK
+                })
                 .collect();
-            let normal = (d.rot * w.face_normal(fi)).normalize_or_zero();
-            let n = pts.len();
-            let c = pts.iter().map(|p| p.0).sum::<DVec3>() / n as f64;
-            let newell: DVec3 = (0..n).map(|i| (pts[i].0 - c).cross(pts[(i + 1) % n].0 - c)).sum();
+            let n = verts.len();
+            let c = verts.iter().map(|v| DVec3::from(v.pos.map(|x| x as f64))).sum::<DVec3>() / n as f64;
+            let at = |i: usize| DVec3::from(verts[i].pos.map(|x| x as f64)) - c;
+            let newell: DVec3 = (0..n).map(|i| at(i).cross(at((i + 1) % n))).sum();
             if newell.dot(normal) < 0.0 {
-                pts.reverse();
+                verts.reverse();
             }
             if let Some(b) = o.crop {
-                pts = clip(pts, b);
-                if pts.is_empty() {
+                verts = clip(verts, b);
+                if verts.is_empty() {
                     continue;
                 }
             }
             used.insert(tdi);
-            polys.push(Poly { key: (tdi, mode, alpha.to_bits(), d.tint.map(f32::to_bits)), pts, normal });
+            polys.push(Poly { key, verts, idx: Vec::new(), block });
         }
     }
+    let ndisp = dpolys.len();
+    {
+        let mut gs: Vec<&mut disp::Grid> = dpolys.iter_mut().map(|p| &mut p.grid).collect();
+        disp::weld(&mut gs);
+    }
+    for p in dpolys {
+        let d = &draws[p.draw];
+        let g = &p.grid;
+        let verts: Vec<Vertex> = (0..g.pos.len())
+            .map(|k| {
+                let fl = g.flat[k];
+                let uv = [(fl.dot(p.uv[0]) + p.uv0[0]) as f32, (fl.dot(p.uv[1]) + p.uv0[1]) as f32];
+                Vertex {
+                    pos: f3(d.apply(g.pos[k])),
+                    uv,
+                    uv2: uv,
+                    lm: [(g.frac[k][0] * p.size[0]) as f32, (g.frac[k][1] * p.size[1]) as f32],
+                    normal: f3((d.rot * g.normal[k]).normalize_or_zero()),
+                    blend: [unorm16(g.alpha[k] / 255.0), 0],
+                    ..Vertex::BLANK
+                }
+            })
+            .collect();
+        let idx: Vec<u32> = match o.crop {
+            Some(b) => g
+                .idx
+                .chunks_exact(3)
+                .filter(|t| {
+                    let c: [f32; 3] = std::array::from_fn(|k| t.iter().map(|&i| verts[i as usize].pos[k]).sum::<f32>() / 3.0);
+                    inside(c, b)
+                })
+                .flatten()
+                .copied()
+                .collect(),
+            None => g.idx.clone(),
+        };
+        if idx.is_empty() {
+            continue;
+        }
+        polys.push(Poly { key: p.key, verts, idx, block: p.block });
+    }
     tm.lap("faces");
+
+    let lm_cap = o.lm_cap as u32;
+    let lit = lighting.as_ref().map(|l| {
+        let atlas = light::pack(&blocks, lm_cap);
+        for p in &mut polys {
+            for v in &mut p.verts {
+                v.lm = atlas.uv(p.block, v.lm);
+            }
+        }
+        let (img, hdr) = light::finish(&atlas, o.light);
+        (img, hdr, l.hdr, atlas.shrunk)
+    });
+    if lit.is_none() {
+        for p in &mut polys {
+            for v in &mut p.verts {
+                v.lm = [0.5, 0.5];
+            }
+        }
+    }
+    tm.lap("lightmap");
 
     let mut stats = MatStats::default();
     let mut missing: BTreeSet<String> = BTreeSet::new();
     let mut texs: Vec<String> = Vec::new();
+    let layer2 = |m: &Material| -> Option<String> { (m.shader == "worldvertextransition").then(|| m.texture("$basetexture2")).flatten() };
     for (i, m) in mats.iter().enumerate() {
         let st = match m {
             Ok(m) if m.skip || m.water => Status::ToolWater,
@@ -270,6 +417,11 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                 None => Status::NoBase,
                 Some(b) => {
                     texs.push(b.clone());
+                    if used.contains(&i)
+                        && let Some(t) = layer2(m)
+                    {
+                        texs.push(t);
+                    }
                     Status::Ok
                 }
             },
@@ -311,6 +463,7 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     let mut names: Vec<String> = Vec::new();
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut tex_of: HashMap<usize, usize> = HashMap::new();
+    let mut l2_of: HashMap<usize, usize> = HashMap::new();
     let mut decoded = decoded;
     for &tdi in &used {
         let (key, label) = match &mats[tdi] {
@@ -320,25 +473,43 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         };
         if let Some(&k) = ids.get(&key) {
             tex_of.insert(tdi, k);
+        } else {
+            let (im, bc) = match &mats[tdi] {
+                Ok(m) if m.water => (solid(m.fog().unwrap_or(WATER_DEFAULT)), None),
+                Ok(_) => match decoded.remove(&key) {
+                    Some(Ok(Tex::Plain(i))) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
+                    Some(Ok(Tex::Bc(c))) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
+                    _ => (checker(), None),
+                },
+                Err(_) => (checker(), None),
+            };
+            ids.insert(key, images.len());
+            tex_of.insert(tdi, images.len());
+            images.push(Some(im));
+            compressed.push(bc);
+            names.push(label);
+        }
+        let Some(t2) = mats[tdi].as_ref().ok().filter(|m| !m.water).and_then(layer2) else { continue };
+        if let Some(&k) = ids.get(&t2) {
+            l2_of.insert(tdi, k);
             continue;
         }
-        let (im, bc) = match &mats[tdi] {
-            Ok(m) if m.water => (solid(m.fog().unwrap_or(WATER_DEFAULT)), None),
-            Ok(_) => match decoded.remove(&key) {
-                Some(Ok(Tex::Plain(i))) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
-                Some(Ok(Tex::Bc(c))) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
-                _ => (checker(), None),
-            },
-            Err(_) => (checker(), None),
+        let (im, bc) = match decoded.remove(&t2) {
+            Some(Ok(Tex::Plain(i))) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
+            Some(Ok(Tex::Bc(c))) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
+            _ => {
+                missing.insert(t2.clone());
+                continue;
+            }
         };
-        ids.insert(key, images.len());
-        tex_of.insert(tdi, images.len());
+        ids.insert(t2.clone(), images.len());
+        l2_of.insert(tdi, images.len());
         images.push(Some(im));
         compressed.push(bc);
-        names.push(label);
+        names.push(t2);
     }
 
-    let mut index: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
+    let mut index: HashMap<Key, usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     for p in &polys {
         let (tdi, mode, a, tint) = p.key;
@@ -352,7 +523,7 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                 alpha: f32::from_bits(a),
                 warp: None,
                 tint: std::array::from_fn(|k| t0[k] * t1[k]),
-                layer2: None,
+                layer2: l2_of.get(&tdi).map(|&t| (t, [1.0, 1.0, 0.0, 0.0])),
                 layer3: None,
                 tint_mask: None,
                 verts: Vec::new(),
@@ -363,33 +534,55 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         });
         let b = &mut batches[bi];
         let base = b.verts.len() as u32;
-        b.verts.extend(p.pts.iter().map(|(q, uv)| Vertex {
-            pos: [q.x as f32, q.y as f32, q.z as f32],
-            uv: [uv[0] as f32, uv[1] as f32],
-            lm: [0.5, 0.5],
-            normal: [p.normal.x as f32, p.normal.y as f32, p.normal.z as f32],
-            ..Vertex::BLANK
-        }));
-        for i in 1..p.pts.len() as u32 - 1 {
-            b.idx.extend([base, base + i, base + i + 1]);
+        b.verts.extend_from_slice(&p.verts);
+        if p.idx.is_empty() {
+            for i in 1..p.verts.len() as u32 - 1 {
+                b.idx.extend([base, base + i, base + i + 1]);
+            }
+        } else {
+            b.idx.extend(p.idx.iter().map(|i| base + i));
         }
     }
     let points = batches.iter().flat_map(|b| b.verts.iter().map(|v| DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64))).collect();
     tm.lap("batches");
     let anim = vec![None; images.len()];
     let faces = polys.len();
+    let (atlas, hdr, lightmap) = match lit {
+        Some((img, hdr, is_hdr, shrunk)) => {
+            let size = (img.w, img.h);
+            notes.push(format!(
+                "{} lightmaps {}x{}{}, {} faces unlit",
+                if is_hdr { "HDR" } else { "LDR" },
+                size.0,
+                size.1,
+                if shrunk { " (reduced to fit)" } else { "" },
+                unlit
+            ));
+            (img, Some(hdr), Some(size))
+        }
+        None => {
+            notes.push("no lightmaps".into());
+            (Image { w: 4, h: 4, rgba: vec![255; 64] }, None, None)
+        }
+    };
+    if disp_bad > 0 {
+        notes.push(format!("{disp_bad} displacements skipped (bad base face)"));
+    }
+    if let Some(d) = disps.as_ref().filter(|d| d.multiblend > 0) {
+        notes.push(format!("{} four-way blend displacements, first layer only", d.multiblend));
+    }
     Built {
         mesh: Mesh {
             batches,
             textures: images,
             anim,
-            atlas: Image { w: 4, h: 4, rgba: vec![255; 64] },
+            atlas,
             faces,
             missing: missing.into_iter().collect(),
             points,
             nudged: 0,
             names,
-            hdr: None,
+            hdr,
             casters: Vec::new(),
             caster_idx: Vec::new(),
             point_cell: None,
@@ -398,7 +591,9 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         materials: stats,
         faces,
         dropped: total - faces,
-        displacements: disps,
+        displacements: ndisp,
         brush_ents: draws.len() - 1,
+        lightmap,
+        notes,
     }
 }
