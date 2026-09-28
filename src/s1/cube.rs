@@ -92,7 +92,7 @@ impl Cubes {
             let mut samples = Vec::new();
             let leaves = map.read(LUMP_LEAFS, 56, |r, o| {
                 let (mins, maxs) = bounds(r, o);
-                (Leaf { mins, maxs, count: 1, first: 0 }, cube_at(&r.data[o + 32..o + 56]))
+                (Leaf { mins, maxs, count: 1, first: 0 }, cube_at(&r.data[o + 30..o + 54]))
             })?;
             let leaves = leaves
                 .into_iter()
