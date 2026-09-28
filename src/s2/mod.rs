@@ -41,6 +41,23 @@ pub struct Extra {
     phys: OnceLock<Result<crate::phys::Phys, String>>,
     pub radar: Option<crate::radar::Official>,
     pub radar_err: Option<String>,
+    pub stats: LoadStats,
+}
+
+#[derive(Default)]
+pub struct LoadStats {
+    pub bad_models: Vec<String>,
+    pub missing: Vec<String>,
+    pub draws: usize,
+    pub dropped: usize,
+    pub materials: usize,
+    pub models: usize,
+    pub tris: usize,
+    pub lightmap: Option<(u32, u32)>,
+    pub probes: usize,
+    pub legacy_ents: usize,
+    pub disabled: Vec<(String, DVec3)>,
+    pub raised: Vec<usize>,
 }
 
 impl Extra {
@@ -148,15 +165,17 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
             None
         }
     };
+    let mut raised = Vec::new();
     if let Some(m) = &navmesh {
         let mut moved = 0;
-        for e in bsp.entities.iter_mut().filter(|e| crate::reach::SEED_CLASSES.contains(&e.class())) {
+        for (i, e) in bsp.entities.iter_mut().enumerate().filter(|(_, e)| crate::reach::SEED_CLASSES.contains(&e.class())) {
             let Some(o) = e.origin() else { continue };
             let ring = [(0.0, 0.0), (24.0, 0.0), (-24.0, 0.0), (0.0, 24.0), (0.0, -24.0), (48.0, 0.0), (-48.0, 0.0), (0.0, 48.0), (0.0, -48.0)];
             let found = ring.iter().find_map(|&(dx, dy)| m.floor_below(o.x as f32 + dx, o.y as f32 + dy, o.z as f32 + SPAWN_REACH));
             if let Some(z) = found {
                 e.0.insert("origin".into(), format!("{} {} {}", o.x, o.y, z as f64 + crate::nav::STAND_OFS));
                 moved += 1;
+                raised.push(i);
             }
         }
         log(format!("{moved} spawn points raised to nav floor + {}", crate::nav::STAND_OFS));
@@ -190,7 +209,8 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
             (None, Some(format!("{e:#}")))
         }
     };
-    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err }));
+    let stats = LoadStats { legacy_ents: lumps.legacy, disabled: lumps.disabled.clone(), raised, ..Default::default() };
+    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err, stats }));
     let fs = &bsp.cs2.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");
@@ -198,7 +218,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let lightmap = match light::bake(fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {
         Ok(Some(b)) => {
             log(b.info);
-            Some((b.lightmap, b.hdr))
+            Some((b.lightmap, b.hdr, b.size))
         }
         Ok(None) => {
             log("no baked lighting; use --relight".into());
@@ -213,7 +233,8 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let crop = if opts.auto_crop { crop_box(&bsp, log) } else { None };
     tm.lap("crop");
     let crop = crop.map(|[x0, y0, x1, y1]| [x0 - CROP_PAD, y0 - CROP_PAD, x1 + CROP_PAD, y1 + CROP_PAD]);
-    let (lightmap, hdr) = lightmap.unzip();
+    let lm_size = lightmap.as_ref().map(|l| l.2);
+    let (lightmap, hdr) = lightmap.map(|l| (l.0, l.1)).unzip();
     let probes = if hdr.is_some() {
         match probe::Probes::load(fs, &lumps.ents) {
             Ok(p) => p,
@@ -250,5 +271,19 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         built.dropped,
         t0.elapsed().as_secs_f64()
     ));
+    if let Some(x) = bsp.cs2.as_mut() {
+        x.stats = LoadStats {
+            bad_models: built.bad_models,
+            missing: built.mesh.missing.clone(),
+            draws: built.draws,
+            dropped: built.dropped,
+            materials: built.materials,
+            models: built.models,
+            tris: built.mesh.faces,
+            lightmap: lm_size,
+            probes: nprobe,
+            ..std::mem::take(&mut x.stats)
+        };
+    }
     Ok((bsp, built.mesh))
 }
