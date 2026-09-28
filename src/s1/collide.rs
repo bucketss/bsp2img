@@ -268,10 +268,7 @@ pub fn load(fs: &Fs, map: &Map) -> Result<Phys> {
     }
     let hulls: Vec<Option<(Class, Hull)>> = jobs
         .par_iter()
-        .map(|&(k, _)| match class(br.contents(k)) {
-            Some(c) => Some((c, br.hull(k))),
-            None => None,
-        })
+        .map(|&(k, _)| class(br.contents(k)).map(|c| (c, br.hull(k))))
         .collect();
     for ((_, xf), h) in jobs.iter().zip(&hulls) {
         match h {

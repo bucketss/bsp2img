@@ -155,6 +155,37 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore]
+    fn written_exports() {
+        let root = std::path::PathBuf::from(std::env::var("RADAR_OUT").unwrap());
+        let mut n = 0;
+        let mut dirs = vec![root];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path()) {
+                if e.is_dir() {
+                    dirs.push(e);
+                    continue;
+                }
+                let name = e.file_name().unwrap().to_string_lossy().to_lowercase();
+                if name.ends_with("_radar.vtf") || name.ends_with("_radar.dds") {
+                    let im = decode(&name, &std::fs::read(&e).unwrap(), 4096).unwrap();
+                    let png = image::open(e.with_extension("png")).unwrap().to_rgba8();
+                    assert_eq!((im.w as u32, im.h as u32), png.dimensions());
+                    assert!(im.rgba == png.as_raw().as_slice(), "{}", e.display());
+                    n += 1;
+                } else if name.ends_with(".txt") && !name.ends_with("_timing.txt") {
+                    let stem = name.trim_end_matches(".txt");
+                    let o = parse(&std::fs::read(&e).unwrap(), stem).unwrap();
+                    println!("{}: {} sections, icons {:?}", e.display(), o.sections.len(), o.icons.iter().map(|i| i.0.as_str()).collect::<Vec<_>>());
+                    n += 1;
+                }
+            }
+        }
+        println!("{n} files checked");
+        assert!(n > 0);
+    }
+
     fn pak(bsp: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
         use crate::s2::buf::{u16_, u32_};
         let f = std::fs::read(bsp).unwrap();
