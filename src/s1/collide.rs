@@ -238,8 +238,8 @@ pub fn phy_hulls(fs: &Fs, mdl: &str) -> Option<Vec<Hull>> {
 }
 
 pub fn shape(fs: &Fs, mdl: &str, vphysics: bool) -> Option<Shape> {
-    if vphysics && let Some(h) = phy_hulls(fs, mdl) {
-        return Some(Shape::Hulls(h));
+    if vphysics {
+        return phy_hulls(fs, mdl).map(Shape::Hulls);
     }
     mdl_box(fs, mdl).map(|(lo, hi)| Shape::Box(lo, hi))
 }

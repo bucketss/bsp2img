@@ -28,6 +28,7 @@ pub const LUMP_MODELS: usize = 14;
 pub const LUMP_LEAFFACES: usize = 16;
 pub const LUMP_LEAFBRUSHES: usize = 17;
 pub const LUMP_BRUSHES: usize = 18;
+pub const LUMP_AREAS: usize = 20;
 pub const LUMP_BRUSHSIDES: usize = 19;
 pub const LUMP_DISPINFO: usize = 26;
 pub const LUMP_DISP_VERTS: usize = 33;

@@ -1,11 +1,19 @@
 #![allow(dead_code)]
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Once;
 
 use anyhow::{Result, anyhow, bail};
 use vmdl::mdl::ModelFlags;
 use vmdl::vtx::StripFlags;
 use vmdl::{Mdl, Vtx, Vvd};
+
+static HOOK: Once = Once::new();
+
+thread_local! {
+    static QUIET: Cell<bool> = const { Cell::new(false) };
+}
 
 pub const VTX_EXTS: [&str; 4] = [".dx90.vtx", ".vtx", ".dx80.vtx", ".sw.vtx"];
 
@@ -73,9 +81,23 @@ impl Model {
     }
 
     pub fn parse(mdl: &[u8], vvd: &[u8], vtx: &[u8]) -> Result<Model> {
-        match catch_unwind(AssertUnwindSafe(|| build(mdl, vvd, vtx))) {
+        HOOK.call_once(|| {
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |i| {
+                if !QUIET.with(Cell::get) {
+                    prev(i)
+                }
+            }));
+        });
+        QUIET.with(|q| q.set(true));
+        let r = catch_unwind(AssertUnwindSafe(|| build(mdl, vvd, vtx)));
+        QUIET.with(|q| q.set(false));
+        match r {
             Ok(r) => r,
-            Err(_) => bail!("model parser panicked"),
+            Err(e) => {
+                let why = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_default();
+                bail!("model parser panicked: {why}")
+            }
         }
     }
 

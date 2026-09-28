@@ -109,7 +109,7 @@ impl ReadRelative for AnimationDescription {
             let (animation, next_offset) = if header.animation_block == 0 {
                 read_animation(data, offset, header.frame_count as usize)?
             } else {
-                todo!("read animation from animation block");
+                break;
             };
             animations.push(animation);
             if next_offset == 0 {
