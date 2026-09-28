@@ -1,8 +1,4 @@
-#![allow(dead_code)]
-
-use std::path::Path;
-
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use rayon::prelude::*;
 
 use crate::s2::buf::{slice, u32_};
@@ -219,13 +215,27 @@ pub fn decode(b: &[u8], max_dim: usize) -> Result<Image> {
     Ok(Image { w, h, rgba })
 }
 
-pub fn read(path: &Path, max_dim: usize) -> Result<Image> {
-    let b = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    decode(&b, max_dim).with_context(|| format!("decoding {}", path.display()))
+pub fn encode_bgra(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
+    let mut o = vec![0u8; 128];
+    let mut put = |at: usize, v: u32| o[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    for (at, v) in [(4, 124), (8, 0x100f), (12, h as u32), (16, w as u32), (20, w as u32 * 4), (28, 1), (76, 32), (80, 0x41), (88, 32)] {
+        put(at, v);
+    }
+    for (at, v) in [(92, 0xff0000), (96, 0xff00), (100, 0xff), (104, 0xff000000), (108, 0x1000)] {
+        put(at, v);
+    }
+    o[..4].copy_from_slice(b"DDS ");
+    o.reserve(w * h * 4);
+    for p in rgba.chunks_exact(4) {
+        o.extend([p[2], p[1], p[0], p[3]]);
+    }
+    o
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     fn header(w: u32, h: u32, mips: u32, pf: u32, four: &[u8; 4], bits: u32, masks: [u32; 4]) -> Vec<u8> {

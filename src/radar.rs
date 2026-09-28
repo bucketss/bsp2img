@@ -358,7 +358,9 @@ pub fn icons(bsp: &crate::bsp::Bsp, frame: &Radar, info: Option<&Official>) -> V
         }
         _ => sites.sort_by(|p, q| p.x.total_cmp(&q.x)),
     }
-    for (p, k) in sites.iter().zip(["bombA", "bombB"]) {
+    let single = sites.len() == 1 && info.is_some_and(|o| o.icon("bomb").is_some() && o.icon("bombA").is_none());
+    let keys: &[&str] = if single { &["bomb"] } else { &["bombA", "bombB"] };
+    for (p, k) in sites.iter().zip(keys) {
         out.push((k.to_string(), norm(p.x, p.y)));
     }
     let hostages = bsp.entities.iter().filter(|e| matches!(e.class(), "hostage_entity" | "info_hostage_spawn"));

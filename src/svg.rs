@@ -253,6 +253,53 @@ fn auto_planes(nav: &Nav, keep: &[bool], levels: &[(f64, f64, f64)], max: usize)
     planes
 }
 
+pub fn place_text(name: &str) -> String {
+    let c: Vec<char> = name.chars().map(|c| if c == '_' { ' ' } else { c }).collect();
+    let mut out = String::new();
+    for (i, &ch) in c.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|k| c[k]);
+        let next = c.get(i + 1);
+        let split = ch.is_uppercase()
+            && prev.is_some_and(|p| p.is_lowercase() || p.is_ascii_digit() || (p.is_uppercase() && next.is_some_and(|n| n.is_lowercase())));
+        if split {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub fn place_labels(bsp: &crate::bsp::Bsp, cuts: &Cuts) -> Vec<(String, glam::DVec3)> {
+    let Some(x) = &bsp.extra else { return Vec::new() };
+    let (Some(m), Some(pl)) = (&x.nav, &x.places) else { return Vec::new() };
+    let mut groups: HashMap<&str, Vec<(glam::DVec3, f64)>> = HashMap::new();
+    for (k, a) in m.areas.iter().enumerate() {
+        let Some(name) = pl.of(k) else { continue };
+        let n = a.poly.len().max(1) as f64;
+        let c = a.poly.iter().fold(glam::DVec3::ZERO, |s, p| s + glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)) / n;
+        let (lo, hi) = a.poly.iter().fold((DVec2::splat(f64::INFINITY), DVec2::splat(f64::NEG_INFINITY)), |(l, h), p| {
+            let q = DVec2::new(p[0] as f64, p[1] as f64);
+            (l.min(q), h.max(q))
+        });
+        let w = ((hi - lo).x * (hi - lo).y).max(1.0);
+        groups.entry(name).or_default().push((c, w));
+    }
+    let [cx0, cy0, cx1, cy1] = cuts.clip;
+    let mut out: Vec<(String, glam::DVec3)> = groups
+        .into_iter()
+        .filter_map(|(name, v)| {
+            let tw: f64 = v.iter().map(|a| a.1).sum();
+            let mid = v.iter().fold(glam::DVec3::ZERO, |s, a| s + a.0 * a.1) / tw;
+            let d = |p: glam::DVec3| (p.truncate() - mid.truncate()).length() + (p.z - mid.z).abs() * 0.5;
+            let best = v.iter().map(|a| a.0).min_by(|a, b| d(*a).total_cmp(&d(*b)))?;
+            let inside = best.z >= cuts.zmin && best.z <= cuts.zmax && best.x >= cx0 && best.x <= cx1 && best.y >= cy0 && best.y <= cy1;
+            inside.then(|| (place_text(name), best))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 pub fn export_svg(
     r: &mut Renderer,
     scene: &Scene,
@@ -556,6 +603,19 @@ pub fn export_svg(
     writeln!(s, "</g>")?;
 
     layer(&mut s, "labels", "labels", "");
+    let labels = place_labels(bsp, cuts);
+    if !labels.is_empty() {
+        rep.log(format!("  svg: {} nav place labels", labels.len()));
+    }
+    for (t, p) in labels {
+        writeln!(
+            s,
+            r##"<text x="{}" y="{}" font-family="sans-serif" font-size="32" text-anchor="middle" fill="#333" stroke="#fff" stroke-width="5" paint-order="stroke">{}</text>"##,
+            num(p.x),
+            num(-p.y + 11.0),
+            esc(&t)
+        )?;
+    }
     writeln!(s, "</g>")?;
     writeln!(s, "</svg>")?;
 
