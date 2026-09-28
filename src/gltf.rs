@@ -530,11 +530,13 @@ struct Indexed {
     idx: Vec<u32>,
 }
 
+type Corner = ([f32; 3], [f32; 3], [f32; 2], [f32; 2], [f32; 3]);
+
 fn indexed(verts: &[Vertex], uv0: &dyn Fn(usize, &Vertex) -> [f32; 2], uv1: bool, vl: Option<VertexLight>) -> Indexed {
     let mut map: HashMap<[u32; 13], u32> = HashMap::new();
     let mut o = Indexed::default();
     for (ti, tri) in verts.chunks_exact(3).enumerate() {
-        let conv: Vec<([f32; 3], [f32; 3], [f32; 2], [f32; 2], [f32; 3])> = tri
+        let conv: Vec<Corner> = tri
             .iter()
             .enumerate()
             .map(|(k, v)| {

@@ -467,8 +467,8 @@ fn src_limits(map: &Map, entities: usize) -> Vec<SrcLimit> {
         .map(|&(key, label, lump, size, sdk, go)| {
             let len = lump_len(map, lump);
             let size = match size {
-                0 if map.lumps[lump].version == 0 && len % 56 == 0 => 56,
-                0 if len % 32 == 0 => 32,
+                0 if map.lumps[lump].version == 0 && len.is_multiple_of(56) => 56,
+                0 if len.is_multiple_of(32) => 32,
                 0 => 56,
                 n => n,
             };
