@@ -47,7 +47,7 @@ fn hdr(d: &[u8], compressed: bool) -> Result<Face> {
 fn face(fs: &Fs, name: &str, suffix: &str) -> Result<Face> {
     let m = material(fs, name, suffix)?;
     for (k, compressed) in [("$hdrcompressedtexture", true), ("$hdrbasetexture", false)] {
-        if let Some(Ok(f)) = m.texture(k).filter(|t| fs.has(t)).map(|t| fs.read(&t).map_err(anyhow::Error::from).and_then(|d| hdr(&d, compressed))) {
+        if let Some(Ok(f)) = m.texture(k).filter(|t| fs.has(t)).map(|t| fs.read(&t).and_then(|d| hdr(&d, compressed))) {
             return Ok(f);
         }
     }

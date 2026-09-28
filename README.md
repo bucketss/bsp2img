@@ -15,7 +15,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 
 ## CS:S and CS:GO
 
-`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces only so far: no displacements, props or lightmaps. `--sky` draws the map's `skyname`.
+`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them); no props yet. Four-way blends show their first layer. `--sky` draws the map's `skyname`, HDR skies included.
 
 ## GUI
 
