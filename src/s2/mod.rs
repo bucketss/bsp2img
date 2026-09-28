@@ -76,7 +76,7 @@ fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
 }
 
 pub fn is_vpk(path: &Path) -> bool {
-    path.extension().is_some_and(|x| x.eq_ignore_ascii_case("vpk"))
+    path.extension().is_some_and(|x| x.eq_ignore_ascii_case("vpk")) || vpk::is_loose(path)
 }
 
 fn brush_model(m: &str, map: &str) -> bool {
