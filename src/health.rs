@@ -81,6 +81,19 @@ const COVER_MIN: f64 = 0.99;
 const ICON_FAR: f64 = 512.0;
 const ALIGN_MARGIN: f64 = 0.04;
 const SHORT_LIST: usize = 10;
+const CS2_COLS: [&str; 11] = [
+    "failed_models",
+    "missing_materials",
+    "draws",
+    "triangles",
+    "comp_t",
+    "comp_ct",
+    "disabled_spawns",
+    "min_spawn_gap",
+    "spawns_in_collision",
+    "collision_holes",
+    "radar_img",
+];
 const GREEN: [u8; 3] = [70, 190, 90];
 const AMBER: [u8; 3] = [240, 170, 40];
 const RED: [u8; 3] = [230, 60, 50];
@@ -343,6 +356,12 @@ pub struct RadarCheck {
     pub cover: Option<(f64, f64)>,
     pub icons: Vec<(String, Option<f64>)>,
     pub align: Option<String>,
+}
+
+impl RadarCheck {
+    fn images_ok(&self) -> bool {
+        !self.images.is_empty() && self.images.iter().all(|i| i.1.is_some())
+    }
 }
 
 pub struct GoldHealth {
@@ -1124,7 +1143,7 @@ impl Health {
 
     pub fn csv_header() -> String {
         let mut cols: Vec<String> = [
-            "map", "error", "warnings", "vis_bytes", "lighting_bytes", "unlit_faces", "lightable_faces", "t_spawns",
+            "map", "engine", "error", "warnings", "vis_bytes", "lighting_bytes", "unlit_faces", "lightable_faces", "t_spawns",
             "ct_spawns", "spawns_off_ground", "bombsites", "hostages", "rescue_zones", "vip_starts", "vip_escapes",
             "escape_zones", "buyzones", "missing_wads", "missing_textures", "sky_missing", "missing_files", "ov_txt",
             "ov_bmp", "ov_tga", "bmp_index255_px", "res", "res_txt", "res_bmp", "res_tga", "walkable_m2", "open_radius",
@@ -1135,17 +1154,18 @@ impl Health {
             cols.push(key.to_string());
             cols.push(format!("{key}_pct"));
         }
+        cols.extend(CS2_COLS.map(String::from));
         cols.join(",")
     }
 
     pub fn csv_row(&self) -> String {
         match &self.engine {
             Engine::Gold(g) => self.gold_row(g),
-            Engine::Cs2(_) => self.cs2_row(),
+            Engine::Cs2(c) => self.cs2_row(c),
         }
     }
 
-    fn cs2_row(&self) -> String {
+    fn cs2_row(&self, c: &Cs2Health) -> String {
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
         let (off, m2, rad) = match &self.nav {
             Ok(n) => (
@@ -1158,6 +1178,7 @@ impl Health {
         let e = String::new;
         let mut cols = vec![
             self.name.clone(),
+            "cs2".to_string(),
             match &self.nav {
                 Err(e) => csv_quote(&format!("nav: {e}")),
                 _ => String::new(),
@@ -1172,8 +1193,24 @@ impl Health {
             off,
         ];
         cols.extend(self.objectives.iter().map(|(_, n)| n.to_string()));
-        cols.extend([self.buyzones.to_string(), e(), e(), b(!self.sky_found), e(), e(), e(), e(), e(), e(), e(), e(), e(), m2, rad]);
+        let ntex = c.missing_textures.len().to_string();
+        cols.extend([self.buyzones.to_string(), e(), ntex, b(!self.sky_found), e(), b(c.radar.txt), e(), e(), e(), e(), e(), e(), e(), m2, rad]);
         cols.extend(std::iter::repeat_n(String::new(), LIMITS.len() * 2));
+        let gap = c.gaps.iter().flatten().map(|g| g.0).reduce(f64::min);
+        let holes = c.collision.as_ref().ok().filter(|k| k.checked > 0).map(|k| k.holes);
+        cols.extend([
+            c.bad_models.len().to_string(),
+            c.missing_materials.len().to_string(),
+            c.draws.to_string(),
+            c.tris.to_string(),
+            c.comp[0].to_string(),
+            c.comp[1].to_string(),
+            (c.disabled[0] + c.disabled[1]).to_string(),
+            gap.map_or(String::new(), |g| format!("{g:.0}")),
+            c.stuck.as_ref().map_or(String::new(), |s| s.len().to_string()),
+            holes.map_or(String::new(), |h| h.to_string()),
+            b(c.radar.images_ok()),
+        ]);
         cols.join(",")
     }
 
@@ -1189,6 +1226,7 @@ impl Health {
         };
         let mut cols = vec![
             self.name.clone(),
+            "goldsrc".to_string(),
             match &self.nav {
                 Err(e) => csv_quote(&format!("walk grid: {e}")),
                 _ => String::new(),
@@ -1228,6 +1266,7 @@ impl Health {
             cols.push(l.count.to_string());
             cols.push(format!("{:.1}", l.pct()));
         }
+        cols.extend(std::iter::repeat_n(String::new(), CS2_COLS.len()));
         cols.join(",")
     }
 }
