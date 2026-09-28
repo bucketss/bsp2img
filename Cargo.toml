@@ -27,6 +27,8 @@ lz4_flex = "0.14"
 ruzstd = "0.9"
 meshopt = "0.6"
 bcdec_rs = "0.2"
+memmap2 = "0.9"
+demoparser = { package = "parser", path = "third_party/demoparser/parser" }
 
 [build-dependencies]
 embed-resource = "3"

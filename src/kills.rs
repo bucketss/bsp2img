@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::bsp::Bsp;
-use crate::demo::{self, Death, Event, Team};
+use crate::demo::{self, Death, Event, Kind, Team};
 use crate::grid::{CT, GridFrame, T, Text, dark_base, line, outline, paint, rect, spawn_dots};
 use crate::health::csv_quote;
 use crate::nav::{NONE, Nav, STAND_OFS, STEP, zones};
@@ -138,7 +138,8 @@ fn parse_demo(p: &Path, every: f32, stop: &AtomicBool) -> Result<DemoData> {
     let mut deaths = Vec::new();
     let mut presence = Vec::new();
     let mut wins = [0u32; 3];
-    let s = demo::scan(p, every, &|| stop.load(Ordering::Relaxed), &mut |e| match e {
+    let cancel = || stop.load(Ordering::Relaxed);
+    let mut on = |e| match e {
         Event::Death(d) => deaths.push(d),
         Event::Presence(x) => presence.push(Sample {
             pos: x.pos.map(|v| v.round().clamp(-32768.0, 32767.0) as i16),
@@ -152,8 +153,12 @@ fn parse_demo(p: &Path, every: f32, stop: &AtomicBool) -> Result<DemoData> {
                 _ => 2,
             }] += 1
         }
-    })?;
-    let mut notes: Vec<String> = s.desyncs.iter().map(|d| format!("skipped the rest of a frame: {d}")).collect();
+    };
+    let (s, lost) = match demo::kind(p)? {
+        Kind::GoldSrc => (demo::scan(p, every, &cancel, &mut on)?, "skipped the rest of a frame"),
+        Kind::Cs2 => (demo::cs2::scan(p, every, &cancel, &mut on)?, "parse error"),
+    };
+    let mut notes: Vec<String> = s.desyncs.iter().map(|d| format!("{lost}: {d}")).collect();
     if s.truncated {
         notes.push("file ends early".into());
     }
@@ -550,9 +555,6 @@ pub fn export_kills(
     rep: &mut Report,
     p0: f32,
 ) -> Result<(Vec<PathBuf>, KillStats)> {
-    if bsp.is_cs2() {
-        anyhow::bail!("CS2 demos are not supported");
-    }
     let step = |rep: &mut Report, f: f32| rep.step(p0 + (1.0 - p0) * f);
     step(rep, 0.0)?;
     let t0 = std::time::Instant::now();
@@ -796,7 +798,7 @@ pub fn export_kills(
     let n_drawn = drawn.iter().filter(|&&b| b).count();
 
     let mut txt = String::new();
-    writeln!(txt, "{name} kills from HLTV demos")?;
+    writeln!(txt, "{name} kills from {} demos", if bsp.is_cs2() { "CS2" } else { "HLTV" })?;
     writeln!(txt, "{ndemos} demos, {rounds} rounds (T won {}, CT won {}, other {}), {} of play", wins[0], wins[1], wins[2], mmss(secs))?;
     if !filt.is_empty() {
         writeln!(txt, "filters: {filt}")?;

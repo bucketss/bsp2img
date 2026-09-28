@@ -48,7 +48,7 @@ pub enum Cmd {
     Slice(SliceArgs),
     #[command(about = "Map how fast each team reaches every spot from its spawns")]
     Timing(TimingArgs),
-    #[command(about = "Heatmaps of kills and player positions from HLTV demos")]
+    #[command(about = "Heatmaps of kills and player positions from HLTV and CS2 demos")]
     Kills(KillsArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
@@ -627,8 +627,8 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
     }
     let heads: Vec<(PathBuf, String)> = files
         .iter()
-        .filter_map(|f| match demo::header(f) {
-            Ok(h) => Some((f.clone(), h.map)),
+        .filter_map(|f| match demo::map_name(f) {
+            Ok(m) => Some((f.clone(), m)),
             Err(e) => {
                 println!("skipped {}: {e:#}", f.display());
                 None

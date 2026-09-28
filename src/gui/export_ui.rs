@@ -290,8 +290,8 @@ impl App {
             return;
         }
         for f in expand_demos(&[self.kill_dir.trim().to_string()]) {
-            match demo::header(&f) {
-                Ok(h) if h.map.eq_ignore_ascii_case(&map) => self.kill_list.push((f, true)),
+            match demo::map_name(&f) {
+                Ok(m) if m.eq_ignore_ascii_case(&map) => self.kill_list.push((f, true)),
                 _ => self.kill_others += 1,
             }
         }

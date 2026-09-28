@@ -1,0 +1,15 @@
+Upstream: https://github.com/LaihoE/demoparser
+Commit: 9ddb3739c65664392df6120337374f94511f8ea5 (2026-09-21)
+Copied: src/parser -> parser, src/csgoproto -> csgoproto, LICENSE
+
+Patches:
+- parser/test_demo.dem: not copied
+- parser/build.rs: deleted
+- parser/src/e2e_test.rs: deleted, with its module lines in parser/src/lib.rs
+- parser/Cargo.toml: [profile.dev] and [profile.release] deleted
+- csgoproto/build.rs, csgoproto/src/main.rs: deleted
+- csgoproto/Cargo.toml: [build-dependencies] deleted
+- parser/src/lib.rs, csgoproto/src/lib.rs: #![allow(warnings, clippy::all)] added as the first line
+
+Updating: re-copy the two folders and LICENSE from upstream, re-apply these patches,
+then compare bsp2img kills against Python demoparser2 on a CS2 demo.
