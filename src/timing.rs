@@ -227,11 +227,12 @@ pub fn export_timing(
     rep.step(0.5)?;
     let reach = (0..nav.len()).filter(|&n| dt[n].is_finite() || dct[n].is_finite()).count();
     rep.log(format!(
-        "  nav: {} floor cells, {} reachable, {} ladders, {} blocking entities, spawns placed T {}/{} CT {}/{} ({:.1}s)",
+        "  nav: {} floor cells, {} reachable, {} ladders, {} blocking entities{}, spawns placed T {}/{} CT {}/{} ({:.1}s)",
         nav.len(),
         reach,
         nav.ladders,
         nav.blockers,
+        nav.removed.as_ref().map_or(String::new(), |r| format!(", {} links removed by nav connections", r.len())),
         st.len(),
         count("info_player_deathmatch"),
         sct.len(),
