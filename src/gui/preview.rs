@@ -349,16 +349,21 @@ impl App {
                 }
             }
             if matches!(self.mode, Mode::Top | Mode::Overview) {
+                let (spawns, grid, objectives) = if self.mode == Mode::Top {
+                    (&mut self.top_spawns, &mut self.top_grid, &mut self.top_objectives)
+                } else {
+                    (&mut self.ov_spawns, &mut self.ov_grid, &mut self.ov_objectives)
+                };
                 let b = ui
-                    .button(format!("Spawns: {}", self.top_spawns.key()))
+                    .button(format!("Spawns: {}", spawns.key()))
                     .on_hover_text("click: next, right-click: previous. Comp = the lowest-priority spawns each team fills first (CS2); a black dot marks them");
                 if b.clicked() {
-                    self.top_spawns = self.top_spawns.step(1);
+                    *spawns = spawns.step(1);
                 } else if b.secondary_clicked() {
-                    self.top_spawns = self.top_spawns.step(2);
+                    *spawns = spawns.step(2);
                 }
-                ui.checkbox(&mut self.top_grid, "Grid");
-                ui.checkbox(&mut self.top_objectives, "Objectives");
+                ui.checkbox(grid, "Grid");
+                ui.checkbox(objectives, "Objectives");
             }
             ui.weak(match self.mode {
                 Mode::Iso => "drag rotate, right-drag pan, wheel zoom",
@@ -642,6 +647,8 @@ impl App {
 
     fn overlay_marks(&self, painter: &egui::Painter, f: &Frame, keep: &dyn Fn(&Marker) -> bool) {
         let bottom = self.mode == Mode::Overview;
+        let (spawns, grid, objectives) =
+            if bottom { (self.ov_spawns, self.ov_grid, self.ov_objectives) } else { (self.top_spawns, self.top_grid, self.top_objectives) };
         let rect = f.rect;
         let font = FontId::monospace(11.0);
         let axis = |v: DVec3| if v.x.abs() > 0.5 { ("x", v.x.signum()) } else { ("y", v.y.signum()) };
@@ -655,7 +662,7 @@ impl App {
         };
         let c = rect.center();
         let mut a = (a0 / step).ceil() * step;
-        while self.top_grid && a < a1 {
+        while grid && a < a1 {
             let (w, x) = (a * hs + 0.0, c.x + ((a - f.view.cx) / f.upp) as f32);
             painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, line(w)));
             let (at, al) = if bottom { (Pos2::new(x + 3.0, rect.bottom() - 3.0), Align2::LEFT_BOTTOM) } else { (Pos2::new(x + 3.0, rect.top() + 3.0), Align2::LEFT_TOP) };
@@ -663,15 +670,15 @@ impl App {
             a += step;
         }
         let mut b = (b0 / step).ceil() * step;
-        while self.top_grid && b < b1 {
+        while grid && b < b1 {
             let (w, y) = (b * vs + 0.0, c.y - ((b - f.view.cy) / f.upp) as f32);
             painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0, line(w)));
             painter.text(Pos2::new(rect.left() + 3.0, y + 3.0), Align2::LEFT_TOP, format!("{va} {w:.0}"), font.clone(), Color32::WHITE);
             b += step;
         }
         if let Some(s) = &self.scene {
-            let shown = |m: &Marker| match (m.spawn, self.top_spawns) {
-                (false, _) => self.top_objectives,
+            let shown = |m: &Marker| match (m.spawn, spawns) {
+                (false, _) => objectives,
                 (true, SpawnShow::All) => true,
                 (true, SpawnShow::Comp) => m.comp != Some(false),
                 (true, SpawnShow::None) => false,
