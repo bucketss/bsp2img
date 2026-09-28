@@ -26,6 +26,7 @@ mod prof;
 mod quant;
 mod radar;
 mod reach;
+mod s1;
 mod s2;
 mod render;
 mod scene;
