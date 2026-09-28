@@ -12,11 +12,14 @@ use rayon::prelude::*;
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
 use crate::nav::{BLOCKERS, Nav, STAND_OFS};
 use crate::paths::{Partial, free_name};
+use crate::phys::{Mask, Phys};
 use crate::render::Cuts;
 use crate::scene::Report;
 
 const NAV_CELL: f64 = 8.0;
 const HEADROOM: f64 = 36.0;
+const OPEN_TOP: f64 = 256.0;
+const NAV_INSET: f64 = 24.0;
 const MIN_PRINT_MM: f64 = 0.8;
 const SMOOTH_MIN: f32 = 0.25;
 const MAX_VOXELS: usize = 1_500_000_000;
@@ -60,6 +63,11 @@ fn brushes(bsp: &Bsp) -> Vec<Brush> {
             Some(Brush { model: mi, origin, lo: m.mins + origin, hi: m.maxs + origin })
         })
         .collect()
+}
+
+enum Solid<'a> {
+    Gold(&'a Bsp, Vec<Brush>),
+    Cs2(&'a Phys),
 }
 
 fn solid_at(bsp: &Bsp, br: &[Brush], p: DVec3) -> bool {
@@ -128,7 +136,14 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
         bail!("no walkable floor inside the cuts");
     }
     let floor = reach.iter().map(|&n| nav.nodes[n].z as f64).fold(f64::INFINITY, f64::min);
-    let ceil = reach.iter().map(|&n| nav.nodes[n].top as f64 + HEADROOM).fold(f64::NEG_INFINITY, f64::max);
+    let ceil = reach
+        .iter()
+        .map(|&n| {
+            let (z, t) = (nav.nodes[n].z as f64, nav.nodes[n].top as f64);
+            if t.is_finite() { t } else { z + OPEN_TOP }
+        })
+        .fold(f64::NEG_INFINITY, f64::max)
+        + HEADROOM;
     let top = ceil.min(cuts.zmax);
     if top <= floor + o.voxel {
         bail!("top {top:.0} is at or below the lowest floor {floor:.0}");
@@ -168,7 +183,8 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
                 && col_reach[ci as usize * nav.ny + cj as usize]
         })
         .collect();
-    let r = (o.wall / v).max(0.0);
+    let inset = if bsp.is_cs2() && o.wall > 0.0 { NAV_INSET } else { 0.0 };
+    let r = ((o.wall + inset) / v).max(0.0);
     let ri = r.floor() as i64;
     let offs: Vec<(i64, i64)> = (-ri..=ri)
         .flat_map(|a| (-ri..=ri).map(move |b| (a, b)))
@@ -206,13 +222,32 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
     Ok(Region { grid: Grid { n, lo, v, s: Vec::new() }, foot, floor, top })
 }
 
-fn classify(bsp: &Bsp, reg: &mut Region, base: f64) {
-    let br = brushes(bsp);
+fn classify(solid: &Solid, reg: &mut Region, base: f64) {
     let g = &mut reg.grid;
     let [nx, ny, nz] = g.n;
     let (lo, v) = (g.lo, g.v);
     let (floor, top, bottom) = (reg.floor, reg.top, reg.floor - base);
     let foot = &reg.foot;
+    let runs: Vec<Vec<(usize, usize)>> = match solid {
+        Solid::Gold(..) => Vec::new(),
+        Solid::Cs2(p) => (0..nx * ny)
+            .into_par_iter()
+            .map_init(Vec::new, |iv, k| {
+                if !foot[k] {
+                    return Vec::new();
+                }
+                let (x, y) = (lo.x + ((k % nx) as f64 + 0.5) * v, lo.y + ((k / nx) as f64 + 0.5) * v);
+                p.column(x, y, Mask::SOLID, iv);
+                iv.iter()
+                    .filter_map(|&(a, b)| {
+                        let z0 = ((a as f64 - lo.z) / v - 0.5).ceil().max(0.0);
+                        let z1 = ((b as f64 - lo.z) / v - 0.5).floor().min(nz as f64 - 1.0);
+                        (z0 <= z1).then_some((z0 as usize, z1 as usize))
+                    })
+                    .collect()
+            })
+            .collect(),
+    };
     let mut s = vec![0u8; nx * ny * nz];
     s.par_chunks_mut(nx).enumerate().for_each(|(row, line)| {
         let (j, z) = (row % ny, row / ny);
@@ -225,8 +260,12 @@ fn classify(bsp: &Bsp, reg: &mut Region, base: f64) {
             if !foot[i + nx * j] {
                 continue;
             }
-            let x = lo.x + (i as f64 + 0.5) * v;
-            *c = (zc < floor || solid_at(bsp, &br, DVec3::new(x, y, zc))) as u8;
+            let hit = zc < floor
+                || match solid {
+                    Solid::Gold(bsp, br) => solid_at(bsp, br, DVec3::new(lo.x + (i as f64 + 0.5) * v, y, zc)),
+                    Solid::Cs2(_) => runs[i + nx * j].iter().any(|&(a, b)| a <= z && z <= b),
+                };
+            *c = hit as u8;
         }
     });
     g.s = s;
@@ -673,17 +712,33 @@ pub fn export_stl(
     out: &Path,
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
-    if bsp.is_cs2() {
-        bail!("STL export is not supported for CS2 maps yet");
-    }
     if !(o.voxel >= 1.0) || !(o.print_width > 0.0) || o.wall < 0.0 || o.base < 0.0 {
         bail!("voxel must be at least 1, print width above 0, wall and base not negative");
     }
     let t0 = Instant::now();
     rep.step(0.0)?;
+    let mut tm = crate::prof::Timer::new("stl");
     let mut reg = region(bsp, cuts, o, rep)?;
+    tm.lap("region");
+    let solid = match &bsp.cs2 {
+        Some(x) => {
+            let p = x.phys()?;
+            let s = p.stats();
+            rep.log(format!(
+                "  collision: {} hulls, {} triangles, {} brush entities ({:.1}s)",
+                s.player_hulls(),
+                s.player_tris(),
+                s.ents,
+                s.secs
+            ));
+            Solid::Cs2(p)
+        }
+        None => Solid::Gold(bsp, brushes(bsp)),
+    };
+    tm.lap("collision");
     rep.step(0.15)?;
-    classify(bsp, &mut reg, o.base);
+    classify(&solid, &mut reg, o.base);
+    tm.lap("classify");
     let n = reg.grid.n;
     rep.log(format!(
         "  grid {}x{}x{} at {} units, floor {:.0}, top {:.0} ({:.1}s)",

@@ -27,7 +27,9 @@ pub struct Mask {
 
 impl Mask {
     pub const SOLID: Mask = Mask { solid: true, clip: false, decor: false };
+    #[allow(dead_code)]
     pub const PLAYER: Mask = Mask { solid: true, clip: true, decor: false };
+    #[allow(dead_code)]
     pub const ALL: Mask = Mask { solid: true, clip: true, decor: true };
 
     pub fn has(self, c: Class) -> bool {
@@ -78,14 +80,8 @@ impl PhysStats {
     pub fn player_hulls(&self) -> usize {
         self.hulls[0] + self.hulls[1]
     }
-    pub fn other_hulls(&self) -> usize {
-        self.hulls[2] + self.skipped_hulls
-    }
     pub fn player_tris(&self) -> usize {
         self.tris[0] + self.tris[1]
-    }
-    pub fn other_tris(&self) -> usize {
-        self.tris[2] + self.skipped_tris
     }
 }
 
@@ -206,7 +202,7 @@ fn tri_z(t: &Tri, x: f64, y: f64) -> Option<f32> {
     let w1 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
     let w2 = 1.0 - w0 - w1;
     let e = -1e-6;
-    (w0 >= e && w1 >= e && w2 >= e).then(|| (w0 * a.z + w1 * b.z + w2 * c.z) as f32)
+    (w0 >= e && w1 >= e && w2 >= e).then_some((w0 * a.z + w1 * b.z + w2 * c.z) as f32)
 }
 
 fn hull_z(h: &Hull, x: f64, y: f64) -> Option<(f32, f32)> {
@@ -377,6 +373,7 @@ impl Phys {
         merge(out);
     }
 
+    #[allow(dead_code)]
     pub fn box_solid(&self, lo: DVec3, hi: DVec3, want: Mask) -> bool {
         let n = self.tris.len();
         let (c, e) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
