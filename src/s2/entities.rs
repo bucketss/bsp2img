@@ -34,6 +34,7 @@ pub struct Ent {
 pub struct Lumps {
     pub ents: Vec<Ent>,
     pub legacy: usize,
+    pub disabled: Vec<(String, DVec3)>,
 }
 
 fn text(v: &Value) -> Option<String> {
@@ -89,7 +90,7 @@ fn is_true(kv: &HashMap<String, String>, k: &str) -> bool {
     kv.get(k).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
-fn normalize(vals: &Value) -> Option<Ent> {
+fn normalize(vals: &Value, disabled: &mut Vec<(String, DVec3)>) -> Option<Ent> {
     let mut kv: HashMap<String, String> = HashMap::new();
     for (k, v) in vals.obj() {
         if let Some(s) = text(v) {
@@ -99,6 +100,7 @@ fn normalize(vals: &Value) -> Option<Ent> {
     let cls = kv.get("classname").cloned().unwrap_or_default();
     let spawn = matches!(cls.as_str(), "info_player_terrorist" | "info_player_counterterrorist");
     if spawn && is_false(&kv, "enabled") {
+        disabled.push((cls, vec3(vals.get("origin"), 0.0)));
         return None;
     }
     let renamed = match cls.as_str() {
@@ -145,7 +147,7 @@ fn read_lump(fs: &Fs, name: &str, out: &mut Lumps, depth: usize) -> Result<()> {
             }
             continue;
         }
-        out.ents.extend(normalize(k3.get("values")));
+        out.ents.extend(normalize(k3.get("values"), &mut out.disabled));
     }
     if depth < 8 {
         for c in d.get("m_childLumps").arr() {
@@ -156,7 +158,7 @@ fn read_lump(fs: &Fs, name: &str, out: &mut Lumps, depth: usize) -> Result<()> {
 }
 
 pub fn load(fs: &Fs, lumps: &[String]) -> Result<Lumps> {
-    let mut out = Lumps { ents: Vec::new(), legacy: 0 };
+    let mut out = Lumps { ents: Vec::new(), legacy: 0, disabled: Vec::new() };
     for l in lumps {
         read_lump(fs, &l.to_lowercase().replace('\\', "/"), &mut out, 0)?;
     }

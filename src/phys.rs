@@ -372,7 +372,22 @@ impl Phys {
         merge(out);
     }
 
-    #[allow(dead_code)]
+    pub fn tops(&self, x: f64, y: f64, want: Mask, out: &mut Vec<f32>) {
+        out.clear();
+        let Some(c) = self.cell_of(x, y) else { return };
+        let n = self.tris.len();
+        for &r in self.cell_refs(c) {
+            let Some(h) = (r as usize).checked_sub(n).map(|k| &self.hulls[k]) else { continue };
+            if !want.has(h.class) || (x as f32) < h.lo.x || (x as f32) > h.hi.x || (y as f32) < h.lo.y || (y as f32) > h.hi.y {
+                continue;
+            }
+            out.extend(hull_z(h, x, y).map(|z| z.1).filter(|z| z.is_finite()));
+        }
+        let mut hits = Vec::new();
+        self.tri_hits(c, x, y, want, &mut hits);
+        out.extend(hits.iter().filter(|h| h.up).map(|h| h.z));
+    }
+
     pub fn box_solid(&self, lo: DVec3, hi: DVec3, want: Mask) -> bool {
         let n = self.tris.len();
         let (c, e) = ((lo + hi) / 2.0, (hi - lo) / 2.0);

@@ -242,6 +242,13 @@ pub enum Src {
 }
 
 impl Src {
+    pub fn path(&self) -> &Path {
+        match self {
+            Src::Vpk(v) => &v.path,
+            Src::Dir(d) => &d.root,
+        }
+    }
+
     fn has(&self, k: &str) -> bool {
         match self {
             Src::Vpk(v) => v.entries.contains_key(k),

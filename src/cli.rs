@@ -965,7 +965,7 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
         std::fs::create_dir_all(&a.c.out).ok();
         free_name(&a.c.out, "health_summary", ".csv")
     });
-    let mut header = String::new();
+    let header = crate::health::Health::csv_header();
     let mut rows = Vec::new();
     let mut failed = 0;
     for m in &maps {
@@ -985,16 +985,11 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
             Ok(res?.1)
         })();
         match res {
-            Ok(h) => {
-                if header.is_empty() {
-                    header = h.csv_header();
-                }
-                rows.push(h.csv_row());
-            }
+            Ok(h) => rows.push(h.csv_row()),
             Err(e) if summary.is_some() => {
                 failed += 1;
                 println!("  error: {e:#}");
-                rows.push(format!("{m},{}", csv_quote(&format!("{e:#}"))));
+                rows.push(format!("{m},,{}", csv_quote(&format!("{e:#}"))));
             }
             Err(e) => return Err(e),
         }

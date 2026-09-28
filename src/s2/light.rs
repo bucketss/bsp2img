@@ -22,6 +22,7 @@ pub struct Baked {
     pub lightmap: Lightmap,
     pub hdr: HdrLight,
     pub info: String,
+    pub size: (u32, u32),
 }
 
 fn nums(s: Option<&String>) -> Vec<f32> {
@@ -226,5 +227,6 @@ pub fn bake(fs: &Fs, world: &World, ents: &[Ent], light: &LightParams, cap: usiz
             curve: curve(light),
         },
         info,
+        size: (w as u32, h as u32),
     }))
 }
