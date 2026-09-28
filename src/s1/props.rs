@@ -52,6 +52,7 @@ pub struct Built {
     pub bad_models: Vec<String>,
     pub draws: usize,
     pub dropped: usize,
+    pub skipped: usize,
     pub tris: usize,
     pub vhv: usize,
     pub vhv_bad: usize,
@@ -524,7 +525,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
         .collect();
     tm.lap("fill");
     out.draws = groups.iter().map(|g| g.1.len()).sum();
-    out.dropped += skipped;
+    out.skipped = skipped;
     out.tris = batches.iter().map(|b| b.idx.len() / 3).sum();
     mesh.faces += out.tris;
     mesh.points.extend(sample_points(&batches));
@@ -595,19 +596,20 @@ fn sample_points(batches: &[Batch]) -> Vec<DVec3> {
 impl Built {
     pub fn summary(&self) -> String {
         format!(
-            "props: {} static + {} entity, {} models, {} draws ({} cropped), {} triangles, {} materials, {} new textures; lighting {} vhv, {} {} ambient cube{}",
+            "props: {} static + {} entity, {} models, {} draws ({} cropped, {} nodraw), {} triangles, {} materials, {} new textures; lighting {} vhv, {} {} ambient cube{}",
             self.static_props,
             self.ent_props,
             self.models,
             self.draws,
             self.dropped,
+            self.skipped,
             self.tris,
             self.materials,
             self.textures,
             self.vhv,
             self.cube_lit,
             if self.cube_hdr { "HDR" } else { "LDR" },
-            if self.vhv_bad > 0 { format!(", {} vhv unusable", self.vhv_bad) } else { String::new() }
+            if self.vhv_bad > 0 { format!(" ({} vhv files do not match their model)", self.vhv_bad) } else { String::new() }
         )
     }
 }
@@ -663,3 +665,4 @@ mod tests {
         }
     }
 }
+
