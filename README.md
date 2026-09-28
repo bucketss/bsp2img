@@ -6,6 +6,13 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 
 `--game` is the CS2 `game` folder or the install folder above it. `health` and `stl` are GoldSrc only. `--sky` draws the map's `env_sky`; NAME may be another sky material.
 
+| Map name | Source |
+|---|---|
+| `de_dust2` | `csgo\maps\de_dust2.vpk` |
+| `<addon>/<map>` | `csgo_addons\<addon>\maps\<map>.vpk` or loose `maps\<map>\world.vwrld_c` |
+| `workshop/<map>`, `<id>/<map>` | Subscribed workshop map in `steamapps\workshop\content\730` |
+| folder or `world.vwrld_c` | Loose compiled map |
+
 ## GUI
 
 `bsp2img` or `bsp2img gui <map>`. Settings are saved to `%APPDATA%\bsp2img\gui.cfg` on Windows, or `$XDG_CONFIG_HOME/bsp2img/gui.cfg` (default `~/.config/bsp2img/gui.cfg`) elsewhere.
