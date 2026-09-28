@@ -1438,7 +1438,7 @@ fn cs2_facts(h: &Health, c: &Cs2Health) -> Vec<(String, [u8; 3])> {
     }
     let far = r.icons.iter().filter(|(_, d)| d.is_some_and(|d| d > ICON_FAR)).count();
     if !r.icons.is_empty() {
-        v.push((format!("radar icons: {} of {} far from ours", far, r.icons.len()), if far == 0 { GREEN } else { AMBER }));
+        v.push((format!("radar icons: {} of {} far from spawns or sites", far, r.icons.len()), if far == 0 { GREEN } else { AMBER }));
     }
     match &h.nav {
         Ok(n) => {
