@@ -4,7 +4,7 @@ use super::buf::{half, slice, u16_, u32_};
 use super::vpk::Fs;
 use rayon::prelude::*;
 
-const HEAD: usize = 1 << 16;
+pub const HEAD: usize = 1 << 16;
 const CUBE: u16 = 0x10;
 
 pub struct Info {

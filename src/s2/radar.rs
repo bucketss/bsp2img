@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 
 use super::texture::{self, Image};
 use super::vpk::Fs;
-use crate::radar::{Official, stem};
+use crate::overview::{RADAR, Radar};
+use crate::radar::{DEFAULT, Official, stem};
 
 pub const DIR: &str = "panorama/images/overheadmaps/";
 const KINDS: [&str; 4] = ["_psd", "_tga", "_png", ""];
@@ -21,7 +22,24 @@ pub fn load(fs: &Fs, map: &str) -> Result<Option<Official>> {
     if o.name.is_empty() {
         o.name = map.to_string();
     }
+    o.frame = native(fs, map, DEFAULT, o.frame);
+    for s in &mut o.sections {
+        if let Some(f) = s.frame {
+            s.frame = Some(native(fs, map, &s.name, f));
+        }
+    }
     Ok(Some(o))
+}
+
+fn native(fs: &Fs, map: &str, section: &str, f: Radar) -> Radar {
+    let w = image_name(fs, map, section)
+        .and_then(|n| fs.read_limit(&n, texture::HEAD).ok())
+        .and_then(|h| texture::info(&h).ok())
+        .map_or(0, |i| i.w);
+    if w == 0 || w == RADAR as usize {
+        return f;
+    }
+    Radar { scale: f.scale * w as f64 / RADAR as f64, ..f }
 }
 
 pub fn image_name(fs: &Fs, map: &str, section: &str) -> Option<String> {
