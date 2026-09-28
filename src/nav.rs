@@ -2,11 +2,11 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use anyhow::{Result, bail};
-use glam::DVec3;
+use glam::{DVec2, DVec3};
 use rayon::prelude::*;
 
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
-use crate::navmesh::NavMesh;
+use crate::navmesh::{Links, NavMesh};
 
 pub const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
@@ -118,6 +118,9 @@ pub struct Nav {
     pub col: Vec<u32>,
     orth: Vec<[u32; 4]>,
     extra: Vec<Vec<(u32, f32)>>,
+    node_areas: Vec<u32>,
+    area_start: Vec<u32>,
+    pub removed: Option<Vec<(u32, u32)>>,
     pub ladders: usize,
     pub blockers: usize,
 }
@@ -129,6 +132,7 @@ const LADDER_PAD: DVec3 = DVec3::new(24.0, 24.0, 40.0);
 struct NavTri {
     p: [DVec3; 3],
     stand: bool,
+    area: u32,
 }
 
 impl NavTri {
@@ -150,7 +154,7 @@ impl Nav {
     pub fn build(bsp: &Bsp, cell: f64, speed: f64) -> Result<Nav> {
         if let Some(x) = &bsp.cs2 {
             return match &x.nav {
-                Some(m) => Nav::from_areas(m, cell, speed),
+                Some(m) => Nav::from_areas(m, cell, speed, std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height")),
                 None => bail!("map has no nav mesh"),
             };
         }
@@ -162,7 +166,7 @@ impl Nav {
         let nx = ((hi.x - lo.x) / cell).ceil().max(1.0) as usize;
         let ny = ((hi.y - lo.y) / cell).ceil().max(1.0) as usize;
         let nz = ((hi.z - lo.z) / DZ).ceil().max(1.0) as usize + 1;
-        let cols: Vec<Vec<Node>> = (0..nx * ny)
+        let cols: Vec<Vec<(Node, Vec<u32>)>> = (0..nx * ny)
             .into_par_iter()
             .map(|c| {
                 let x = lo.x + ((c / ny) as f64 + 0.5) * cell;
@@ -174,7 +178,7 @@ impl Nav {
                 let mut push = |floor: f64, top: f64| {
                     let feet = floor - CROUCH_OFS;
                     let stand = open(bsp, &bl, DVec3::new(x, y, feet + STAND_OFS + 0.5), 1);
-                    out.push(Node { z: feet as f32, top: (top - CROUCH_OFS) as f32, stand });
+                    out.push((Node { z: feet as f32, top: (top - CROUCH_OFS) as f32, stand }, Vec::new()));
                 };
                 for k in 0..nz {
                     let z = lo.z + k as f64 * DZ;
@@ -194,21 +198,21 @@ impl Nav {
             })
             .collect();
 
-        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, bl.len());
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, bl.len(), None);
         nav.add_ladders(bsp, speed);
         Ok(nav)
     }
 
-    pub fn from_areas(m: &NavMesh, cell: f64, speed: f64) -> Result<Nav> {
+    pub fn from_areas(m: &NavMesh, cell: f64, speed: f64, gate: bool) -> Result<Nav> {
         if m.areas.is_empty() {
             bail!("map has no nav mesh areas");
         }
         let v = |c: &[f32; 3]| DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64);
         let mut tris = Vec::new();
-        for a in &m.areas {
+        for (k, a) in m.areas.iter().enumerate() {
             let p: Vec<DVec3> = a.poly.iter().map(v).collect();
             for i in 1..p.len().saturating_sub(1) {
-                tris.push(NavTri { p: [p[0], p[i], p[i + 1]], stand: !a.crouch });
+                tris.push(NavTri { p: [p[0], p[i], p[i + 1]], stand: !a.crouch, area: k as u32 });
             }
         }
         let pts = tris.iter().flat_map(|t| t.p);
@@ -234,34 +238,38 @@ impl Nav {
                 }
             }
         }
-        let cols: Vec<Vec<Node>> = (0..nx * ny)
+        let cols: Vec<Vec<(Node, Vec<u32>)>> = (0..nx * ny)
             .into_par_iter()
             .map(|c| {
                 let x = lo.x + ((c / ny) as f64 + 0.5) * cell;
                 let y = lo.y + ((c % ny) as f64 + 0.5) * cell;
                 let (i, j) = bi(x, y);
-                let mut hits: Vec<(f64, bool)> = buckets[i * by + j]
+                let mut hits: Vec<(f64, bool, u32)> = buckets[i * by + j]
                     .iter()
-                    .filter_map(|&k| tris[k as usize].z_at(x, y).map(|z| (z, tris[k as usize].stand)))
+                    .filter_map(|&k| {
+                        let t = &tris[k as usize];
+                        t.z_at(x, y).map(|z| (z, t.stand, t.area))
+                    })
                     .collect();
                 hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-                let mut groups: Vec<(f64, bool)> = Vec::new();
-                for (z, s) in hits {
+                let mut groups: Vec<(f64, bool, Vec<u32>)> = Vec::new();
+                for (z, s, a) in hits {
                     match groups.last_mut() {
-                        Some(g) if z - g.0 <= STEP as f64 => *g = (z, g.1 || s),
-                        _ => groups.push((z, s)),
+                        Some(g) if z - g.0 <= STEP as f64 => {
+                            (g.0, g.1) = (z, g.1 || s);
+                            if !g.2.contains(&a) {
+                                g.2.push(a);
+                            }
+                        }
+                        _ => groups.push((z, s, vec![a])),
                     }
                 }
-                (0..groups.len())
-                    .map(|k| Node {
-                        z: groups[k].0 as f32,
-                        top: groups.get(k + 1).map_or(f32::INFINITY, |g| g.0 as f32 - 1.0),
-                        stand: groups[k].1,
-                    })
-                    .collect()
+                let tops: Vec<f32> = groups.iter().skip(1).map(|g| g.0 as f32 - 1.0).chain([f32::INFINITY]).collect();
+                groups.into_iter().zip(tops).map(|((z, stand, a), top)| (Node { z: z as f32, top, stand }, a)).collect()
             })
             .collect();
-        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0);
+        let links = gate.then(|| Links::new(m));
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0, links.as_ref());
         for l in &m.ladders {
             let (t, b) = (v(&l.top), v(&l.bottom));
             let w = DVec3::new(l.width as f64 / 2.0, l.width as f64 / 2.0, 0.0);
@@ -272,34 +280,90 @@ impl Nav {
         Ok(nav)
     }
 
-    fn assemble(lo: DVec3, cell: f64, nx: usize, ny: usize, cols: Vec<Vec<Node>>, blockers: usize) -> Nav {
+    fn assemble(
+        lo: DVec3,
+        cell: f64,
+        nx: usize,
+        ny: usize,
+        cols: Vec<Vec<(Node, Vec<u32>)>>,
+        blockers: usize,
+        links: Option<&Links>,
+    ) -> Nav {
         let mut start = Vec::with_capacity(nx * ny + 1);
         let mut nodes = Vec::new();
         let mut col = Vec::new();
+        let mut node_areas = Vec::new();
+        let mut area_start = vec![0];
         for (c, v) in cols.into_iter().enumerate() {
             start.push(nodes.len() as u32);
             col.extend(std::iter::repeat_n(c as u32, v.len()));
-            nodes.extend(v);
+            for (n, a) in v {
+                nodes.push(n);
+                node_areas.extend(a);
+                area_start.push(node_areas.len() as u32);
+            }
         }
         start.push(nodes.len() as u32);
-        let mut nav =
-            Nav { lo, cell, nx, ny, start, nodes, col, orth: Vec::new(), extra: Vec::new(), ladders: 0, blockers };
-        nav.orth = (0..nav.nodes.len())
+        if node_areas.is_empty() {
+            area_start.clear();
+        }
+        let mut nav = Nav {
+            lo,
+            cell,
+            nx,
+            ny,
+            start,
+            nodes,
+            col,
+            orth: Vec::new(),
+            extra: Vec::new(),
+            node_areas,
+            area_start,
+            removed: None,
+            ladders: 0,
+            blockers,
+        };
+        let res: Vec<([u32; 4], Vec<(u32, u32)>)> = (0..nav.nodes.len())
             .into_par_iter()
             .map(|u| {
                 let c = nav.col[u] as usize;
                 let (i, j) = ((c / ny) as i64, (c % ny) as i64);
-                DIRS.map(|(dx, dy)| {
+                let mut cut = Vec::new();
+                let o = DIRS.map(|(dx, dy)| {
                     let (a, b) = (i + dx, j + dy);
                     if a < 0 || b < 0 || a >= nx as i64 || b >= ny as i64 {
                         return NONE;
                     }
-                    nav.link(u, a as usize * ny + b as usize).map_or(NONE, |v| v as u32)
-                })
+                    let c = a as usize * ny + b as usize;
+                    let v = match (nav.link(u, c, |_| true), links) {
+                        (Some(v), Some(g)) if !nav.allowed(g, u, v) => {
+                            cut.push((u as u32, v as u32));
+                            nav.link(u, c, |w| nav.allowed(g, u, w))
+                        }
+                        (v, _) => v,
+                    };
+                    v.map_or(NONE, |v| v as u32)
+                });
+                (o, cut)
             })
             .collect();
+        nav.removed = links.map(|_| res.iter().flat_map(|r| r.1.iter().copied()).collect());
+        nav.orth = res.into_iter().map(|r| r.0).collect();
         nav.extra = vec![Vec::new(); nav.nodes.len()];
         nav
+    }
+
+    fn areas(&self, n: usize) -> &[u32] {
+        match self.area_start.get(n..n + 2) {
+            Some(r) => &self.node_areas[r[0] as usize..r[1] as usize],
+            None => &[],
+        }
+    }
+
+    fn allowed(&self, g: &Links, u: usize, v: usize) -> bool {
+        let (x0, y0) = self.cell_xy(self.col[u] as usize);
+        let (x1, y1) = self.cell_xy(self.col[v] as usize);
+        g.allowed(self.areas(u), self.areas(v), DVec2::new(x0, y0), DVec2::new(x1, y1), self.nodes[u].z, self.nodes[v].z)
     }
 
     pub fn len(&self) -> usize {
@@ -310,13 +374,13 @@ impl Nav {
         self.start[c] as usize..self.start[c + 1] as usize
     }
 
-    fn link(&self, u: usize, c: usize) -> Option<usize> {
+    fn link(&self, u: usize, c: usize, ok: impl Fn(usize) -> bool) -> Option<usize> {
         let a = self.nodes[u];
         self.column(c)
             .filter(|&v| {
                 let b = self.nodes[v];
                 let h = a.z.max(b.z);
-                b.z - a.z <= JUMP && h <= a.top + 0.5 && h <= b.top + 0.5
+                b.z - a.z <= JUMP && h <= a.top + 0.5 && h <= b.top + 0.5 && ok(v)
             })
             .min_by(|&v, &w| (self.nodes[v].z - a.z).abs().total_cmp(&(self.nodes[w].z - a.z).abs()))
     }
