@@ -975,7 +975,7 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
         match res {
             Ok(h) => {
                 if header.is_empty() {
-                    header = h.csv_header();
+                    header = crate::health::Health::csv_header();
                 }
                 rows.push(h.csv_row());
             }

@@ -79,7 +79,6 @@ impl Default for HealthOpts {
 }
 
 pub struct Limit {
-    pub key: &'static str,
     pub label: &'static str,
     pub count: usize,
     pub engine: Option<usize>,
@@ -111,29 +110,53 @@ fn level_color(pct: f64) -> [u8; 3] {
     }
 }
 
+type LimitRow = (&'static str, &'static str, Option<usize>, Option<usize>, usize);
+
+const LIMITS: [LimitRow; 19] = [
+    ("models", "models", Some(REHLDS_QLIMITS_MAX_MODELS), Some(HLSDK_MAX_MAP_MODELS), VHLT34_MAX_MAP_MODELS),
+    ("planes", "planes", None, Some(HLSDK_MAX_MAP_PLANES), VHLT34_MAX_MAP_PLANES),
+    ("vertices", "vertices", None, Some(HLSDK_MAX_MAP_VERTS), VHLT34_MAX_MAP_VERTS),
+    ("nodes", "nodes", None, Some(HLSDK_MAX_MAP_NODES), VHLT34_MAX_MAP_NODES),
+    ("texinfo", "texinfo", None, Some(HLSDK_MAX_MAP_TEXINFO), VHLT34_MAX_MAP_TEXINFO),
+    ("faces", "faces", None, Some(HLSDK_MAX_MAP_FACES), VHLT34_MAX_MAP_FACES),
+    ("world_faces", "world faces", None, None, VHLT34_MAX_MAP_WORLDFACES),
+    ("clipnodes", "clipnodes", None, Some(HLSDK_MAX_MAP_CLIPNODES), VHLT34_MAX_MAP_CLIPNODES),
+    ("leaves", "leaves", None, Some(HLSDK_MAX_MAP_LEAFS), VHLT34_MAX_MAP_LEAFS),
+    ("world_leaves", "world leaves", Some(VHLT34_MAX_MAP_LEAFS_ENGINE), None, VHLT34_MAX_MAP_LEAFS_ENGINE),
+    ("marksurfaces", "marksurfaces", None, Some(HLSDK_MAX_MAP_MARKSURFACES), VHLT34_MAX_MAP_MARKSURFACES),
+    ("edges", "edges", None, Some(HLSDK_MAX_MAP_EDGES), VHLT34_MAX_MAP_EDGES),
+    ("surfedges", "surfedges", None, Some(HLSDK_MAX_MAP_SURFEDGES), VHLT34_MAX_MAP_SURFEDGES),
+    ("textures", "textures", None, Some(HLSDK_MAX_MAP_TEXTURES), VHLT34_MAX_MAP_TEXTURES),
+    ("texture_bytes", "texture data", None, Some(HLSDK_MAX_MAP_MIPTEX), VHLT34_DEFAULT_MAX_MAP_MIPTEX),
+    ("lighting_bytes", "lighting data", None, Some(HLSDK_MAX_MAP_LIGHTING), VHLT34_DEFAULT_MAX_MAP_LIGHTDATA),
+    ("vis_bytes", "vis data", None, Some(HLSDK_MAX_MAP_VISIBILITY), VHLT34_MAX_MAP_VISIBILITY),
+    ("entities", "entities", None, Some(HLSDK_MAX_MAP_ENTITIES), VHLT34_MAX_MAP_ENTITIES),
+    ("entity_bytes", "entity data", None, Some(HLSDK_MAX_MAP_ENTSTRING), VHLT34_MAX_MAP_ENTSTRING),
+];
+
 fn limits(bsp: &Bsp) -> Vec<Limit> {
-    let l = |key, label, count, engine, hlsdk, vhlt| Limit { key, label, count, engine, hlsdk, vhlt };
-    vec![
-        l("models", "models", bsp.models.len(), Some(REHLDS_QLIMITS_MAX_MODELS), Some(HLSDK_MAX_MAP_MODELS), VHLT34_MAX_MAP_MODELS),
-        l("planes", "planes", bsp.planes.len(), None, Some(HLSDK_MAX_MAP_PLANES), VHLT34_MAX_MAP_PLANES),
-        l("vertices", "vertices", bsp.vertices.len(), None, Some(HLSDK_MAX_MAP_VERTS), VHLT34_MAX_MAP_VERTS),
-        l("nodes", "nodes", bsp.nodes.len(), None, Some(HLSDK_MAX_MAP_NODES), VHLT34_MAX_MAP_NODES),
-        l("texinfo", "texinfo", bsp.texinfo.len(), None, Some(HLSDK_MAX_MAP_TEXINFO), VHLT34_MAX_MAP_TEXINFO),
-        l("faces", "faces", bsp.faces.len(), None, Some(HLSDK_MAX_MAP_FACES), VHLT34_MAX_MAP_FACES),
-        l("world_faces", "world faces", bsp.models[0].numfaces.max(0) as usize, None, None, VHLT34_MAX_MAP_WORLDFACES),
-        l("clipnodes", "clipnodes", bsp.clipnodes.len(), None, Some(HLSDK_MAX_MAP_CLIPNODES), VHLT34_MAX_MAP_CLIPNODES),
-        l("leaves", "leaves", bsp.leaves.len(), None, Some(HLSDK_MAX_MAP_LEAFS), VHLT34_MAX_MAP_LEAFS),
-        l("world_leaves", "world leaves", bsp.models[0].visleafs.max(0) as usize, Some(VHLT34_MAX_MAP_LEAFS_ENGINE), None, VHLT34_MAX_MAP_LEAFS_ENGINE),
-        l("marksurfaces", "marksurfaces", bsp.marksurfaces.len(), None, Some(HLSDK_MAX_MAP_MARKSURFACES), VHLT34_MAX_MAP_MARKSURFACES),
-        l("edges", "edges", bsp.edges.len(), None, Some(HLSDK_MAX_MAP_EDGES), VHLT34_MAX_MAP_EDGES),
-        l("surfedges", "surfedges", bsp.surfedges.len(), None, Some(HLSDK_MAX_MAP_SURFEDGES), VHLT34_MAX_MAP_SURFEDGES),
-        l("textures", "textures", bsp.miptex.len(), None, Some(HLSDK_MAX_MAP_TEXTURES), VHLT34_MAX_MAP_TEXTURES),
-        l("texture_bytes", "texture data", bsp.lump_len[LUMP_TEXTURES], None, Some(HLSDK_MAX_MAP_MIPTEX), VHLT34_DEFAULT_MAX_MAP_MIPTEX),
-        l("lighting_bytes", "lighting data", bsp.lump_len[LUMP_LIGHTING], None, Some(HLSDK_MAX_MAP_LIGHTING), VHLT34_DEFAULT_MAX_MAP_LIGHTDATA),
-        l("vis_bytes", "vis data", bsp.lump_len[LUMP_VISIBILITY], None, Some(HLSDK_MAX_MAP_VISIBILITY), VHLT34_MAX_MAP_VISIBILITY),
-        l("entities", "entities", bsp.entities.len(), None, Some(HLSDK_MAX_MAP_ENTITIES), VHLT34_MAX_MAP_ENTITIES),
-        l("entity_bytes", "entity data", bsp.lump_len[LUMP_ENTITIES], None, Some(HLSDK_MAX_MAP_ENTSTRING), VHLT34_MAX_MAP_ENTSTRING),
-    ]
+    let counts = [
+        bsp.models.len(),
+        bsp.planes.len(),
+        bsp.vertices.len(),
+        bsp.nodes.len(),
+        bsp.texinfo.len(),
+        bsp.faces.len(),
+        bsp.models[0].numfaces.max(0) as usize,
+        bsp.clipnodes.len(),
+        bsp.leaves.len(),
+        bsp.models[0].visleafs.max(0) as usize,
+        bsp.marksurfaces.len(),
+        bsp.edges.len(),
+        bsp.surfedges.len(),
+        bsp.miptex.len(),
+        bsp.lump_len[LUMP_TEXTURES],
+        bsp.lump_len[LUMP_LIGHTING],
+        bsp.lump_len[LUMP_VISIBILITY],
+        bsp.entities.len(),
+        bsp.lump_len[LUMP_ENTITIES],
+    ];
+    LIMITS.iter().zip(counts).map(|(&(_, label, engine, hlsdk, vhlt), count)| Limit { label, count, engine, hlsdk, vhlt }).collect()
 }
 
 fn find_file(dirs: &[PathBuf], rel: &str) -> Option<PathBuf> {
@@ -234,25 +257,33 @@ pub struct NavInfo {
 
 pub struct Health {
     pub name: String,
+    pub t: Vec<DVec3>,
+    pub ct: Vec<DVec3>,
+    pub objectives: Vec<(&'static str, usize)>,
+    pub buyzones: usize,
+    pub sky: String,
+    pub sky_found: bool,
+    pub nav: Result<NavInfo, String>,
+    pub engine: Engine,
+}
+
+pub enum Engine {
+    Gold(GoldHealth),
+}
+
+pub struct GoldHealth {
     pub limits: Vec<Limit>,
     pub vis_bytes: usize,
     pub light_bytes: usize,
     pub unlit: usize,
     pub lightable: usize,
-    pub t: Vec<DVec3>,
-    pub ct: Vec<DVec3>,
-    pub objectives: Vec<(&'static str, usize)>,
-    pub buyzones: usize,
     pub missing_wads: Vec<String>,
     pub missing_textures: Vec<String>,
-    pub sky: String,
-    pub sky_found: bool,
     pub missing_files: Vec<String>,
     pub ov: [Option<PathBuf>; 3],
     pub bmp: Option<Result<Bmp8, String>>,
     pub res: Option<PathBuf>,
     pub res_lists: [bool; 3],
-    pub nav: Result<NavInfo, String>,
 }
 
 const OV_EXTS: [&str; 3] = ["txt", "bmp", "tga"];
@@ -356,25 +387,27 @@ pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
     let nav = nav_info(bsp, o, &t, &ct).map_err(|e| format!("{e:#}"));
     Health {
         name: name.to_string(),
-        limits: limits(bsp),
-        vis_bytes: bsp.lump_len[LUMP_VISIBILITY],
-        light_bytes: bsp.lump_len[LUMP_LIGHTING],
-        unlit,
-        lightable,
         t,
         ct,
         objectives,
         buyzones,
-        missing_wads,
-        missing_textures: scene.mesh.missing.clone(),
         sky,
         sky_found,
-        missing_files,
-        ov,
-        bmp,
-        res,
-        res_lists,
         nav,
+        engine: Engine::Gold(GoldHealth {
+            limits: limits(bsp),
+            vis_bytes: bsp.lump_len[LUMP_VISIBILITY],
+            light_bytes: bsp.lump_len[LUMP_LIGHTING],
+            unlit,
+            lightable,
+            missing_wads,
+            missing_textures: scene.mesh.missing.clone(),
+            missing_files,
+            ov,
+            bmp,
+            res,
+            res_lists,
+        }),
     }
 }
 
@@ -388,16 +421,22 @@ fn opt(v: Option<usize>) -> String {
 
 impl Health {
     pub fn warnings(&self) -> Vec<String> {
+        match &self.engine {
+            Engine::Gold(g) => self.gold_warnings(g),
+        }
+    }
+
+    fn gold_warnings(&self, g: &GoldHealth) -> Vec<String> {
         let mut w = Vec::new();
-        if self.vis_bytes == 0 {
+        if g.vis_bytes == 0 {
             w.push("VIS was not run (usually a leak, or -novis)".to_string());
         }
-        if self.light_bytes == 0 {
+        if g.light_bytes == 0 {
             w.push("no lighting data (RAD not run)".to_string());
-        } else if self.unlit > 0 {
-            w.push(format!("{} of {} lightable faces have no lightmap (-nolight or partial RAD)", self.unlit, self.lightable));
+        } else if g.unlit > 0 {
+            w.push(format!("{} of {} lightable faces have no lightmap (-nolight or partial RAD)", g.unlit, g.lightable));
         }
-        for l in &self.limits {
+        for l in &g.limits {
             if l.pct() > BAD_PCT {
                 w.push(format!("{} at {:.0}% of the limit", l.label, l.pct()));
             }
@@ -415,30 +454,30 @@ impl Health {
         if self.objectives.iter().all(|(_, n)| *n == 0) {
             w.push("no objectives".to_string());
         }
-        if !self.missing_wads.is_empty() {
-            w.push(format!("{} WADs missing", self.missing_wads.len()));
+        if !g.missing_wads.is_empty() {
+            w.push(format!("{} WADs missing", g.missing_wads.len()));
         }
-        if !self.missing_textures.is_empty() {
-            w.push(format!("{} textures missing", self.missing_textures.len()));
+        if !g.missing_textures.is_empty() {
+            w.push(format!("{} textures missing", g.missing_textures.len()));
         }
         if !self.sky_found {
             w.push(format!("sky {} missing", self.sky));
         }
-        if !self.missing_files.is_empty() {
-            w.push(format!("{} models/sprites/sounds missing", self.missing_files.len()));
+        if !g.missing_files.is_empty() {
+            w.push(format!("{} models/sprites/sounds missing", g.missing_files.len()));
         }
-        if self.ov[0].is_none() || self.ov[1].is_none() {
+        if g.ov[0].is_none() || g.ov[1].is_none() {
             w.push("no overview".to_string());
         }
-        if let Some(Ok(b)) = &self.bmp {
+        if let Some(Ok(b)) = &g.bmp {
             if b.n255 > 0 {
                 w.push(format!("overview BMP uses palette index 255 in {} pixels", b.n255));
             }
         }
-        if let Some(Err(e)) = &self.bmp {
+        if let Some(Err(e)) = &g.bmp {
             w.push(format!("overview BMP: {e}"));
         }
-        if self.ov[1].is_some() && !self.res_lists[1] {
+        if g.ov[1].is_some() && !g.res_lists[1] {
             w.push("overview BMP not listed in the .res".to_string());
         }
         w
@@ -451,19 +490,25 @@ impl Health {
     }
 
     fn write_text(&self, s: &mut String) -> std::fmt::Result {
+        match &self.engine {
+            Engine::Gold(g) => self.write_gold(g, s),
+        }
+    }
+
+    fn write_gold(&self, g: &GoldHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "{} health", self.name)?;
         writeln!(s)?;
         writeln!(s, "Compile")?;
-        if self.vis_bytes == 0 {
+        if g.vis_bytes == 0 {
             writeln!(s, "  VIS            not run")?;
         } else {
-            writeln!(s, "  VIS            {} bytes", self.vis_bytes)?;
+            writeln!(s, "  VIS            {} bytes", g.vis_bytes)?;
         }
-        writeln!(s, "  lighting       {} bytes, {} of {} lightable faces unlit", self.light_bytes, self.unlit, self.lightable)?;
+        writeln!(s, "  lighting       {} bytes, {} of {} lightable faces unlit", g.light_bytes, g.unlit, g.lightable)?;
         writeln!(s)?;
         writeln!(s, "Limits (% of the engine limit where known, else VHLT 34)")?;
         writeln!(s, "  {:<15}{:>10}{:>10}{:>10}{:>10}{:>7}", "", "count", "engine", "HLSDK", "VHLT", "%")?;
-        for l in &self.limits {
+        for l in &g.limits {
             writeln!(
                 s,
                 "  {:<15}{:>10}{:>10}{:>10}{:>10}{:>6.0}%{}",
@@ -499,17 +544,17 @@ impl Health {
         }
         writeln!(s)?;
         writeln!(s, "Missing assets")?;
-        writeln!(s, "  WADs           {}", list(&self.missing_wads))?;
-        writeln!(s, "  textures       {}", list(&self.missing_textures))?;
+        writeln!(s, "  WADs           {}", list(&g.missing_wads))?;
+        writeln!(s, "  textures       {}", list(&g.missing_textures))?;
         writeln!(s, "  sky            {}", if self.sky_found { format!("{} found", self.sky) } else { format!("{} missing", self.sky) })?;
-        writeln!(s, "  files          {}", list(&self.missing_files))?;
+        writeln!(s, "  files          {}", list(&g.missing_files))?;
         writeln!(s)?;
         writeln!(s, "Overview")?;
         for (i, e) in OV_EXTS.iter().enumerate() {
-            let where_ = self.ov[i].as_ref().map_or("missing".to_string(), |p| p.display().to_string());
+            let where_ = g.ov[i].as_ref().map_or("missing".to_string(), |p| p.display().to_string());
             writeln!(s, "  .{e:<13} {where_}")?;
         }
-        match &self.bmp {
+        match &g.bmp {
             Some(Ok(b)) => writeln!(
                 s,
                 "  BMP            {}x{}, palette index 255 in {} pixels",
@@ -520,10 +565,10 @@ impl Health {
             Some(Err(e)) => writeln!(s, "  BMP            {e}")?,
             None => {}
         }
-        match &self.res {
+        match &g.res {
             Some(p) => {
                 let listed: Vec<String> =
-                    OV_EXTS.iter().zip(self.res_lists).filter(|(_, b)| *b).map(|(e, _)| format!(".{e}")).collect();
+                    OV_EXTS.iter().zip(g.res_lists).filter(|(_, b)| *b).map(|(e, _)| format!(".{e}")).collect();
                 writeln!(s, "  .res           {} lists {}", p.display(), if listed.is_empty() { "no overview files".into() } else { listed.join(" ") })?;
             }
             None => writeln!(s, "  .res           missing")?,
@@ -547,7 +592,7 @@ impl Health {
         Ok(())
     }
 
-    pub fn csv_header(&self) -> String {
+    pub fn csv_header() -> String {
         let mut cols: Vec<String> = [
             "map", "error", "warnings", "vis_bytes", "lighting_bytes", "unlit_faces", "lightable_faces", "t_spawns",
             "ct_spawns", "spawns_off_ground", "bombsites", "hostages", "rescue_zones", "vip_starts", "vip_escapes",
@@ -556,14 +601,20 @@ impl Health {
         ]
         .map(String::from)
         .to_vec();
-        for l in &self.limits {
-            cols.push(l.key.to_string());
-            cols.push(format!("{}_pct", l.key));
+        for (key, ..) in LIMITS {
+            cols.push(key.to_string());
+            cols.push(format!("{key}_pct"));
         }
         cols.join(",")
     }
 
     pub fn csv_row(&self) -> String {
+        match &self.engine {
+            Engine::Gold(g) => self.gold_row(g),
+        }
+    }
+
+    fn gold_row(&self, g: &GoldHealth) -> String {
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
         let (off, m2, rad) = match &self.nav {
             Ok(n) => (
@@ -580,10 +631,10 @@ impl Health {
                 _ => String::new(),
             },
             self.warnings().len().to_string(),
-            self.vis_bytes.to_string(),
-            self.light_bytes.to_string(),
-            self.unlit.to_string(),
-            self.lightable.to_string(),
+            g.vis_bytes.to_string(),
+            g.light_bytes.to_string(),
+            g.unlit.to_string(),
+            g.lightable.to_string(),
             self.t.len().to_string(),
             self.ct.len().to_string(),
             off,
@@ -591,26 +642,26 @@ impl Health {
         cols.extend(self.objectives.iter().map(|(_, n)| n.to_string()));
         cols.extend([
             self.buyzones.to_string(),
-            self.missing_wads.len().to_string(),
-            self.missing_textures.len().to_string(),
+            g.missing_wads.len().to_string(),
+            g.missing_textures.len().to_string(),
             b(!self.sky_found),
-            self.missing_files.len().to_string(),
-            b(self.ov[0].is_some()),
-            b(self.ov[1].is_some()),
-            b(self.ov[2].is_some()),
-            match &self.bmp {
+            g.missing_files.len().to_string(),
+            b(g.ov[0].is_some()),
+            b(g.ov[1].is_some()),
+            b(g.ov[2].is_some()),
+            match &g.bmp {
                 Some(Ok(x)) => x.n255.to_string(),
                 Some(Err(_)) => "?".into(),
                 None => String::new(),
             },
-            b(self.res.is_some()),
-            b(self.res_lists[0]),
-            b(self.res_lists[1]),
-            b(self.res_lists[2]),
+            b(g.res.is_some()),
+            b(g.res_lists[0]),
+            b(g.res_lists[1]),
+            b(g.res_lists[2]),
             m2,
             rad,
         ]);
-        for l in &self.limits {
+        for l in &g.limits {
             cols.push(l.count.to_string());
             cols.push(format!("{:.1}", l.pct()));
         }
@@ -640,7 +691,10 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
     let pw = 560u32;
     let row = 18.0f32;
     let facts = card_facts(h);
-    let panel_h = 44.0 + row * (h.limits.len() as f32 + 1.5) + 16.0 * (facts.len() as f32 + 1.0) + 12.0;
+    let limits: &[Limit] = match &h.engine {
+        Engine::Gold(g) => &g.limits,
+    };
+    let panel_h = 44.0 + row * (limits.len() as f32 + 1.5) + 16.0 * (facts.len() as f32 + 1.0) + 12.0;
     let (w, ht) = (g.wpx + pw, g.hpx.max(panel_h.ceil() as u32).max(size / 2));
     let mut pm = Pixmap::new(w, ht).context("pixmap")?;
     pm.fill(tiny_skia::Color::from_rgba8(0x1c, 0x1c, 0x1c, 255));
@@ -685,7 +739,7 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
     title.draw(&mut pm, x0, y, &format!("{} health", h.name), [255, 255, 255]);
     y += 32.0;
     let (lw, bw) = (110.0, 170.0);
-    for l in &h.limits {
+    for l in limits {
         let pct = l.pct();
         let col = level_color(pct);
         text.draw(&mut pm, x0, y, l.label, [220, 220, 220]);
@@ -708,14 +762,20 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
 }
 
 fn card_facts(h: &Health) -> Vec<(String, [u8; 3])> {
+    match &h.engine {
+        Engine::Gold(g) => gold_facts(h, g),
+    }
+}
+
+fn gold_facts(h: &Health, g: &GoldHealth) -> Vec<(String, [u8; 3])> {
     let white = [220, 220, 220];
     let ok = |b: bool| if b { GREEN } else { RED };
     let mut v = Vec::new();
     v.push((
-        if h.vis_bytes == 0 { "VIS: not run".to_string() } else { format!("VIS: {} KiB", h.vis_bytes / 1024) },
-        ok(h.vis_bytes > 0),
+        if g.vis_bytes == 0 { "VIS: not run".to_string() } else { format!("VIS: {} KiB", g.vis_bytes / 1024) },
+        ok(g.vis_bytes > 0),
     ));
-    v.push((format!("lighting: {} KiB, {} unlit faces", h.light_bytes / 1024, h.unlit), ok(h.light_bytes > 0 && h.unlit == 0)));
+    v.push((format!("lighting: {} KiB, {} unlit faces", g.light_bytes / 1024, g.unlit), ok(g.light_bytes > 0 && g.unlit == 0)));
     let spawns_ok = h.t.len() >= SPAWNS_FOR_32_SLOTS && h.ct.len() >= SPAWNS_FOR_32_SLOTS;
     v.push((format!("spawns: T {}, CT {}", h.t.len(), h.ct.len()), if spawns_ok { GREEN } else { AMBER }));
     match &h.nav {
@@ -728,38 +788,38 @@ fn card_facts(h: &Health) -> Vec<(String, [u8; 3])> {
         if h.buyzones == 0 { "buy zones: default".to_string() } else { format!("buy zones: {}", h.buyzones) },
         white,
     ));
-    let miss = h.missing_wads.len() + h.missing_textures.len() + h.missing_files.len() + usize::from(!h.sky_found);
+    let miss = g.missing_wads.len() + g.missing_textures.len() + g.missing_files.len() + usize::from(!h.sky_found);
     v.push((
         format!(
             "missing: {} WADs, {} textures, {} files{}",
-            h.missing_wads.len(),
-            h.missing_textures.len(),
-            h.missing_files.len(),
+            g.missing_wads.len(),
+            g.missing_textures.len(),
+            g.missing_files.len(),
             if h.sky_found { "" } else { ", sky" }
         ),
         ok(miss == 0),
     ));
-    let have: Vec<&str> = OV_EXTS.iter().zip(&h.ov).filter(|(_, p)| p.is_some()).map(|(e, _)| *e).collect();
-    let bmp_ok = !matches!(&h.bmp, Some(Ok(b)) if b.n255 > 0) && !matches!(&h.bmp, Some(Err(_)));
+    let have: Vec<&str> = OV_EXTS.iter().zip(&g.ov).filter(|(_, p)| p.is_some()).map(|(e, _)| *e).collect();
+    let bmp_ok = !matches!(&g.bmp, Some(Ok(b)) if b.n255 > 0) && !matches!(&g.bmp, Some(Err(_)));
     v.push((
         format!(
             "overview: {}{}",
             if have.is_empty() { "none".to_string() } else { have.join(" ") },
-            match &h.bmp {
+            match &g.bmp {
                 Some(Ok(b)) if b.n255 > 0 => ", BMP uses index 255",
                 Some(Err(_)) => ", BMP not 8-bit",
                 _ => "",
             }
         ),
-        if h.ov[0].is_some() && h.ov[1].is_some() && bmp_ok { GREEN } else { AMBER },
+        if g.ov[0].is_some() && g.ov[1].is_some() && bmp_ok { GREEN } else { AMBER },
     ));
-    let listed: Vec<&str> = OV_EXTS.iter().zip(h.res_lists).filter(|(_, b)| *b).map(|(e, _)| *e).collect();
+    let listed: Vec<&str> = OV_EXTS.iter().zip(g.res_lists).filter(|(_, b)| *b).map(|(e, _)| *e).collect();
     v.push((
-        match &h.res {
+        match &g.res {
             Some(_) => format!(".res lists overview: {}", if listed.is_empty() { "nothing".into() } else { listed.join(" ") }),
             None => ".res: none".to_string(),
         },
-        if h.ov[1].is_none() || h.res_lists[1] { white } else { AMBER },
+        if g.ov[1].is_none() || g.res_lists[1] { white } else { AMBER },
     ));
     match &h.nav {
         Ok(n) => {
