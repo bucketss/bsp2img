@@ -6,7 +6,7 @@ use glam::DVec3;
 use rayon::prelude::*;
 
 use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
-use crate::s2::nav::{CROUCH, NavMesh};
+use crate::navmesh::NavMesh;
 
 pub const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
@@ -208,7 +208,7 @@ impl Nav {
         for a in &m.areas {
             let p: Vec<DVec3> = a.poly.iter().map(v).collect();
             for i in 1..p.len().saturating_sub(1) {
-                tris.push(NavTri { p: [p[0], p[i], p[i + 1]], stand: a.flags & CROUCH == 0 });
+                tris.push(NavTri { p: [p[0], p[i], p[i + 1]], stand: !a.crouch });
             }
         }
         let pts = tris.iter().flat_map(|t| t.p);

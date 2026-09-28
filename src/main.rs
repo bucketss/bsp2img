@@ -14,6 +14,7 @@ mod light;
 mod look;
 mod mesh;
 mod nav;
+mod navmesh;
 mod overview;
 mod paths;
 mod post;
