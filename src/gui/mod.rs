@@ -310,7 +310,8 @@ impl App {
         let opts = self.wanted_load();
         let max_dim = self.gpu.max_dim;
         let ctx = ctx.clone();
-        self.log.push(format!("== {}", path.file_stem().unwrap_or_default().to_string_lossy()));
+        let note = crate::paths::workshop_title(&path).map(|t| format!(" ({t})")).unwrap_or_default();
+        self.log.push(format!("== {}{note}", path.file_stem().unwrap_or_default().to_string_lossy()));
         std::thread::spawn(move || {
             let t = std::time::Instant::now();
             let res = Scene::load(&path, &opts, max_dim, &mut |s| {
@@ -449,8 +450,8 @@ impl App {
     }
 
     fn open_bsp(&mut self, ctx: &egui::Context) {
-        if let Some(f) = rfd::FileDialog::new().add_filter("Maps", &["bsp", "vpk"]).pick_file() {
-            self.current = Some(f);
+        if let Some(f) = rfd::FileDialog::new().add_filter("Maps", &["bsp", "vpk", "vwrld_c"]).pick_file() {
+            self.current = Some(crate::paths::resolve_map(&f.to_string_lossy(), None).unwrap_or(f));
             self.start_load(ctx);
         }
     }

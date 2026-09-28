@@ -10,6 +10,10 @@ use rayon::prelude::*;
 pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
     let p = Path::new(arg);
     if p.is_file() {
+        let world = p.file_name().is_some_and(|n| n.eq_ignore_ascii_case("world.vwrld_c"));
+        return Ok(p.parent().filter(|_| world).unwrap_or(p).to_path_buf());
+    }
+    if crate::s2::vpk::is_loose(p) || crate::s2::vpk::nested_addon(p).is_some() {
         return Ok(p.to_path_buf());
     }
     if let Some(game) = game {
@@ -49,7 +53,62 @@ pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
             }
         }
     }
+    if let Some(p) = game.and_then(|g| addon_map(arg, g)) {
+        return Ok(p);
+    }
     bail!("map not found: {arg}")
+}
+
+fn sorted_dirs(d: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    v.sort_by_key(|p| p.to_string_lossy().to_lowercase());
+    v
+}
+
+fn in_addon(addon: &Path, map: &str) -> Option<PathBuf> {
+    let maps = addon.join("maps");
+    let v = maps.join(format!("{map}.vpk"));
+    if crate::s2::vpk::is_map(&v) {
+        return Some(v);
+    }
+    let d = maps.join(map);
+    crate::s2::vpk::is_loose(&d).then_some(d)
+}
+
+fn in_workshop(item: &Path, map: &str) -> Option<PathBuf> {
+    let id = item.file_name()?.to_string_lossy();
+    let maps = crate::s2::vpk::addon_maps(&item.join(format!("{id}_dir.vpk")));
+    let m = maps.iter().find(|m| m.eq_ignore_ascii_case(map))?;
+    Some(item.join("maps").join(format!("{m}.vpk")))
+}
+
+fn addon_map(arg: &str, game: &Path) -> Option<PathBuf> {
+    let root = crate::s2::vpk::find_root(game)?;
+    let ws = crate::s2::vpk::workshop_dir(&root);
+    let parts: Vec<&str> = arg.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    match parts[..] {
+        [w, id, m] if w.eq_ignore_ascii_case("workshop") && digits(id) => in_workshop(&ws?.join(id), m),
+        [w, m] if w.eq_ignore_ascii_case("workshop") => sorted_dirs(&ws?).iter().find_map(|d| in_workshop(d, m)),
+        [id, m] if digits(id) && ws.as_ref().is_some_and(|w| w.join(id).is_dir()) => in_workshop(&ws?.join(id), m),
+        [a, m] => in_addon(&root.join("csgo_addons").join(a), m),
+        [m] => std::iter::once(root.join("csgo_addons").join(m))
+            .chain(sorted_dirs(&root.join("csgo_addons")))
+            .find_map(|d| in_addon(&d, m))
+            .or_else(|| sorted_dirs(ws.as_ref()?).iter().find_map(|d| in_workshop(d, m))),
+        _ => None,
+    }
+}
+
+pub fn workshop_title(map: &Path) -> Option<String> {
+    let item = crate::s2::vpk::nested_addon(map)?.parent()?.to_path_buf();
+    let id = item.file_name()?.to_string_lossy().into_owned();
+    let text = std::fs::read_to_string(item.join("publish_data.txt")).ok()?;
+    let title = text.lines().find_map(|l| {
+        let q: Vec<&str> = l.split('"').collect();
+        (q.len() >= 4 && q[1].eq_ignore_ascii_case("title")).then(|| q[3].to_string())
+    })?;
+    Some(format!("{title}, workshop {id}"))
 }
 
 static CS2_MAPS: Mutex<Option<HashMap<PathBuf, (SystemTime, bool)>>> = Mutex::new(None);
@@ -119,8 +178,84 @@ pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
             out.push((n, p));
         }
     }
+    if let Some(root) = crate::s2::vpk::find_root(game) {
+        addon_list(&root, &mut out);
+    }
     out.sort_by_key(|(n, _)| n.to_lowercase());
     out
+}
+
+type WsCache = HashMap<PathBuf, (SystemTime, Vec<String>)>;
+
+static WS_MAPS: Mutex<Option<WsCache>> = Mutex::new(None);
+
+fn workshop_maps(items: Vec<PathBuf>) -> Vec<(PathBuf, Vec<String>)> {
+    let dir_vpk = |d: &Path| d.join(format!("{}_dir.vpk", d.file_name().unwrap_or_default().to_string_lossy()));
+    let stamp = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+    let known = WS_MAPS.lock().unwrap().clone().unwrap_or_default();
+    let found: Vec<(PathBuf, SystemTime, Vec<String>)> = items
+        .into_par_iter()
+        .filter(|d| dir_vpk(d).is_file())
+        .map(|d| {
+            let v = dir_vpk(&d);
+            let t = stamp(&v);
+            let maps = match known.get(&v) {
+                Some((kt, m)) if *kt == t => m.clone(),
+                _ => crate::s2::vpk::addon_maps(&v),
+            };
+            (d, t, maps)
+        })
+        .collect();
+    let mut cache = WS_MAPS.lock().unwrap();
+    let cache = cache.get_or_insert_with(HashMap::new);
+    found
+        .into_iter()
+        .map(|(d, t, maps)| {
+            cache.insert(dir_vpk(&d), (t, maps.clone()));
+            (d, maps)
+        })
+        .collect()
+}
+
+fn addon_list(root: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let sky = |n: &str| n.to_lowercase().ends_with("_3dsky");
+    let fname = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let push = |out: &mut Vec<(String, PathBuf)>, n: String, p: PathBuf| {
+        if !out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&n)) {
+            out.push((n, p));
+        }
+    };
+    let mut vpks = Vec::new();
+    for a in sorted_dirs(&root.join("csgo_addons")) {
+        let Ok(rd) = std::fs::read_dir(a.join("maps")) else { continue };
+        let mut ps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        ps.sort();
+        for p in ps {
+            if crate::s2::vpk::is_loose(&p) {
+                if !sky(&fname(&p)) {
+                    push(out, format!("{}/{}", fname(&a), fname(&p)), p);
+                }
+            } else if crate::s2::is_vpk(&p) {
+                vpks.push(p);
+            }
+        }
+    }
+    for p in cs2_maps(vpks) {
+        let n = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let a = p.parent().and_then(Path::parent).map(fname).unwrap_or_default();
+        if !sky(&n) {
+            push(out, format!("{a}/{n}"), p);
+        }
+    }
+    let Some(ws) = crate::s2::vpk::workshop_dir(root) else { return };
+    for (d, maps) in workshop_maps(sorted_dirs(&ws)) {
+        let id = fname(&d);
+        for m in maps.iter().filter(|m| !sky(m)) {
+            let label = format!("workshop/{m}");
+            let label = if out.iter().any(|(k, _)| k.eq_ignore_ascii_case(&label)) { format!("{id}/{m}") } else { label };
+            push(out, label, d.join("maps").join(format!("{m}.vpk")));
+        }
+    }
 }
 
 fn strip_suffix(game: &str) -> String {
@@ -243,16 +378,18 @@ pub fn expand_maps(args: &[String], game: Option<&Path>) -> Vec<String> {
             continue;
         }
         let p = Path::new(a);
-        let dir = p.parent().filter(|d| !d.as_os_str().is_empty());
+        let dir = p.parent().filter(|d| !d.as_os_str().is_empty() && d.is_dir());
         let pat = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
         let stem_pat = pat.strip_suffix(".bsp").or(pat.strip_suffix(".vpk")).unwrap_or(&pat).to_string();
+        let label = a.replace('\\', "/");
+        let label_pat = label.strip_suffix(".bsp").or(label.strip_suffix(".vpk")).unwrap_or(&label).to_string();
         let mut found: Vec<String> = match dir {
             Some(d) => std::fs::read_dir(d)
                 .into_iter()
                 .flatten()
                 .flatten()
                 .map(|e| e.path())
-                .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")) || crate::s2::vpk::is_map(f))
+                .filter(|f| f.extension().is_some_and(|x| x.eq_ignore_ascii_case("bsp")) || crate::s2::vpk::is_map(f) || crate::s2::vpk::is_loose(f))
                 .filter(|f| glob_match(stem_pat.as_bytes(), f.file_stem().unwrap_or_default().to_string_lossy().as_bytes()))
                 .map(|f| f.to_string_lossy().into_owned())
                 .collect(),
@@ -260,7 +397,7 @@ pub fn expand_maps(args: &[String], game: Option<&Path>) -> Vec<String> {
                 .map(list_maps)
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|(n, _)| glob_match(stem_pat.as_bytes(), n.as_bytes()))
+                .filter(|(n, _)| glob_match(label_pat.as_bytes(), n.as_bytes()))
                 .map(|(n, _)| n)
                 .collect(),
         };
