@@ -326,6 +326,9 @@ impl Scene {
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
         if let Some(x) = &self.bsp.extra {
+            if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
+                return name.filter(|n| !n.is_empty()).map(str::to_string).or_else(|| x.sky.clone()).unwrap_or_else(|| "none".into());
+            }
             return x.sky_material(name.unwrap_or("")).unwrap_or_else(|| "env_sky".into());
         }
         match name {
@@ -336,6 +339,9 @@ impl Scene {
 
     pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
         if let Some(x) = &self.bsp.extra {
+            if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
+                return crate::s1::sky::load(&x.fs, name).ok();
+            }
             return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
         }
         let faces = find_sky(name, &self.dirs)?;

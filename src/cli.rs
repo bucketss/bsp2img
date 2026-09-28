@@ -26,7 +26,7 @@ use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
-#[command(name = "bsp2img", version, about = "Render GoldSrc BSP and CS2 maps: isometric views and CS overviews. Run without arguments for the GUI.")]
+#[command(name = "bsp2img", version, about = "Render GoldSrc and Source BSP and CS2 maps: isometric views and CS overviews. Run without arguments for the GUI.")]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -38,7 +38,7 @@ pub struct Cli {
 pub enum Cmd {
     #[command(about = "Render isometric diorama views")]
     Iso(IsoArgs),
-    #[command(about = "Generate a CS overview (.bmp, .tga, .txt; CS2: radar .png and .txt)")]
+    #[command(about = "Generate a CS overview (.bmp, .tga, .txt; CS2 and Source: radar .png and .txt)")]
     Overview(OverviewArgs),
     #[command(about = "Render an animation of the map rotating (.mp4 via ffmpeg, optional .gif/.png)")]
     Spin(SpinArgs),
@@ -116,7 +116,7 @@ pub struct Common {
     pub light_scale: f64,
     #[arg(long = "all-styles", help = "include switchable light styles")]
     pub all_styles: bool,
-    #[arg(long = "tex-max", default_value_t = 512, help = "CS2: largest texture size to load")]
+    #[arg(long = "tex-max", default_value_t = 512, help = "CS2 and Source: largest texture size to load")]
     pub tex_max: usize,
 }
 
