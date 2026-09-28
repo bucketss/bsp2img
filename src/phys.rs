@@ -3,6 +3,7 @@ use glam::{DAffine3, DVec3, Vec3};
 pub const CELL: f64 = 32.0;
 pub const SHEET: f32 = 8.0;
 const TIE: f32 = 0.1;
+const CORNER_EPS: f64 = 0.05;
 const MAX_CELLS: f64 = 4_194_304.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -204,6 +205,55 @@ fn tri_z(t: &Tri, x: f64, y: f64) -> Option<f32> {
     (w0 >= e && w1 >= e && w2 >= e).then_some((w0 * a.z + w1 * b.z + w2 * c.z) as f32)
 }
 
+fn corners(h: &Hull) -> Vec<DVec3> {
+    let ps: Vec<(DVec3, f64)> = h.planes.iter().map(|p| (DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64), p[3] as f64)).collect();
+    let mut out: Vec<DVec3> = Vec::new();
+    for i in 0..ps.len() {
+        for j in i + 1..ps.len() {
+            for k in j + 1..ps.len() {
+                let (a, b, c) = (ps[i].0, ps[j].0, ps[k].0);
+                let det = a.dot(b.cross(c));
+                if det.abs() < 1e-6 {
+                    continue;
+                }
+                let p = (b.cross(c) * ps[i].1 + c.cross(a) * ps[j].1 + a.cross(b) * ps[k].1) / det;
+                if ps.iter().all(|q| q.0.dot(p) <= q.1 + CORNER_EPS) && !out.iter().any(|o| o.distance_squared(p) < 1e-4) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn edges_overlap(h: &Hull, c: DVec3, e: DVec3) -> bool {
+    let v = corners(h);
+    if v.len() < 4 {
+        return true;
+    }
+    let ns: Vec<DVec3> = h.planes.iter().map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)).collect();
+    for i in 0..ns.len() {
+        for j in i + 1..ns.len() {
+            let d = ns[i].cross(ns[j]);
+            if d.length_squared() < 1e-9 {
+                continue;
+            }
+            for ax in [DVec3::X, DVec3::Y, DVec3::Z] {
+                let a = ax.cross(d);
+                if a.length_squared() < 1e-9 {
+                    continue;
+                }
+                let (pc, r) = (a.dot(c), a.abs().dot(e));
+                let (lo, hi) = v.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| (lo.min(a.dot(*p)), hi.max(a.dot(*p))));
+                if lo >= pc + r || hi <= pc - r {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 fn hull_z(h: &Hull, x: f64, y: f64) -> Option<(f32, f32)> {
     let (mut a, mut b) = (f64::NEG_INFINITY, f64::INFINITY);
     for p in &h.planes {
@@ -402,6 +452,7 @@ impl Phys {
                     let (pn, d) = (DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64), p[3] as f64);
                     pn.dot(c) - pn.abs().dot(e) < d
                 })
+                && edges_overlap(h, c, e)
         };
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -471,6 +522,38 @@ mod tests {
         assert!((out[0].0 - 0.0).abs() < 1e-3 && (out[0].1 - 30.0).abs() < 1e-3);
         p.column(10.0, 105.0, Mask::SOLID, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn edge_axes() {
+        let mut b = Builder::default();
+        let xf = DAffine3::from_rotation_x(35f64.to_radians()) * DAffine3::from_rotation_z(45f64.to_radians());
+        b.aabb(DVec3::splat(-20.0), DVec3::splat(20.0), &xf, Class::Solid);
+        let p = b.finish();
+        let h = &p.hulls[0];
+        let inside = |q: DVec3| h.planes.iter().all(|pl| DVec3::new(pl[0] as f64, pl[1] as f64, pl[2] as f64).dot(q) < pl[3] as f64);
+        let e = DVec3::splat(6.0);
+        let mut rejected = 0;
+        for i in -12..=12 {
+            for j in -12..=12 {
+                for k in -12..=12 {
+                    let c = DVec3::new(i as f64, j as f64, k as f64) * 3.0;
+                    let loose = h.planes.iter().all(|pl| {
+                        let n = DVec3::new(pl[0] as f64, pl[1] as f64, pl[2] as f64);
+                        n.dot(c) - n.abs().dot(e) < pl[3] as f64
+                    });
+                    let hit = p.box_solid(c - e, c + e, Mask::SOLID);
+                    if loose && !hit {
+                        rejected += 1;
+                    }
+                    if !hit {
+                        let s = (0..=8).flat_map(|a| (0..=8).flat_map(move |b| (0..=8).map(move |d| DVec3::new(a as f64, b as f64, d as f64) / 8.0)));
+                        assert!(s.map(|t| c - e + t * 2.0 * e).all(|q| !inside(q)), "box at {c} overlaps");
+                    }
+                }
+            }
+        }
+        assert!(rejected > 0);
     }
 
     #[test]
