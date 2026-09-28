@@ -26,6 +26,8 @@ mod prof;
 mod quant;
 mod radar;
 mod reach;
+#[allow(dead_code)]
+mod s1;
 mod s2;
 mod render;
 mod scene;
