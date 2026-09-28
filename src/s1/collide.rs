@@ -184,13 +184,28 @@ pub fn vertices(planes: &[[f64; 4]]) -> Vec<Vec3> {
     out
 }
 
-pub fn slab(d: &disp_geo::Disp) -> (Vec<Vec3>, Vec<[u32; 3]>) {
-    let n = d.pos.len() as u32;
-    let mut v: Vec<Vec3> = d.pos.iter().map(|p| p.as_vec3()).collect();
-    v.extend(d.pos.iter().map(|p| (*p - DVec3::Z * DISP_THICK).as_vec3()));
-    let mut t = d.tris.clone();
-    t.extend(d.tris.iter().map(|t| [t[0] + n, t[2] + n, t[1] + n]));
-    (v, t)
+pub fn prism(t: [DVec3; 3], off: DVec3) -> Option<Hull> {
+    let v: Vec<DVec3> = t.iter().copied().chain(t.iter().map(|p| *p + off)).collect();
+    let c = v.iter().copied().sum::<DVec3>() / 6.0;
+    let n = (t[1] - t[0]).cross(t[2] - t[0]);
+    if n.length_squared() < 1e-6 || off.length_squared() < 1e-6 {
+        return None;
+    }
+    let mut planes = Vec::with_capacity(5);
+    let mut add = |n: DVec3, p: DVec3| {
+        let Some(mut n) = n.try_normalize() else { return };
+        if n.dot(c - p) > 0.0 {
+            n = -n;
+        }
+        planes.push([n.x as f32, n.y as f32, n.z as f32, n.dot(p) as f32]);
+    };
+    add(n, t[0]);
+    add(n, t[0] + off);
+    for k in 0..3 {
+        let (a, b) = (t[k], t[(k + 1) % 3]);
+        add((b - a).cross(off), a);
+    }
+    (planes.len() == 5).then(|| (planes, v.iter().map(|p| p.as_vec3()).collect()))
 }
 
 pub fn ladders(map: &Map) -> Result<Vec<(DVec3, DVec3)>> {
@@ -266,8 +281,13 @@ pub fn load(fs: &Fs, map: &Map) -> Result<Phys> {
     }
     for d in disp_geo::build(map, &w)? {
         let c = if d.flags & NO_HULL != 0 { Class::Decor } else { Class::Solid };
-        let (v, t) = slab(&d);
-        b.mesh(&v, &t, &DAffine3::IDENTITY, c);
+        let off = w.face_normal(d.face) * -DISP_THICK;
+        for t in &d.tris {
+            match prism(t.map(|i| d.pos[i as usize]), off) {
+                Some(h) => b.hull(&h.0, &h.1, &DAffine3::IDENTITY, c),
+                None => b.stats.skipped_tris += 1,
+            }
+        }
     }
     let mut placed: Vec<(String, bool, DAffine3)> = Vec::new();
     if let Some(sp) = StaticProps::from_bsp(map.bytes(), map.raw(LUMP_GAME_LUMP)).ok().flatten() {
@@ -349,30 +369,5 @@ mod tests {
             }
         }
         println!("{} vphysics models: {phy} with .phy, {boxed} box only, {none} nothing; worst overshoot {:?}", names.len(), worst);
-    }
-
-    #[test]
-    #[ignore]
-    fn spawn_columns() {
-        use std::sync::Arc;
-        let root = std::env::var("PHY_MAP").unwrap_or_else(|_| r"E:\steam\steamapps\common\Counter-Strike Global Offensive\csgo\maps\de_dust2.bsp".into());
-        let map = Arc::new(Map::open(std::path::Path::new(&root)).unwrap());
-        let fs = super::super::fs::open(&map, None).unwrap().fs;
-        let p = load(&fs, &map).unwrap();
-        let ents = super::super::entities::parse(&map.entities().unwrap()).list;
-        let w = World::read(&map).unwrap();
-        let d = disp_geo::build(&map, &w).unwrap();
-        let mut out = Vec::new();
-        for e in ents.iter().filter(|e| e.class() == "info_player_start").take(3) {
-            let o = e.origin().unwrap();
-            p.column(o.x, o.y, crate::phys::Mask::ALL, &mut out);
-            println!("{o} -> {out:?}");
-            for g in &d {
-                let (lo, hi) = g.pos.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |a, p| (a.0.min(*p), a.1.max(*p)));
-                if o.x >= lo.x && o.x <= hi.x && o.y >= lo.y && o.y <= hi.y {
-                    println!("  disp {} face {} z {:.0}..{:.0} normal {}", g.index, g.face, lo.z, hi.z, w.face_normal(g.face));
-                }
-            }
-        }
     }
 }
