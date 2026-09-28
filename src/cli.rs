@@ -345,8 +345,8 @@ pub struct SvgArgs {
 pub struct StlArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 8.0, help = "voxel size in units")]
-    pub voxel: f64,
+    #[arg(long, help = "voxel size in units (default 8, raised automatically for large maps)")]
+    pub voxel: Option<f64>,
     #[arg(long, default_value_t = 32.0, help = "units kept around the walkable area")]
     pub wall: f64,
     #[arg(long, default_value_t = 16.0, help = "base plate thickness below the lowest floor in units")]
@@ -865,7 +865,7 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
 pub fn run_stl(a: &StlArgs) -> Result<()> {
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = StlOpts { voxel: a.voxel, wall: a.wall, base: a.base, print_width: a.print_width, smooth: a.smooth };
+    let o = StlOpts { voxel: a.voxel.unwrap_or(8.0), auto: a.voxel.is_none(), wall: a.wall, base: a.base, print_width: a.print_width, smooth: a.smooth };
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;

@@ -404,9 +404,9 @@ fn png(img: &Image) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
-#[derive(Default)]
 struct Doc {
-    bin: Vec<u8>,
+    bin: std::io::BufWriter<std::fs::File>,
+    len: usize,
     views: Vec<Value>,
     accessors: Vec<Value>,
     images: Vec<Value>,
@@ -417,21 +417,37 @@ struct Doc {
 }
 
 impl Doc {
-    fn view(&mut self, data: &[u8], target: Option<u32>) -> usize {
-        while self.bin.len() % 4 != 0 {
-            self.bin.push(0);
-        }
-        let mut v = json!({"buffer": 0, "byteOffset": self.bin.len(), "byteLength": data.len()});
+    fn new(tmp: &Path) -> Result<Doc> {
+        Ok(Doc {
+            bin: std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(tmp)?),
+            len: 0,
+            views: Vec::new(),
+            accessors: Vec::new(),
+            images: Vec::new(),
+            textures: Vec::new(),
+            samplers: Vec::new(),
+            materials: Vec::new(),
+            prims: Vec::new(),
+        })
+    }
+
+    fn view(&mut self, data: &[u8], target: Option<u32>) -> Result<usize> {
+        use std::io::Write;
+        let pad = (4 - self.len % 4) % 4;
+        self.bin.write_all(&[0u8; 3][..pad])?;
+        self.len += pad;
+        let mut v = json!({"buffer": 0, "byteOffset": self.len, "byteLength": data.len()});
         if let Some(t) = target {
             v["target"] = json!(t);
         }
-        self.bin.extend_from_slice(data);
+        self.bin.write_all(data)?;
+        self.len += data.len();
         self.views.push(v);
-        self.views.len() - 1
+        Ok(self.views.len() - 1)
     }
 
-    fn floats(&mut self, data: &[f32], comps: usize, bounds: bool) -> usize {
-        let view = self.view(bytemuck::cast_slice(data), Some(34962));
+    fn floats(&mut self, data: &[f32], comps: usize, bounds: bool) -> Result<usize> {
+        let view = self.view(bytemuck::cast_slice(data), Some(34962))?;
         let ty = ["", "SCALAR", "VEC2", "VEC3", "VEC4"][comps];
         let mut a = json!({"bufferView": view, "componentType": 5126, "count": data.len() / comps, "type": ty});
         if bounds {
@@ -447,18 +463,18 @@ impl Doc {
             a["max"] = json!(hi);
         }
         self.accessors.push(a);
-        self.accessors.len() - 1
+        Ok(self.accessors.len() - 1)
     }
 
-    fn indices(&mut self, data: &[u32]) -> usize {
-        let view = self.view(bytemuck::cast_slice(data), Some(34963));
+    fn indices(&mut self, data: &[u32]) -> Result<usize> {
+        let view = self.view(bytemuck::cast_slice(data), Some(34963))?;
         self.accessors.push(json!({"bufferView": view, "componentType": 5125, "count": data.len(), "type": "SCALAR"}));
-        self.accessors.len() - 1
+        Ok(self.accessors.len() - 1)
     }
 
     fn texture(&mut self, img: &Image, name: &str, sampler: usize) -> Result<usize> {
         let data = png(img)?;
-        let view = self.view(&data, None);
+        let view = self.view(&data, None)?;
         self.images.push(json!({"name": name, "bufferView": view, "mimeType": "image/png"}));
         self.textures.push(json!({"name": name, "sampler": sampler, "source": self.images.len() - 1}));
         Ok(self.textures.len() - 1)
@@ -471,7 +487,13 @@ impl Doc {
         self.samplers.len() - 1
     }
 
-    fn glb(self, name: &str, unlit: bool) -> Result<Vec<u8>> {
+    fn glb(mut self, name: &str, unlit: bool, tmp: &Path, dest: &Path) -> Result<u64> {
+        use std::io::Write;
+        let pad = (4 - self.len % 4) % 4;
+        self.bin.write_all(&[0u8; 3][..pad])?;
+        self.len += pad;
+        self.bin.flush()?;
+        drop(self.bin);
         let mut root = json!({
             "asset": {"version": "2.0", "generator": "bsp2img"},
             "scene": 0,
@@ -481,7 +503,7 @@ impl Doc {
             "materials": self.materials,
             "accessors": self.accessors,
             "bufferViews": self.views,
-            "buffers": [{"byteLength": self.bin.len()}],
+            "buffers": [{"byteLength": self.len}],
         });
         if unlit {
             root["extensionsUsed"] = json!(["KHR_materials_unlit"]);
@@ -495,24 +517,21 @@ impl Doc {
         while js.len() % 4 != 0 {
             js.push(b' ');
         }
-        let mut bin = self.bin;
-        while bin.len() % 4 != 0 {
-            bin.push(0);
-        }
-        let total = 12 + 8 + js.len() + 8 + bin.len();
+        let total = 12 + 8 + js.len() + 8 + self.len;
         if total > u32::MAX as usize {
             bail!("GLB over 4 GB");
         }
-        let mut out = Vec::with_capacity(total);
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(dest)?);
         for v in [0x4654_6C67u32, 2, total as u32, js.len() as u32, 0x4E4F_534A] {
-            out.extend_from_slice(&v.to_le_bytes());
+            w.write_all(&v.to_le_bytes())?;
         }
-        out.extend_from_slice(&js);
-        for v in [bin.len() as u32, 0x004E_4942] {
-            out.extend_from_slice(&v.to_le_bytes());
+        w.write_all(&js)?;
+        for v in [self.len as u32, 0x004E_4942] {
+            w.write_all(&v.to_le_bytes())?;
         }
-        out.extend_from_slice(&bin);
-        Ok(out)
+        std::io::copy(&mut std::fs::File::open(tmp)?, &mut w)?;
+        w.flush()?;
+        Ok(total as u64)
     }
 }
 
@@ -651,8 +670,15 @@ struct Model<'a> {
     unlit: bool,
 }
 
-fn write_glb(m: &Model, name: &str, nearest: bool, rep: &mut Report) -> Result<Vec<u8>> {
-    let mut doc = Doc::default();
+fn write_glb(m: &Model, name: &str, nearest: bool, dest: &Path, rep: &mut Report) -> Result<u64> {
+    let tmp = dest.with_extension("glb.tmp");
+    let r = write_glb_inner(m, name, nearest, &tmp, dest, rep);
+    let _ = std::fs::remove_file(&tmp);
+    r
+}
+
+fn write_glb_inner(m: &Model, name: &str, nearest: bool, tmp: &Path, dest: &Path, rep: &mut Report) -> Result<u64> {
+    let mut doc = Doc::new(tmp)?;
     let (mut tiled, mut clamped) = (None, None);
     if !m.unlit {
         tiled = Some(doc.sampler(true, nearest));
@@ -681,20 +707,20 @@ fn write_glb(m: &Model, name: &str, nearest: bool, rep: &mut Report) -> Result<V
             continue;
         }
         let mut attrs = json!({
-            "POSITION": doc.floats(&ix.pos, 3, true),
-            "NORMAL": doc.floats(&ix.nrm, 3, false),
-            "TEXCOORD_0": doc.floats(&ix.t0, 2, false),
+            "POSITION": doc.floats(&ix.pos, 3, true)?,
+            "NORMAL": doc.floats(&ix.nrm, 3, false)?,
+            "TEXCOORD_0": doc.floats(&ix.t0, 2, false)?,
         });
         if uv1 {
-            attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false));
+            attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false)?);
         }
         if p.color.is_some() {
-            attrs["COLOR_0"] = json!(doc.floats(&ix.col, 3, false));
+            attrs["COLOR_0"] = json!(doc.floats(&ix.col, 3, false)?);
         }
-        let indices = doc.indices(&ix.idx);
+        let indices = doc.indices(&ix.idx)?;
         doc.prims.push(json!({"attributes": attrs, "indices": indices, "material": p.mat, "mode": 4}));
     }
-    doc.glb(name, m.unlit)
+    doc.glb(name, m.unlit, tmp, dest)
 }
 
 fn file_safe(s: &str) -> String {
@@ -752,8 +778,14 @@ fn write_obj(m: &Model, obj: &Path, files: &mut Partial, rep: &mut Report) -> Re
             continue;
         }
         writeln!(w, "o part{pi}")?;
-        for v in ix.pos.chunks_exact(3) {
-            writeln!(w, "v {:.5} {:.5} {:.5}", v[0], v[1], v[2])?;
+        if p.color.is_some() {
+            for (v, c) in ix.pos.chunks_exact(3).zip(ix.col.chunks_exact(3)) {
+                writeln!(w, "v {:.5} {:.5} {:.5} {:.4} {:.4} {:.4}", v[0], v[1], v[2], c[0], c[1], c[2])?;
+            }
+        } else {
+            for v in ix.pos.chunks_exact(3) {
+                writeln!(w, "v {:.5} {:.5} {:.5}", v[0], v[1], v[2])?;
+            }
         }
         for v in ix.t0.chunks_exact(2) {
             writeln!(w, "vt {:.6} {:.6}", v[0], 1.0 - v[1])?;
@@ -818,7 +850,7 @@ pub fn export_gltf(
     match o.lighting {
         Lighting::Baked => {
             let mut log = |s: String| rep.log(s);
-            let direct: Vec<bool> = parts.iter().map(|p| !o.obj && vl.is_some() && p.verts.iter().all(|v| v.light != 0)).collect();
+            let direct: Vec<bool> = parts.iter().map(|p| vl.is_some() && p.verts.iter().all(|v| v.light != 0)).collect();
             let (mut charts, aw, ah, texel) = layout(&parts, o.texel, &direct, &mut log)?;
             let used: f64 = charts.iter().map(|c| c.size.0 as f64 * c.size.1 as f64).sum();
             rep.log(format!(
@@ -911,11 +943,10 @@ pub fn export_gltf(
         let bytes = files.paths().iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum::<u64>();
         (f, bytes)
     } else {
-        let data = write_glb(&model, name, o.nearest, rep)?;
         let f = free_name(out, &stem, ".glb");
         files.add(f.clone());
-        std::fs::write(&f, &data)?;
-        (f, data.len() as u64)
+        let size = write_glb(&model, name, o.nearest, &f, rep)?;
+        (f, size)
     };
     let _ = rep.step(1.0);
     rep.log(format!(

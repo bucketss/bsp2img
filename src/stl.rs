@@ -32,11 +32,12 @@ pub struct StlOpts {
     pub base: f64,
     pub print_width: f64,
     pub smooth: bool,
+    pub auto: bool,
 }
 
 impl Default for StlOpts {
     fn default() -> Self {
-        StlOpts { voxel: 8.0, wall: 32.0, base: 16.0, print_width: 200.0, smooth: false }
+        StlOpts { voxel: 8.0, wall: 32.0, base: 16.0, print_width: 200.0, smooth: false, auto: true }
     }
 }
 
@@ -106,6 +107,7 @@ struct Region {
     foot: Vec<bool>,
     floor: f64,
     top: f64,
+    voxel: f64,
 }
 
 fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Region> {
@@ -158,16 +160,24 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
     }
     let h = nav.cell / 2.0 + o.wall;
     let (bx0, by0, bx1, by1) = ((bx0 - h).max(cx0), (by0 - h).max(cy0), (bx1 + h).min(cx1), (by1 + h).min(cy1));
-    let v = o.voxel;
-    let lo = DVec3::new((bx0 / v).floor() * v - v, (by0 / v).floor() * v - v, ((floor - o.base) / v).floor() * v - v);
-    let n = [
-        ((bx1 - lo.x) / v).ceil() as usize + 1,
-        ((by1 - lo.y) / v).ceil() as usize + 1,
-        ((top - lo.z) / v).ceil() as usize + 1,
-    ];
-    let total = n[0] * n[1] * n[2];
-    if total > MAX_VOXELS {
-        bail!("{}x{}x{} voxels is too many; raise --voxel", n[0], n[1], n[2]);
+    let mut v = o.voxel;
+    let (lo, n) = loop {
+        let lo = DVec3::new((bx0 / v).floor() * v - v, (by0 / v).floor() * v - v, ((floor - o.base) / v).floor() * v - v);
+        let n = [
+            ((bx1 - lo.x) / v).ceil() as usize + 1,
+            ((by1 - lo.y) / v).ceil() as usize + 1,
+            ((top - lo.z) / v).ceil() as usize + 1,
+        ];
+        if n[0] * n[1] * n[2] <= MAX_VOXELS {
+            break (lo, n);
+        }
+        if !o.auto {
+            bail!("{}x{}x{} voxels is too many; raise --voxel", n[0], n[1], n[2]);
+        }
+        v = ((v * 1.1 * 10.0).round() / 10.0).max(v + 0.1);
+    };
+    if v != o.voxel {
+        rep.log(format!("  voxel raised to {v:.1} for a map this size"));
     }
     let (nx, ny) = (n[0], n[1]);
     let center = |i: usize, j: usize| (lo.x + (i as f64 + 0.5) * v, lo.y + (j as f64 + 0.5) * v);
@@ -219,7 +229,7 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
             }
         }
     }
-    Ok(Region { grid: Grid { n, lo, v, s: Vec::new() }, foot, floor, top })
+    Ok(Region { grid: Grid { n, lo, v, s: Vec::new() }, foot, floor, top, voxel: v })
 }
 
 fn classify(solid: &Solid, reg: &mut Region, base: f64) {
@@ -745,7 +755,7 @@ pub fn export_stl(
         n[0],
         n[1],
         n[2],
-        o.voxel,
+        reg.voxel,
         reg.floor,
         reg.top,
         t0.elapsed().as_secs_f64()
@@ -780,10 +790,10 @@ pub fn export_stl(
     let size = max - min;
     let scale = o.print_width / size.max_element();
     let mm = size * scale;
-    if o.voxel * scale < MIN_PRINT_MM {
+    if reg.voxel * scale < MIN_PRINT_MM {
         rep.log(format!(
             "  warning: a voxel is {:.2} mm at this size; walls under {MIN_PRINT_MM} mm may not print (raise --voxel or --print-width)",
-            o.voxel * scale
+            reg.voxel * scale
         ));
     }
     let mut files = Partial::default();
