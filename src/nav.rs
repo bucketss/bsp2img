@@ -108,6 +108,21 @@ pub fn zones(bsp: &Bsp) -> Vec<Zone> {
     out
 }
 
+pub fn root(up: &mut [u32], mut a: u32) -> u32 {
+    while up[a as usize] != a {
+        up[a as usize] = up[up[a as usize] as usize];
+        a = up[a as usize];
+    }
+    a
+}
+
+pub fn unite(up: &mut [u32], a: u32, b: u32) {
+    let (a, b) = (root(up, a), root(up, b));
+    if a != b {
+        up[a.max(b) as usize] = a.min(b);
+    }
+}
+
 pub struct Nav {
     pub lo: DVec3,
     pub cell: f64,
@@ -436,6 +451,17 @@ impl Nav {
 
     pub fn links(&self, u: usize) -> [u32; 4] {
         self.orth[u]
+    }
+
+    pub fn components(&self) -> Vec<u32> {
+        let mut up: Vec<u32> = (0..self.nodes.len() as u32).collect();
+        for u in 0..self.nodes.len() {
+            let more = self.extra[u].iter().map(|e| e.0);
+            for v in self.orth[u].iter().copied().filter(|&v| v != NONE).chain(more) {
+                unite(&mut up, u as u32, v);
+            }
+        }
+        (0..self.nodes.len() as u32).map(|u| root(&mut up, u)).collect()
     }
 
     fn hop(&self, u: usize, d: usize) -> Option<(usize, bool, bool)> {
