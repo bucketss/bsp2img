@@ -169,3 +169,26 @@ impl<'a> Links<'a> {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quad(x0: f32, x1: f32, z: f32, conns: Vec<u32>) -> Area {
+        Area { poly: vec![[x0, 0.0, z], [x1, 0.0, z], [x1, 32.0, z], [x0, 32.0, z]], crouch: false, conns }
+    }
+
+    #[test]
+    fn gate_follows_connections() {
+        let m = NavMesh {
+            areas: vec![quad(0.0, 32.0, 0.0, vec![1]), quad(32.0, 40.0, -10.0, vec![2]), quad(40.0, 72.0, -20.0, vec![]), quad(72.0, 96.0, -200.0, vec![])],
+            ladders: Vec::new(),
+        };
+        let g = Links::new(&m);
+        let (p, q) = (DVec2::new(28.0, 16.0), DVec2::new(44.0, 16.0));
+        assert!(g.allowed(&[0], &[1], p, q, 0.0, -10.0));
+        assert!(g.allowed(&[0], &[2], p, q, 0.0, -20.0));
+        assert!(!g.allowed(&[2], &[0], q, p, -20.0, 0.0));
+        assert!(!g.allowed(&[2], &[3], DVec2::new(68.0, 16.0), DVec2::new(76.0, 16.0), -20.0, -200.0));
+    }
+}

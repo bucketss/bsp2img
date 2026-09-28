@@ -323,7 +323,7 @@ impl Nav {
             ladders: 0,
             blockers,
         };
-        let res: Vec<([u32; 4], Vec<(u32, u32)>)> = (0..nav.nodes.len())
+        let res: Vec<_> = (0..nav.nodes.len())
             .into_par_iter()
             .map(|u| {
                 let c = nav.col[u] as usize;
