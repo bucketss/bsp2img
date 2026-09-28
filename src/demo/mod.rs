@@ -1,14 +1,16 @@
 pub mod bits;
 pub mod container;
+pub mod cs2;
 pub mod delta;
 pub mod messages;
 pub mod state;
 
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 
-pub use container::header;
 pub use state::{Death, Event, Team};
 
 use container::{Frame, Reader};
@@ -23,6 +25,30 @@ pub struct Summary {
     pub rounds: u32,
     pub truncated: bool,
     pub desyncs: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    GoldSrc,
+    Cs2,
+}
+
+pub fn kind(path: &Path) -> Result<Kind> {
+    let mut b = [0u8; 8];
+    File::open(path).with_context(|| format!("open {}", path.display()))?.read_exact(&mut b).context("demo header")?;
+    match &b {
+        b if b.starts_with(b"HLDEMO") => Ok(Kind::GoldSrc),
+        cs2::MAGIC => Ok(Kind::Cs2),
+        b"HL2DEMO\0" => bail!("Source demos are not supported"),
+        _ => bail!("not a demo"),
+    }
+}
+
+pub fn map_name(path: &Path) -> Result<String> {
+    match kind(path)? {
+        Kind::GoldSrc => Ok(container::header(path)?.map),
+        Kind::Cs2 => cs2::header(path),
+    }
 }
 
 pub fn scan(path: &Path, presence_every: f32, cancel: &dyn Fn() -> bool, on_event: &mut dyn FnMut(Event)) -> Result<Summary> {

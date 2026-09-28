@@ -627,8 +627,8 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
     }
     let heads: Vec<(PathBuf, String)> = files
         .iter()
-        .filter_map(|f| match demo::header(f) {
-            Ok(h) => Some((f.clone(), h.map)),
+        .filter_map(|f| match demo::map_name(f) {
+            Ok(m) => Some((f.clone(), m)),
             Err(e) => {
                 println!("skipped {}: {e:#}", f.display());
                 None
