@@ -277,6 +277,13 @@ impl App {
             });
             ui.checkbox(&mut self.ov.tga, "Also write 32-bit TGA");
             ui.checkbox(&mut self.ov.official, "Also write the official radar images");
+            ui.horizontal(|ui| {
+                ui.label("Compile into addon");
+                ui.add(egui::TextEdit::singleline(&mut self.ov.addon).hint_text("off").desired_width(160.0));
+            });
+            if !self.ov.addon.trim().is_empty() {
+                ui.weak("Writes the TGA and .vtex to content/csgo_addons/<addon>, the .txt to game/csgo_addons/<addon>, then runs resourcecompiler. The addon must exist in both.");
+            }
             ui.weak("CS2: one <map>[_section]_radar.png per vertical section, and <map>.txt with sections and icon keys. Framing is shared with the Overview view.");
         }
         ui.horizontal(|ui| {

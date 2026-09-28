@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::addon::Addon;
 use crate::bsp::Bsp;
 use crate::camera::{Framing, auto_persp, camera_basis, extents};
 use crate::grid::grid_preview;
@@ -50,6 +51,7 @@ pub struct OverviewOpts {
     pub split: Split,
     pub tga: bool,
     pub official: bool,
+    pub addon: String,
 }
 
 impl Default for OverviewOpts {
@@ -65,6 +67,7 @@ impl Default for OverviewOpts {
             split: Split::Official,
             tga: false,
             official: false,
+            addon: String::new(),
         }
     }
 }
@@ -193,6 +196,7 @@ fn export_radar(
     o: &OverviewOpts,
     out: &Path,
     mut files: Partial,
+    addon: Option<Addon>,
     rep: &mut Report,
 ) -> Result<()> {
     let (frame, src, info) = radar_params(r, bsp, cuts, o)?;
@@ -214,17 +218,34 @@ fn export_radar(
     if !matches!(o.split, Split::Official | Split::None) {
         secs.extend(info.iter().flat_map(|i| i.volumes().cloned()));
     }
+    let stems: Vec<String> = secs.iter().map(|s| stem(name, &s.name)).collect();
+    let plan = addon.as_ref().map(|a| a.plan(name, &stems));
+    if let (Some(a), Some(p)) = (&addon, &plan) {
+        rep.log(format!("  compile into addon {}, writing:", a.name));
+        for f in p.writes() {
+            rep.log(format!("    {}{}", f.display(), if f.exists() { " (replaces)" } else { "" }));
+        }
+    }
+    let mut sent = Vec::new();
     let fs = bsp.cs2.as_ref().map(|x| &x.fs);
     let total = secs.len() as f32 + 0.5;
     for (i, s) in secs.iter().enumerate() {
         rep.step((i as f32 + 0.3) / total)?;
         let f = s.frame.unwrap_or(frame);
         let img = overview::render_radar(r, &f, o.ss, &s.cuts(cuts), o.cull)?;
-        let st = stem(name, &s.name);
+        let st = &stems[i];
+        if let Some(p) = &plan {
+            if let Some(d) = p.tga[i].parent() {
+                std::fs::create_dir_all(d)?;
+            }
+            std::fs::write(&p.tga[i], overview::tga_rgba_bytes(&img))?;
+            std::fs::write(&p.vtex[i], crate::addon::vtex(st))?;
+            sent.push(img.clone());
+        }
         for e in overview::radar_exts(true, o.tga) {
             files.add(out.join(format!("{st}_radar{e}")));
         }
-        let saved = overview::save_radar(out, &st, &img, true, o.tga)?;
+        let saved = overview::save_radar(out, st, &img, true, o.tga)?;
         let what = if s.frame.is_some() { format!("pos_x {} pos_y {} scale {}", num(f.pos_x), num(f.pos_y), num(f.scale)) } else { s.range() };
         rep.log(format!("  {} ({what}): {}", s.name, saved.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("  ")));
         if o.official {
@@ -247,13 +268,29 @@ fn export_radar(
     }
     t.sections = secs;
     t.icons = icons(bsp, &frame, info.as_ref());
-    t.autogen = o.tga;
+    t.autogen = o.tga || addon.is_some();
     let txt = out.join(format!("{name}.txt"));
     files.add(txt.clone());
     std::fs::write(&txt, t.txt())?;
     files.keep();
-    let _ = rep.step(1.0);
     rep.log(format!("  {}", txt.display()));
+    if let (Some(a), Some(p)) = (&addon, &plan) {
+        if let Some(d) = p.txt.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(&p.txt, t.txt())?;
+        let t0 = std::time::SystemTime::now();
+        a.compile(&p.vtex, rep)?;
+        let fresh = |f: &Path| std::fs::metadata(f).and_then(|m| m.modified()).is_ok_and(|m| m + std::time::Duration::from_secs(2) >= t0);
+        let stale: Vec<String> = p.vtex_c.iter().filter(|f| !fresh(f)).map(|f| f.display().to_string()).collect();
+        if !stale.is_empty() {
+            anyhow::bail!("resourcecompiler finished but did not write {}", stale.join(", "));
+        }
+        for (f, img) in p.vtex_c.iter().zip(&sent) {
+            rep.log(format!("  compiled {} ({})", f.display(), crate::addon::check(f, img)?));
+        }
+    }
+    let _ = rep.step(1.0);
     Ok(())
 }
 
@@ -269,6 +306,11 @@ pub fn export_overview(
 ) -> Result<()> {
     let mut files = Partial::default();
     rep.step(0.0)?;
+    let addon = match o.addon.trim() {
+        "" => None,
+        _ if !bsp.is_cs2() => anyhow::bail!("compiling into an addon is for CS2 maps only"),
+        a => Some(Addon::find(bsp.cs2.as_ref().and_then(|x| x.root.as_deref()), a)?),
+    };
     if o.grid {
         let f = free_name(out, &format!("{name}_grid"), ".png");
         files.add(f.clone());
@@ -277,7 +319,7 @@ pub fn export_overview(
         rep.step(0.3)?;
     }
     if bsp.is_cs2() {
-        return export_radar(r, bsp, name, cuts, o, out, files, rep);
+        return export_radar(r, bsp, name, cuts, o, out, files, addon, rep);
     }
     let ov = overview_params(r, cuts, o)?;
     let img = overview::render(r, &ov, o.ss, cuts, o.cull)?;

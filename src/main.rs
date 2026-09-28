@@ -1,3 +1,4 @@
+mod addon;
 mod bsp;
 mod camera;
 mod cli;

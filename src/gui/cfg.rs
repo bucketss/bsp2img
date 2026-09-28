@@ -178,6 +178,7 @@ impl Cfg for OverviewOpts {
             ("sections", self.split.key()),
             ("tga", self.tga.to_string()),
             ("official", self.official.to_string()),
+            ("addon", self.addon.clone()),
         ])
     }
 
@@ -191,6 +192,7 @@ impl Cfg for OverviewOpts {
             "sections" => self.split = crate::radar::Split::parse(v).unwrap_or_default(),
             "tga" => put(&mut self.tga, v),
             "official" => put(&mut self.official, v),
+            "addon" => self.addon = v.trim().to_string(),
             _ => {}
         }
     }
