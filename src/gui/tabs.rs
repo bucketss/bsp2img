@@ -100,7 +100,12 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().id_salt("maps").auto_shrink([false, false]).show(ui, |ui| {
         for (n, p) in &shown {
             let sel = app.current.as_ref() == Some(p);
-            let r = ui.selectable_label(sel, n.as_str());
+            let mut r = ui.selectable_label(sel, n.as_str());
+            if n.contains('/') {
+                r = r.on_hover_ui(|ui| {
+                    ui.label(crate::paths::workshop_title(p).unwrap_or_else(|| p.display().to_string()));
+                });
+            }
             if r.clicked() {
                 pick = Some(p.clone());
             }
