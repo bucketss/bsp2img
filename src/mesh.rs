@@ -26,6 +26,7 @@ pub enum Mode {
     AlphaTest = 1,
     Blend = 2,
     Additive = 3,
+    Mod2x = 4,
 }
 
 #[repr(C)]
@@ -36,7 +37,76 @@ pub struct Vertex {
     pub lm: [f32; 2],
     pub bias: f32,
     pub normal: [f32; 3],
-    pub blend: f32,
+    pub uv2: [f32; 2],
+    pub blend: [u16; 2],
+    pub paint: [u8; 4],
+    pub light: u32,
+    pub mask: [u8; 4],
+}
+
+impl Vertex {
+    pub const BLANK: Vertex = Vertex {
+        pos: [0.0; 3],
+        uv: [0.0; 2],
+        lm: [0.0; 2],
+        bias: 0.0,
+        normal: [0.0; 3],
+        uv2: [0.0; 2],
+        blend: [0; 2],
+        paint: [255; 4],
+        light: 0,
+        mask: [0; 4],
+    };
+
+    pub fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
+        let l2 = |p: [f32; 2], q: [f32; 2]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+        let l3 = |p: [f32; 3], q: [f32; 3]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
+        let lb = |p: [u8; 4], q: [u8; 4]| std::array::from_fn(|k| (p[k] as f32 + (q[k] as f32 - p[k] as f32) * t).round() as u8);
+        let mut n = l3(a.normal, b.normal);
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len > 1e-12 {
+            n = n.map(|c| c / len);
+        }
+        Vertex {
+            pos: l3(a.pos, b.pos),
+            uv: l2(a.uv, b.uv),
+            lm: l2(a.lm, b.lm),
+            bias: a.bias + (b.bias - a.bias) * t,
+            normal: n,
+            uv2: l2(a.uv2, b.uv2),
+            blend: std::array::from_fn(|k| (a.blend[k] as f32 + (b.blend[k] as f32 - a.blend[k] as f32) * t).round() as u16),
+            paint: lb(a.paint, b.paint),
+            light: if a.light == b.light { a.light } else { pack_rgb9e5(l3(unpack_rgb9e5(a.light), unpack_rgb9e5(b.light))) },
+            mask: lb(a.mask, b.mask),
+        }
+    }
+}
+
+pub fn unorm16(v: f32) -> u16 {
+    (v.clamp(0.0, 1.0) * 65535.0).round() as u16
+}
+
+pub fn pack_rgb9e5(c: [f32; 3]) -> u32 {
+    const MAXV: f32 = 65408.0;
+    let c = c.map(|v| if v.is_finite() { v.clamp(0.0, MAXV) } else { 0.0 });
+    let m = c[0].max(c[1]).max(c[2]);
+    if m <= 0.0 {
+        return 0;
+    }
+    let mut e = (m.log2().floor() as i32).max(-16) + 1 + 15;
+    let mut d = 2f32.powi(e - 15 - 9);
+    if (m / d).round() >= 512.0 {
+        e += 1;
+        d *= 2.0;
+    }
+    let e = e.clamp(0, 31) as u32;
+    let q = c.map(|v| ((v / d).round() as u32).min(511));
+    q[0] | (q[1] << 9) | (q[2] << 18) | (e << 27)
+}
+
+pub fn unpack_rgb9e5(v: u32) -> [f32; 3] {
+    let d = 2f32.powi((v >> 27) as i32 - 15 - 9);
+    [(v & 511) as f32 * d, ((v >> 9) & 511) as f32 * d, ((v >> 18) & 511) as f32 * d]
 }
 
 pub struct Batch {
@@ -46,7 +116,38 @@ pub struct Batch {
     pub warp: Option<[f32; 4]>,
     pub tint: [f32; 3],
     pub layer2: Option<(usize, [f32; 4])>,
+    pub layer3: Option<(usize, [f32; 4], bool)>,
+    pub tint_mask: Option<usize>,
     pub verts: Vec<Vertex>,
+    pub idx: Vec<u32>,
+    pub chunks: Vec<Chunk>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Chunk {
+    pub first: u32,
+    pub count: u32,
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+}
+
+impl Chunk {
+    pub fn new(verts: &[Vertex], first: usize, count: usize) -> Chunk {
+        let (lo, hi) = verts.iter().fold(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]), |(lo, hi), v| {
+            (std::array::from_fn(|k| lo[k].min(v.pos[k])), std::array::from_fn(|k| hi[k].max(v.pos[k])))
+        });
+        Chunk { first: first as u32, count: count as u32, lo, hi }
+    }
+}
+
+impl Batch {
+    pub fn tris(&self) -> impl Iterator<Item = [&Vertex; 3]> + '_ {
+        tris(&self.verts, &self.idx)
+    }
+}
+
+pub fn tris<'a>(verts: &'a [Vertex], idx: &'a [u32]) -> impl Iterator<Item = [&'a Vertex; 3]> + 'a {
+    idx.chunks_exact(3).map(move |t| [&verts[t[0] as usize], &verts[t[1] as usize], &verts[t[2] as usize]])
 }
 
 #[derive(Clone)]
@@ -66,6 +167,41 @@ pub struct Mesh {
     pub points: Vec<DVec3>,
     pub nudged: usize,
     pub names: Vec<String>,
+    pub hdr: Option<HdrLight>,
+    pub casters: Vec<Vertex>,
+    pub caster_idx: Vec<u32>,
+    pub point_cell: Option<f64>,
+    pub compressed: Vec<Option<crate::s2::texture::Compressed>>,
+}
+
+impl Mesh {
+    pub fn texture(&self, i: usize) -> Option<std::borrow::Cow<'_, Image>> {
+        let t = self.textures.get(i)?.as_ref()?;
+        match self.compressed.get(i).and_then(|c| c.as_ref()) {
+            Some(c) => c.decode().ok().map(|d| std::borrow::Cow::Owned(Image { w: d.w as u32, h: d.h as u32, rgba: d.rgba })),
+            None => Some(std::borrow::Cow::Borrowed(t)),
+        }
+    }
+}
+
+pub struct PointLight {
+    pub pos: [f32; 3],
+    pub range: f32,
+    pub color: [f32; 3],
+    pub channel: u32,
+    pub dir: [f32; 3],
+    pub kind: u32,
+    pub cone: [f32; 2],
+}
+
+pub struct HdrLight {
+    pub w: u32,
+    pub h: u32,
+    pub irradiance: Vec<u32>,
+    pub shadows: Option<Image>,
+    pub sun: [f32; 3],
+    pub lights: Vec<PointLight>,
+    pub curve: [f32; 3],
 }
 
 pub fn skip_class(cls: &str) -> bool {
@@ -381,18 +517,30 @@ pub fn build_mesh(
             lm: lmuv(i),
             bias: level as f32,
             normal: [r.normal.x as f32, r.normal.y as f32, r.normal.z as f32],
-            blend: 0.0,
+            ..Vertex::BLANK
         };
         let key = (r.tex, r.mode, r.alpha.to_bits(), r.warp.map(|w| w.map(f32::to_bits)));
         let bi = *index.entry(key).or_insert_with(|| {
-            batches.push(Batch { tex: r.tex, mode: r.mode, alpha: r.alpha, warp: r.warp, tint: [1.0; 3], layer2: None, verts: Vec::new() });
+            batches.push(Batch {
+                tex: r.tex,
+                mode: r.mode,
+                alpha: r.alpha,
+                warp: r.warp,
+                tint: [1.0; 3],
+                layer2: None,
+                layer3: None,
+                tint_mask: None,
+                verts: Vec::new(),
+                idx: Vec::new(),
+                chunks: Vec::new(),
+            });
             batches.len() - 1
         });
-        let out = &mut batches[bi].verts;
-        for i in 1..n - 1 {
-            out.push(vert(0));
-            out.push(vert(i));
-            out.push(vert(i + 1));
+        let b = &mut batches[bi];
+        let base = b.verts.len() as u32;
+        b.verts.extend((0..n).map(vert));
+        for i in 1..n as u32 - 1 {
+            b.idx.extend([base, base + i, base + i + 1]);
         }
     }
     for b in &batches {
@@ -409,6 +557,11 @@ pub fn build_mesh(
         points,
         nudged: levels.iter().filter(|&&l| l > 0).count(),
         names: Vec::new(),
+        hdr: None,
+        casters: Vec::new(),
+        caster_idx: Vec::new(),
+        point_cell: None,
+        compressed: Vec::new(),
     }
 }
 
@@ -538,19 +691,18 @@ pub fn roof_levels(mesh: &Mesh) -> Vec<(f64, f64, f64)> {
     let bin_size = 16.0;
     let min_frac = 0.02;
     let gap = 32.0;
-    let mut zs = Vec::new();
-    for b in &mesh.batches {
-        for tri in b.verts.chunks_exact(3) {
-            let p: Vec<DVec3> =
-                tri.iter().map(|v| DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64)).collect();
-            let n = (p[1] - p[0]).cross(p[2] - p[0]);
-            let ln = n.length();
-            if ln <= 1e-6 || n.z / ln <= 0.7 {
-                continue;
-            }
-            zs.push(((p[0].z + p[1].z + p[2].z) / 3.0, n.z / 2.0));
-        }
-    }
+    let zs: Vec<(f64, f64)> = mesh
+        .batches
+        .par_iter()
+        .flat_map_iter(|b| {
+            b.tris().filter_map(|tri| {
+                let p = [0, 1, 2].map(|k| DVec3::new(tri[k].pos[0] as f64, tri[k].pos[1] as f64, tri[k].pos[2] as f64));
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                let ln = n.length();
+                (ln > 1e-6 && n.z / ln > 0.7).then(|| ((p[0].z + p[1].z + p[2].z) / 3.0, n.z / 2.0))
+            })
+        })
+        .collect();
     if zs.is_empty() {
         return Vec::new();
     }

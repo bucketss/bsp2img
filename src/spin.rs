@@ -134,7 +134,7 @@ pub fn spin_views(r: &Renderer, cuts: &Cuts, yaws: &[f64], pitch: f64, size: u32
     let bases: Vec<_> = yaws.iter().map(|&y| camera_basis(y, pitch)).collect();
     let (mut r0, mut r1, mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
     for b in &bases {
-        for p in &pts {
+        for p in pts.iter() {
             let d = *p - pivot;
             let (x, y) = (d.dot(b.r), d.dot(b.u));
             r0 = r0.min(x);

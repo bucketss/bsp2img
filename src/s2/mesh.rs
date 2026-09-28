@@ -5,14 +5,17 @@ use rayon::prelude::*;
 
 use super::entities::Ent;
 use super::material::{self, Blend, Fill, Material};
-use super::model::Model;
+use super::model::{Indices, Model, Stream};
+use super::probe::Probes;
 use super::texture;
 use super::vpk::Fs;
-use super::world::{OVERLAY, World, Xf};
-use crate::mesh::{Batch, Image, Mesh, Mode, Vertex};
+use super::world::{BLOCK_LIGHT, World, Xf};
+use crate::mesh::{Batch, Chunk, HdrLight, Image, Mesh, Mode, Vertex, pack_rgb9e5, unorm16};
 
-const SPLIT: usize = 4_000_000;
+const BATCH_BYTES: usize = 240 << 20;
 const POINT_CELL: f64 = 32.0;
+const CHUNK_TILE: f64 = 1024.0;
+const TILE_SAMPLES: usize = 64;
 const TINT_LEVELS: f32 = 255.0;
 
 pub struct Lightmap {
@@ -25,6 +28,8 @@ pub struct Opts {
     pub tex_max: usize,
     pub crop: Option<[f64; 4]>,
     pub lightmap: Option<Lightmap>,
+    pub hdr: Option<HdrLight>,
+    pub probes: Option<Probes>,
 }
 
 pub struct Built {
@@ -34,6 +39,8 @@ pub struct Built {
     pub models: usize,
     pub materials: usize,
     pub bad_models: Vec<String>,
+    pub probe_draws: usize,
+    pub casters: usize,
 }
 
 struct Inst {
@@ -44,13 +51,29 @@ struct Inst {
     tint: [f32; 3],
     alpha: f32,
     dcs: Option<u32>,
+    skin: String,
+    probe: i64,
+    caster: bool,
 }
 
 struct Entry {
     inst: u32,
     dc: u32,
     tris: usize,
+    verts: usize,
     clip: bool,
+}
+
+impl Entry {
+    fn bytes(&self) -> usize {
+        self.verts * std::mem::size_of::<Vertex>() + self.tris * 12
+    }
+}
+
+struct Ctx<'a> {
+    lm_rect: [f32; 4],
+    flat: [f32; 2],
+    probes: Option<&'a Probes>,
 }
 
 fn white() -> Image {
@@ -74,6 +97,7 @@ fn quant(t: [f32; 3]) -> [u8; 3] {
 
 fn mode(m: &Material, alpha: f32) -> Mode {
     match m.mode {
+        material::Mode::Mod2x => Mode::Mod2x,
         _ if alpha < 0.99 && m.mode != material::Mode::Additive => Mode::Blend,
         material::Mode::Opaque => Mode::Opaque,
         material::Mode::AlphaTest => Mode::AlphaTest,
@@ -82,19 +106,22 @@ fn mode(m: &Material, alpha: f32) -> Mode {
     }
 }
 
+fn relative(uv: [f32; 4], s1: [f32; 2], o1: [f32; 2]) -> [f32; 4] {
+    let a = [uv[0] / s1[0].max(1e-6), uv[1] / s1[1].max(1e-6)];
+    [a[0], a[1], uv[2] - o1[0] * a[0], uv[3] - o1[1] * a[1]]
+}
+
 pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
+    let mut tm = crate::prof::Timer::new("mesh");
     let mut names = world.models.clone();
     let mut ids: HashMap<String, u32> = names.iter().enumerate().map(|(i, n)| (n.clone(), i as u32)).collect();
     let mut insts: Vec<Inst> = Vec::new();
-    let inst = |model: u32, xf: Xf, tint: [f32; 3], alpha: f32, dcs: Option<u32>| {
+    let inst = |model: u32, xf: Xf, tint: [f32; 3], alpha: f32, dcs: Option<u32>, skin: String, probe: i64, caster: bool| {
         let nrm = xf.r.inverse().transpose();
-        Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, tint, alpha, dcs }
+        Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, tint, alpha, dcs, skin, probe, caster }
     };
     for d in &world.draws {
-        if d.flags & OVERLAY != 0 {
-            continue;
-        }
-        insts.push(inst(d.model, d.xf, d.tint, 1.0, d.dc));
+        insts.push(inst(d.model, d.xf, d.tint, 1.0, d.dc, d.skin.clone(), d.probe, d.flags & BLOCK_LIGHT != 0));
     }
     for e in ents.iter().filter(|e| e.render) {
         let Some(v) = &e.vmdl else { continue };
@@ -103,7 +130,8 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             names.push(v.clone());
             n
         });
-        insts.push(inst(id, e.xf, e.tint, e.alpha, None));
+        let skin = e.kv.get("skin").cloned().unwrap_or_default();
+        insts.push(inst(id, e.xf, e.tint, e.alpha, None, skin, -1, false));
     }
 
     let loaded: Vec<Result<Model, String>> = names
@@ -121,8 +149,12 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             }
         })
         .collect();
+    tm.lap("models");
+    let skins: Vec<Option<usize>> =
+        insts.iter().map(|it| models[it.model as usize].as_ref().and_then(|m| m.skin(&it.skin))).collect();
 
     let mut entries: Vec<Entry> = Vec::new();
+    let mut caster_entries: Vec<Entry> = Vec::new();
     for (ii, it) in insts.iter().enumerate() {
         let Some(m) = &models[it.model as usize] else { continue };
         let dcs: Vec<u32> = match it.dcs {
@@ -133,7 +165,8 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         for dc in dcs {
             let c = &m.draws[dc as usize];
             if c.triangles && c.index_count >= 3 {
-                entries.push(Entry { inst: ii as u32, dc, tris: c.index_count / 3, clip: false });
+                let e = Entry { inst: ii as u32, dc, tris: c.index_count / 3, verts: 0, clip: false };
+                if it.caster { caster_entries.push(e) } else { entries.push(e) }
             }
         }
     }
@@ -169,16 +202,13 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         });
     }
     let dropped = total - entries.len();
-
-    let mut mat_names: Vec<String> = entries
-        .iter()
-        .map(|e| {
-            let it = &insts[e.inst as usize];
-            models[it.model as usize].as_ref().unwrap().draws[e.dc as usize].material.to_lowercase()
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    tm.lap("crop");
+    let mat_of = |e: &Entry| -> String {
+        let it = &insts[e.inst as usize];
+        let m = models[it.model as usize].as_ref().unwrap();
+        m.material(&m.draws[e.dc as usize], skins[e.inst as usize])
+    };
+    let mut mat_names: Vec<String> = entries.iter().map(mat_of).collect::<BTreeSet<_>>().into_iter().collect();
     mat_names.retain(|n| !n.is_empty());
     let mut missing: BTreeSet<String> = BTreeSet::new();
     let mats: HashMap<String, Option<Material>> = mat_names
@@ -190,31 +220,22 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             Ok(m) => (n, m),
             Err(_) => {
                 missing.insert(n.clone());
-                (n, Some(Material {
-                    fill: Fill::Solid([255, 0, 255, 255]),
-                    layer2: None,
-                    mode: material::Mode::Opaque,
-                    alpha: 1.0,
-                    tint: [1.0; 3],
-                    uv_scale: [1.0; 2],
-                    uv_offset: [0.0; 2],
-                    decal: false,
-                }))
+                (n, Some(Material::solid([255, 0, 255, 255])))
             }
         })
         .collect();
-
+    tm.lap("materials");
     let mut keys: HashMap<(String, [u8; 3], Mode, u32), usize> = HashMap::new();
     let mut groups: Vec<(String, [u8; 3], Mode, f32, Vec<usize>)> = Vec::new();
     for (ei, e) in entries.iter().enumerate() {
         let it = &insts[e.inst as usize];
         let c = &models[it.model as usize].as_ref().unwrap().draws[e.dc as usize];
-        let mn = c.material.to_lowercase();
+        let mn = mat_of(e);
         let Some(Some(mat)) = mats.get(&mn) else { continue };
         let t: [f32; 3] = std::array::from_fn(|k| mat.tint[k] * c.tint[k] * it.tint[k]);
         let alpha = mat.alpha * c.alpha * it.alpha;
         let md = mode(mat, alpha);
-        let a = if matches!(md, Mode::Blend | Mode::Additive) { alpha } else { 1.0 };
+        let a = if matches!(md, Mode::Blend | Mode::Additive | Mode::Mod2x) { alpha } else { 1.0 };
         let key = (mn.clone(), quant(t), md, a.to_bits());
         let gi = *keys.entry(key).or_insert_with(|| {
             groups.push((mn, quant(t), md, a, Vec::new()));
@@ -231,19 +252,18 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 Fill::Texture(t) => Some(t.clone()),
                 Fill::Solid(_) => None,
             };
-            base.into_iter().chain(m.layer2.as_ref().map(|l| l.0.clone()))
+            base.into_iter()
+                .chain(m.layer2.as_ref().map(|l| l.tex.clone()))
+                .chain(m.layer3.as_ref().map(|l| l.tex.clone()))
+                .chain(m.tint_mask.clone())
         })
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     tex_names.sort();
-    let decoded: HashMap<String, Option<Image>> = tex_names
-        .par_iter()
-        .map(|t| {
-            let im = texture::load(fs, &format!("{t}_c"), o.tex_max).ok().map(|i| Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba });
-            (t.clone(), im)
-        })
-        .collect();
+    let decoded: HashMap<String, Option<texture::Tex>> =
+        tex_names.par_iter().map(|t| (t.clone(), texture::load_tex(fs, &format!("{t}_c"), o.tex_max).ok())).collect();
+    tm.lap("textures");
     for (t, im) in &decoded {
         if im.is_none() {
             missing.insert(t.clone());
@@ -251,20 +271,29 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     }
 
     let mut images: Vec<Option<Image>> = Vec::new();
+    let mut compressed: Vec<Option<texture::Compressed>> = Vec::new();
     let mut tex_ids: HashMap<String, usize> = HashMap::new();
     let mut tex_label: Vec<String> = Vec::new();
     let mut group_tex = Vec::with_capacity(groups.len());
     let mut group_l2 = Vec::with_capacity(groups.len());
+    let mut group_l3 = Vec::with_capacity(groups.len());
+    let mut group_tm = Vec::with_capacity(groups.len());
     let mut decoded = decoded;
     for (mn, _, _, _, _) in &groups {
         let mat = mats[mn].as_ref().unwrap();
         let label = mn.rsplit('/').next().unwrap_or(mn).trim_end_matches(".vmat").to_string();
         let mut add = |src: String, fill: &Fill| {
             *tex_ids.entry(src).or_insert_with(|| {
-                images.push(Some(match fill {
-                    Fill::Texture(t) => decoded.remove(t).flatten().unwrap_or_else(checker),
-                    Fill::Solid(c) => Image { w: 4, h: 4, rgba: c.repeat(16) },
-                }));
+                let (im, bc) = match fill {
+                    Fill::Texture(t) => match decoded.remove(t).flatten() {
+                        Some(texture::Tex::Plain(i)) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
+                        Some(texture::Tex::Bc(c)) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
+                        None => (checker(), None),
+                    },
+                    Fill::Solid(c) => (Image { w: 4, h: 4, rgba: c.repeat(16) }, None),
+                };
+                images.push(Some(im));
+                compressed.push(bc);
                 tex_label.push(label.clone());
                 images.len() - 1
             })
@@ -274,14 +303,42 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             Fill::Solid(c) => format!("#{:02x}{:02x}{:02x}{:02x}", c[0], c[1], c[2], c[3]),
         };
         group_tex.push(add(src, &mat.fill));
-        group_l2.push(mat.layer2.as_ref().map(|(t, _, uv)| (add(t.clone(), &Fill::Texture(t.clone())), *uv)));
+        group_l2.push(mat.layer2.as_ref().map(|l| (add(l.tex.clone(), &Fill::Texture(l.tex.clone())), l.uv)));
+        group_l3.push(mat.layer3.as_ref().map(|l| {
+            let idx = add(l.tex.clone(), &Fill::Texture(l.tex.clone()));
+            match &mat.layer2 {
+                Some(l2) if l.set == l2.set || l.set != mat.uv_set => (idx, l.uv, true),
+                _ => (idx, relative(l.uv, mat.uv_scale, mat.uv_offset), false),
+            }
+        }));
+        group_tm.push(mat.tint_mask.as_ref().map(|t| add(t.clone(), &Fill::Texture(t.clone()))));
     }
     let (atlas, lm_rect, flat) = match o.lightmap {
         Some(l) => (l.atlas, l.rect, l.flat),
         None => (white(), [0.0; 4], [0.5, 0.5]),
     };
+    let ctx = Ctx { lm_rect, flat, probes: o.probes.as_ref() };
     let to_clip: Vec<(usize, usize)> =
         groups.iter().enumerate().flat_map(|(gi, g)| g.4.iter().filter(|&&ei| entries[ei].clip).map(move |&ei| (gi, ei))).collect();
+    let size = |list: &mut Vec<Entry>| {
+        let counts: Vec<(usize, usize)> = list
+            .par_iter()
+            .map(|e| {
+                let it = &insts[e.inst as usize];
+                let m = models[it.model as usize].as_ref().unwrap();
+                let c = &m.draws[e.dc as usize];
+                match (m.stream(c, "POSITION", 0), m.index_view(c)) {
+                    (Some(_), Ok(ix)) => (unique(&ix), ix.len() / 3),
+                    _ => (0, 0),
+                }
+            })
+            .collect();
+        for (e, (v, t)) in list.iter_mut().zip(counts) {
+            (e.verts, e.tris) = (v, t);
+        }
+    };
+    size(&mut entries);
+    size(&mut caster_entries);
     let clipped: HashMap<usize, Vec<Vertex>> = to_clip
         .par_iter()
         .map(|&(gi, ei)| {
@@ -289,51 +346,121 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             let e = &entries[ei];
             let it = &insts[e.inst as usize];
             let m = models[it.model as usize].as_ref().unwrap();
-            let mut v = vec![ZERO; e.tris * 3];
-            fill(m, e.dc as usize, it, mat, lm_rect, flat, &mut v);
-            (ei, clip_rect(&v, o.crop.unwrap()))
+            let mut v = vec![Vertex::BLANK; e.verts];
+            let mut ix = vec![0u32; e.tris * 3];
+            fill(m, e.dc as usize, it, mat, &ctx, &mut v, &mut ix);
+            let soup: Vec<Vertex> = ix.iter().map(|&i| v[i as usize]).collect();
+            (ei, clip_rect(&soup, o.crop.unwrap()))
         })
         .collect();
     for (&ei, v) in &clipped {
         entries[ei].tris = v.len() / 3;
+        entries[ei].verts = v.len();
     }
-    let mut batches: Vec<Batch> = Vec::new();
-    let mut faces = 0;
-    for (gi, (mn, tq, md, alpha, list)) in groups.iter().enumerate() {
-        let mat = mats[mn].as_ref().unwrap();
+    crate::prof::note(|| {
+        let (v, t) = entries.iter().fold((0, 0), |(v, t), e| (v + e.verts, t + e.tris));
+        format!("{v} vertices for {t} triangles ({:.3} per triangle)", v as f64 / t.max(1) as f64)
+    });
+    tm.lap("clip");
+    let probe_draws = if ctx.probes.is_some() {
+        entries
+            .iter()
+            .filter(|e| {
+                let it = &insts[e.inst as usize];
+                let m = models[it.model as usize].as_ref().unwrap();
+                !m.draws[e.dc as usize].lightmapped
+            })
+            .count()
+    } else {
+        0
+    };
+    let tiles: Vec<(i32, i32)> = entries
+        .par_iter()
+        .enumerate()
+        .map(|(ei, e)| {
+            let c = match clipped.get(&ei) {
+                Some(v) => v.iter().fold(DVec3::ZERO, |a, v| a + DVec3::new(v.pos[0] as f64, v.pos[1] as f64, 0.0)) / v.len().max(1) as f64,
+                None => centre(&insts[e.inst as usize], models[insts[e.inst as usize].model as usize].as_ref().unwrap(), e.dc as usize),
+            };
+            ((c.x / CHUNK_TILE).floor() as i32, (c.y / CHUNK_TILE).floor() as i32)
+        })
+        .collect();
+    for g in &mut groups {
+        g.4.sort_by_key(|&ei| tiles[ei]);
+    }
+    let mut parts: Vec<(usize, usize, usize)> = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        let list = &g.4;
         let mut start = 0;
         while start < list.len() {
             let mut end = start;
             let mut n = 0;
-            while end < list.len() && (end == start || n + entries[list[end]].tris * 3 <= SPLIT) {
-                n += entries[list[end]].tris * 3;
+            while end < list.len() && (end == start || n + entries[list[end]].bytes() <= BATCH_BYTES) {
+                n += entries[list[end]].bytes();
                 end += 1;
             }
+            parts.push((gi, start, end));
+            start = end;
+        }
+    }
+    let batches: Vec<Batch> = parts
+        .par_iter()
+        .map(|&(gi, start, end)| {
+            let (mn, tq, md, alpha, list) = &groups[gi];
+            let mat = mats[mn].as_ref().unwrap();
             let part = &list[start..end];
-            let mut verts = vec![ZERO; n];
-            let mut slices: Vec<&mut [Vertex]> = Vec::with_capacity(part.len());
-            let mut rest: &mut [Vertex] = &mut verts;
-            for &ei in part {
-                let (a, b) = rest.split_at_mut(entries[ei].tris * 3);
-                slices.push(a);
-                rest = b;
-            }
-            slices.into_par_iter().zip(part.par_iter()).for_each(|(out, &ei)| {
+            let (verts, idx) = gather(part, &entries, |ei, out, ix| {
                 let e = &entries[ei];
                 let it = &insts[e.inst as usize];
                 let m = models[it.model as usize].as_ref().unwrap();
                 match clipped.get(&ei) {
-                    Some(v) => out.copy_from_slice(v),
-                    None => fill(m, e.dc as usize, it, mat, lm_rect, flat, out),
+                    Some(v) => {
+                        out.copy_from_slice(v);
+                        ix.iter_mut().enumerate().for_each(|(k, x)| *x = k as u32);
+                    }
+                    None => fill(m, e.dc as usize, it, mat, &ctx, out, ix),
                 }
             });
-            faces += n / 3;
-            batches.push(Batch { tex: group_tex[gi], mode: *md, alpha: *alpha, warp: None, tint: tq.map(|v| v as f32 / TINT_LEVELS), layer2: group_l2[gi], verts });
-            start = end;
-        }
-    }
+            let mut chunks = Vec::new();
+            let (mut v0, mut i0, mut v, mut i) = (0, 0, 0, 0);
+            for (k, &ei) in part.iter().enumerate() {
+                v += entries[ei].verts;
+                i += entries[ei].tris * 3;
+                if part.get(k + 1).is_none_or(|&n| tiles[n] != tiles[ei]) {
+                    chunks.push(Chunk::new(&verts[v0..v], i0, i - i0));
+                    (v0, i0) = (v, i);
+                }
+            }
+            Batch {
+                tex: group_tex[gi],
+                mode: *md,
+                alpha: *alpha,
+                warp: None,
+                tint: tq.map(|v| v as f32 / TINT_LEVELS),
+                layer2: group_l2[gi],
+                layer3: group_l3[gi],
+                tint_mask: group_tm[gi],
+                verts,
+                idx,
+                chunks,
+            }
+        })
+        .collect();
+    let faces = batches.iter().map(|b| b.idx.len() / 3).sum();
+    tm.lap("fill");
+    let plain = Material::solid([255; 4]);
+    let all: Vec<usize> = (0..caster_entries.len()).collect();
+    let nocast = Ctx { lm_rect: [0.0; 4], flat, probes: None };
+    let (casters, caster_idx) = gather(&all, &caster_entries, |ei, out, ix| {
+        let e = &caster_entries[ei];
+        let it = &insts[e.inst as usize];
+        fill(models[it.model as usize].as_ref().unwrap(), e.dc as usize, it, &plain, &nocast, out, ix)
+    });
 
+    tm.lap("casters");
     let points = sample_points(&batches);
+    tm.lap("points");
+    crate::prof::note(|| format!("{} sample points", points.len()));
     let anim = vec![None; images.len()];
     Built {
         mesh: Mesh {
@@ -346,70 +473,188 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             points,
             nudged: 0,
             names: tex_label,
+            hdr: o.hdr,
+            casters,
+            caster_idx,
+            point_cell: Some(POINT_CELL),
+            compressed,
         },
         draws: entries.len(),
         dropped,
         models: names.len(),
         materials: mats.len(),
         bad_models,
+        probe_draws,
+        casters: caster_entries.len(),
     }
 }
 
-fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, lm_rect: [f32; 4], flat: [f32; 2], out: &mut [Vertex]) {
+fn gather(part: &[usize], entries: &[Entry], f: impl Fn(usize, &mut [Vertex], &mut [u32]) + Sync) -> (Vec<Vertex>, Vec<u32>) {
+    let nv: usize = part.iter().map(|&ei| entries[ei].verts).sum();
+    let ni: usize = part.iter().map(|&ei| entries[ei].tris * 3).sum();
+    let mut verts = vec![Vertex::BLANK; nv];
+    let mut idx = vec![0u32; ni];
+    let mut jobs: Vec<(usize, u32, &mut [Vertex], &mut [u32])> = Vec::with_capacity(part.len());
+    let (mut rv, mut ri): (&mut [Vertex], &mut [u32]) = (&mut verts, &mut idx);
+    let mut base = 0u32;
+    for &ei in part {
+        let (a, b) = rv.split_at_mut(entries[ei].verts);
+        let (c, d) = ri.split_at_mut(entries[ei].tris * 3);
+        jobs.push((ei, base, a, c));
+        base += entries[ei].verts as u32;
+        (rv, ri) = (b, d);
+    }
+    jobs.into_par_iter().for_each(|(ei, base, out, ix)| {
+        f(ei, out, ix);
+        ix.iter_mut().for_each(|x| *x += base);
+    });
+    (verts, idx)
+}
+
+fn centre(it: &Inst, m: &Model, dc: usize) -> DVec3 {
+    let c = &m.draws[dc];
+    let (Some(ps), Ok(ix)) = (m.stream(c, "POSITION", 0), m.index_view(c)) else { return it.xf.t };
+    let n = ix.len();
+    if n == 0 {
+        return it.xf.t;
+    }
+    let step = n.div_ceil(TILE_SAMPLES);
+    let (sum, cnt) = (0..n).step_by(step).fold((DVec3::ZERO, 0.0), |(s, k), j| {
+        let v = ps.get(ix.get(j) as usize);
+        (s + it.xf.apply(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)), k + 1.0)
+    });
+    sum / cnt
+}
+
+fn span(ix: &Indices) -> (u32, u32) {
+    (0..ix.len()).fold((u32::MAX, 0), |(lo, hi), k| {
+        let g = ix.get(k);
+        (lo.min(g), hi.max(g))
+    })
+}
+
+fn unique(ix: &Indices) -> usize {
+    if ix.len() == 0 {
+        return 0;
+    }
+    let (lo, hi) = span(ix);
+    let mut seen = vec![false; (hi - lo + 1) as usize];
+    let mut n = 0;
+    for k in 0..ix.len() {
+        let s = &mut seen[(ix.get(k) - lo) as usize];
+        n += !*s as usize;
+        *s = true;
+    }
+    n
+}
+
+fn remap(ix: &Indices, flip: bool) -> (Vec<u32>, Vec<u32>) {
+    if ix.len() == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let (lo, hi) = span(ix);
+    let mut map = vec![u32::MAX; (hi - lo + 1) as usize];
+    let mut ids = Vec::new();
+    let mut idx = Vec::with_capacity(ix.len());
+    let order = if flip { [0, 2, 1] } else { [0, 1, 2] };
+    for t in 0..ix.len() / 3 {
+        for o in order {
+            let g = ix.get(t * 3 + o);
+            let s = &mut map[(g - lo) as usize];
+            if *s == u32::MAX {
+                *s = ids.len() as u32;
+                ids.push(g);
+            }
+            idx.push(*s);
+        }
+    }
+    (ids, idx)
+}
+
+fn uv_stream<'a>(m: &'a Model, c: &super::model::DrawCall, set: u32) -> Option<Stream<'a>> {
+    (set > 0).then(|| m.stream(c, "TEXCOORD", set)).flatten().or_else(|| m.stream(c, "TEXCOORD", 0))
+}
+
+fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [Vertex], out_idx: &mut [u32]) {
     let c = &m.draws[dc];
     let (Some(ps), Ok(ix)) = (m.stream(c, "POSITION", 0), m.index_view(c)) else { return };
-    let uvs = m.stream(c, "TEXCOORD", 0);
-    let lms = if c.lightmapped && lm_rect[2] > 0.0 { m.map_stream(c, "TEXCOORD", 3) } else { None };
-    let ns = m.stream(c, "NORMAL", 0);
-    let blend = mat.layer2.as_ref().and_then(|l| m.stream(c, "TEXCOORD", 4).map(|s| (s, l.1)));
-    let bias = if mat.decal { 1.0 } else { 0.0 };
-    for (t, tri) in out.chunks_exact_mut(3).enumerate() {
-        let order = if it.flip { [0, 2, 1] } else { [0, 1, 2] };
-        let mut p = [DVec3::ZERO; 3];
-        for (k, &o) in order.iter().enumerate() {
-            let i = ix.get(t * 3 + o) as usize;
-            let v = ps.get(i);
-            p[k] = it.xf.apply(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64));
-            let uv = uvs.map_or([0.0; 4], |s| s.get(i));
-            let lm = match lms {
-                Some(s) => {
-                    let l = s.get(i);
-                    [lm_rect[0] + l[0] * lm_rect[2], lm_rect[1] + l[1] * lm_rect[3]]
-                }
-                None => flat,
-            };
-            tri[k] = Vertex {
-                pos: [p[k].x as f32, p[k].y as f32, p[k].z as f32],
-                uv: [uv[0] * mat.uv_scale[0] + mat.uv_offset[0], uv[1] * mat.uv_scale[1] + mat.uv_offset[1]],
-                lm,
-                bias,
-                normal: [0.0; 3],
-                blend: match blend {
-                    Some((s, Blend::Painted)) => s.get(i)[0],
-                    Some((s, Blend::Height)) => (s.get(i)[0] * 1.1 - 0.05).clamp(0.0, 1.0),
-                    None => 0.0,
-                },
-            };
-            if let Some(n) = ns.and_then(|s| s.normal(i)) {
-                let w = (it.nrm * DVec3::new(n[0] as f64, n[1] as f64, n[2] as f64)).normalize_or_zero();
-                tri[k].normal = [w.x as f32, w.y as f32, w.z as f32];
-            }
-        }
-        if ns.is_none() {
-            let f = (p[1] - p[0]).cross(p[2] - p[0]).normalize_or_zero();
-            for v in tri.iter_mut() {
-                v.normal = [f.x as f32, f.y as f32, f.z as f32];
-            }
-        }
+    let (ids, idx) = remap(&ix, it.flip);
+    if ids.len() != out.len() || idx.len() != out_idx.len() {
+        return;
     }
-}
-
-const ZERO: Vertex = Vertex { pos: [0.0; 3], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0; 3], blend: 0.0 };
-
-fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
-    let l2 = |x: [f32; 2], y: [f32; 2]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t];
-    let l3 = |x: [f32; 3], y: [f32; 3]| [x[0] + (y[0] - x[0]) * t, x[1] + (y[1] - x[1]) * t, x[2] + (y[2] - x[2]) * t];
-    Vertex { pos: l3(a.pos, b.pos), uv: l2(a.uv, b.uv), lm: l2(a.lm, b.lm), bias: a.bias, normal: l3(a.normal, b.normal), blend: a.blend + (b.blend - a.blend) * t }
+    out_idx.copy_from_slice(&idx);
+    let uvs = uv_stream(m, c, mat.uv_set);
+    let uvs2 = mat.layer2.as_ref().and_then(|l| uv_stream(m, c, l.set));
+    let lms = if c.lightmapped && ctx.lm_rect[2] > 0.0 { m.map_stream(c, "TEXCOORD", 3) } else { None };
+    let probes = if lms.is_none() { ctx.probes } else { None };
+    let ns = m.stream(c, "NORMAL", 0);
+    let blend = mat.layer2.as_ref().and_then(|_| m.stream(c, "TEXCOORD", 4));
+    let paint = if mat.paint { m.stream(c, "COLOR", 0) } else { None };
+    let fade = matches!(mat.mode, material::Mode::Blend | material::Mode::AlphaTest | material::Mode::Mod2x);
+    let bias = if mat.decal { 1.0 } else { 0.0 };
+    let weight = |v: f32| match mat.blend {
+        Blend::Painted => unorm16(v),
+        Blend::Height => unorm16(v * 1.1 - 0.05),
+    };
+    let p: Vec<DVec3> = ids
+        .par_iter()
+        .with_min_len(4096)
+        .map(|&i| {
+            let v = ps.get(i as usize);
+            it.xf.apply(DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64))
+        })
+        .collect();
+    let faces = ns.is_none().then(|| {
+        let mut acc = vec![DVec3::ZERO; p.len()];
+        for t in idx.chunks_exact(3) {
+            let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+            let n = (p[b] - p[a]).cross(p[c] - p[a]);
+            for k in [a, b, c] {
+                acc[k] += n;
+            }
+        }
+        acc.into_iter().map(|n| n.normalize_or_zero()).collect::<Vec<_>>()
+    });
+    out.par_iter_mut().with_min_len(4096).zip(ids.par_iter()).enumerate().for_each(|(k, (o, &id))| {
+        let i = id as usize;
+        let uv = uvs.map_or([0.0; 4], |s| s.get(i));
+        let lm = match lms {
+            Some(s) => {
+                let l = s.get(i);
+                [ctx.lm_rect[0] + l[0] * ctx.lm_rect[2], ctx.lm_rect[1] + l[1] * ctx.lm_rect[3]]
+            }
+            None => ctx.flat,
+        };
+        let n = match (ns.and_then(|s| s.normal(i)), &faces) {
+            (Some(n), _) => (it.nrm * DVec3::new(n[0] as f64, n[1] as f64, n[2] as f64)).normalize_or_zero(),
+            (None, Some(f)) => f[k],
+            (None, None) => DVec3::ZERO,
+        };
+        let b = blend.map_or([0.0; 4], |s| s.get(i));
+        let col = paint.map(|s| s.get(i));
+        let mut v = Vertex {
+            pos: [p[k].x as f32, p[k].y as f32, p[k].z as f32],
+            uv: [uv[0] * mat.uv_scale[0] + mat.uv_offset[0], uv[1] * mat.uv_scale[1] + mat.uv_offset[1]],
+            lm,
+            bias,
+            normal: [n.x as f32, n.y as f32, n.z as f32],
+            uv2: uvs2.map_or([0.0; 2], |s| {
+                let q = s.get(i);
+                [q[0], q[1]]
+            }),
+            blend: [if blend.is_some() { weight(b[0]) } else { 0 }, if mat.layer3.is_some() { weight(b[1]) } else { 0 }],
+            ..Vertex::BLANK
+        };
+        if let Some(cv) = col {
+            let q = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+            v.paint = [q(cv[0]), q(cv[1]), q(cv[2]), if fade { q(cv[3]) } else { 255 }];
+        }
+        if let Some(s) = probes.and_then(|pr| pr.sample(p[k], n, it.probe)) {
+            v.light = pack_rgb9e5(s.light).max(1);
+            v.mask = s.mask;
+        }
+        *o = v;
+    });
 }
 
 fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
@@ -427,7 +672,7 @@ fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
                     poly.push(*a);
                 }
                 if (sa >= 0.0) != (sb >= 0.0) {
-                    poly.push(lerp(a, b, sa / (sa - sb)));
+                    poly.push(Vertex::lerp(a, b, sa / (sa - sb)));
                 }
             }
             if poly.len() < 3 {

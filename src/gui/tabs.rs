@@ -34,7 +34,7 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
         ui.label("Game");
-        let r = ui.add(egui::TextEdit::singleline(&mut app.game).desired_width(200.0));
+        let r = ui.add(egui::TextEdit::singleline(&mut app.game).desired_width(170.0));
         if r.lost_focus() {
             app.refresh_maps();
         }
@@ -43,6 +43,32 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
                 app.game = d.to_string_lossy().into_owned();
                 app.refresh_maps();
             }
+        }
+        let mut chosen = None;
+        let recent = ui.add_enabled_ui(!app.recent.is_empty(), |ui| {
+            ui.menu_button("Recent", |ui| {
+                for g in &app.recent {
+                    let b = egui::Button::new(g.as_str()).selected(*g == app.game).wrap_mode(egui::TextWrapMode::Extend);
+                    if ui.add(b).clicked() {
+                        chosen = Some(g.clone());
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Clear list").clicked() {
+                    chosen = Some(String::new());
+                    ui.close();
+                }
+            })
+        });
+        recent.response.on_hover_text("recent map folders");
+        match chosen {
+            Some(g) if g.is_empty() => app.recent.clear(),
+            Some(g) => {
+                app.game = g;
+                app.refresh_maps();
+            }
+            None => {}
         }
     });
     ui.horizontal(|ui| {
@@ -201,7 +227,7 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
         let rebuild = app.look.nearest != d.nearest;
         app.look = d.clone();
         if rebuild {
-            app.rebuild_renderer();
+            app.apply_nearest();
         }
     }
     egui::CollapsingHeader::new("Background").default_open(true).show(ui, |ui| {
@@ -233,11 +259,11 @@ pub fn tab_look(app: &mut App, ui: &mut egui::Ui) {
             app.look.anim_textures = d.anim_textures;
             if app.look.nearest != d.nearest {
                 app.look.nearest = d.nearest;
-                app.rebuild_renderer();
+                app.apply_nearest();
             }
         }
         if ui.checkbox(&mut app.look.nearest, "Pixelated textures").changed() {
-            app.rebuild_renderer();
+            app.apply_nearest();
         }
         ui.checkbox(&mut app.look.anim_textures, "Animated textures and water");
         if app.look.anim_textures && app.renderer.as_ref().is_some_and(|r| !r.animated()) {

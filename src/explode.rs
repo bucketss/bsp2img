@@ -1,4 +1,10 @@
+use std::collections::HashSet;
+
 use clap::Args;
+use glam::DVec3;
+use rayon::prelude::*;
+
+use crate::mesh::{Batch, Vertex};
 
 use crate::render::{Cuts, Renderer};
 use crate::scene::{Log, Scene, num};
@@ -115,42 +121,66 @@ impl ExplodeArgs {
     }
 }
 
+pub fn band_points(points: &[DVec3], batches: &[Batch], planes: &[f64], cell: Option<f64>) -> (Vec<DVec3>, Vec<u16>) {
+    let cross: Vec<(DVec3, u16)> = batches.par_iter().flat_map_iter(|b| b.tris().flat_map(|t| crossings(t, planes))).collect();
+    let mut orig = points.to_vec();
+    let mut bands: Vec<u16> = points.iter().map(|p| planes.partition_point(|&q| q < p.z) as u16).collect();
+    let mut seen = HashSet::new();
+    for (p, k) in cross {
+        let fresh = match cell {
+            Some(c) => seen.insert(((p.x / c).floor() as i32, (p.y / c).floor() as i32, (p.z / c).floor() as i32, k)),
+            None => true,
+        };
+        if fresh {
+            orig.push(p);
+            bands.push(k);
+        }
+    }
+    (orig, bands)
+}
+
+fn crossings(t: [&Vertex; 3], planes: &[f64]) -> Vec<(DVec3, u16)> {
+    let p = t.map(|v| DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64));
+    let (z0, z1) = (p[0].z.min(p[1].z).min(p[2].z), p[0].z.max(p[1].z).max(p[2].z));
+    let first = planes.partition_point(|&q| q <= z0);
+    let mut out = Vec::new();
+    for (k, &q) in planes.iter().enumerate().skip(first).take_while(|(_, q)| **q < z1) {
+        let k = k as u16;
+        for i in 0..3 {
+            let (a, b) = (p[i], p[(i + 1) % 3]);
+            if a.z == q {
+                out.extend([(a, k), (a, k + 1)]);
+            } else if (a.z - q) * (b.z - q) < 0.0 {
+                let m = a + (b - a) * ((q - a.z) / (b.z - a.z));
+                out.extend([(m, k), (m, k + 1)]);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::clip::clip_tris_z;
+    use super::crossings;
     use crate::mesh::Vertex;
 
-    fn area(t: &[Vertex]) -> f64 {
-        let p: Vec<glam::DVec3> = t.iter().map(|v| glam::DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64)).collect();
-        (p[1] - p[0]).cross(p[2] - p[0]).length() / 2.0
+    fn v(x: f32, z: f32) -> Vertex {
+        Vertex { pos: [x, 0.0, z], ..Vertex::BLANK }
     }
 
     #[test]
-    fn bands_keep_all_area() {
-        let mut seed = 12345u64;
-        let mut rnd = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            ((seed >> 33) as f64 / (1u64 << 31) as f64) * 1000.0 - 500.0
-        };
-        let mut tris = Vec::new();
-        for _ in 0..3000 {
-            for _ in 0..3 {
-                let z = if rnd() > 300.0 { 100.0 } else { rnd() };
-                tris.push(Vertex { pos: [rnd() as f32, rnd() as f32, z as f32], uv: [0.0; 2], lm: [0.0; 2], bias: 0.0, normal: [0.0, 0.0, 1.0], blend: 0.0 });
-            }
-        }
+    fn crossing_points_in_both_bands() {
         let planes = [-200.0, 100.0, 250.0];
-        let bands = clip_tris_z(&tris, &planes);
-        let before: f64 = tris.chunks_exact(3).map(area).sum();
-        let after: f64 = bands.iter().flat_map(|(_, v)| v.chunks_exact(3)).map(area).sum();
-        assert!((before - after).abs() / before < 1e-5, "{before} {after}");
-        for (k, v) in &bands {
-            let lo = if *k == 0 { f64::NEG_INFINITY } else { planes[k - 1] };
-            let hi = planes.get(*k).copied().unwrap_or(f64::INFINITY);
-            for p in v {
-                let z = p.pos[2] as f64;
-                assert!(z >= lo - 1e-3 && z <= hi + 1e-3, "band {k} z {z}");
-            }
+        let (a, b, c) = (v(0.0, 0.0), v(10.0, 0.0), v(0.0, 300.0));
+        let pts = crossings([&a, &b, &c], &planes);
+        assert_eq!(pts.len(), 8);
+        for (p, k) in &pts {
+            let z = planes[(*k as usize).min(2)];
+            let q = if (p.z - 100.0).abs() < 1e-9 { 100.0 } else { 250.0 };
+            assert!((p.z - q).abs() < 1e-9, "{p}");
+            assert!(z == q || planes[*k as usize - 1] == q, "band {k} for z {}", p.z);
         }
+        let (d, e, f) = (v(0.0, 0.0), v(10.0, 0.0), v(0.0, 50.0));
+        assert!(crossings([&d, &e, &f], &planes).is_empty());
     }
 }

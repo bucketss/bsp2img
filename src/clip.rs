@@ -7,21 +7,7 @@ const EDGE_EPS: f64 = 1e-4;
 const MAX_DEPTH: u32 = 48;
 
 pub fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
-    let l2 = |p: [f32; 2], q: [f32; 2]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-    let l3 = |p: [f32; 3], q: [f32; 3]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
-    let mut n = l3(a.normal, b.normal);
-    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if len > 1e-12 {
-        n = n.map(|c| c / len);
-    }
-    Vertex {
-        pos: l3(a.pos, b.pos),
-        uv: l2(a.uv, b.uv),
-        lm: l2(a.lm, b.lm),
-        bias: a.bias + (b.bias - a.bias) * t,
-        normal: n,
-        blend: a.blend + (b.blend - a.blend) * t,
-    }
+    Vertex::lerp(a, b, t)
 }
 
 pub fn split(poly: &[Vertex], axis: usize, v: f64) -> (Vec<Vertex>, Vec<Vertex>) {
@@ -82,37 +68,6 @@ pub fn fan(poly: &[Vertex], out: &mut Vec<Vertex>) {
         }
         out.extend([poly[0], poly[i], poly[i + 1]]);
     }
-}
-
-pub fn clip_tris_z(verts: &[Vertex], planes: &[f64]) -> Vec<(usize, Vec<Vertex>)> {
-    let mut planes = planes.to_vec();
-    planes.sort_by(f64::total_cmp);
-    planes.dedup();
-    let mut bands: Vec<(usize, Vec<Vertex>)> = (0..=planes.len()).map(|b| (b, Vec::new())).collect();
-    for tri in verts.chunks_exact(3) {
-        let (z0, z1) = range(tri, 2);
-        let first = planes.partition_point(|&p| p < z0);
-        if planes.get(first).is_none_or(|&p| p >= z1) {
-            bands[first].1.extend_from_slice(tri);
-            continue;
-        }
-        let mut rest = tri.to_vec();
-        for (k, &z) in planes.iter().enumerate().skip(first) {
-            if rest.len() < 3 {
-                break;
-            }
-            if range(&rest, 2).1 <= z {
-                fan(&rest, &mut bands[k].1);
-                rest.clear();
-                break;
-            }
-            let (lo, hi) = split(&rest, 2, z);
-            fan(&lo, &mut bands[k].1);
-            rest = hi;
-        }
-        fan(&rest, &mut bands[planes.len()].1);
-    }
-    bands
 }
 
 struct Cells<'a> {
@@ -177,7 +132,7 @@ impl Cells<'_> {
     }
 }
 
-pub fn clip_tris_cuts(verts: &[Vertex], cuts: &Cuts, mask: Option<&HullMask>) -> Vec<Vertex> {
+pub fn clip_tris_cuts<'a>(tris: impl Iterator<Item = [&'a Vertex; 3]>, cuts: &Cuts, mask: Option<&HullMask>) -> Vec<Vertex> {
     let mask = mask.filter(|m| cuts.use_mask && m.nx > 0 && m.ny > 0);
     let cells = mask.map(|m| Cells {
         m,
@@ -185,9 +140,9 @@ pub fn clip_tris_cuts(verts: &[Vertex], cuts: &Cuts, mask: Option<&HullMask>) ->
         dy: (m.rect[3] - m.rect[1]) / m.ny as f64,
     });
     let [x0, y0, x1, y1] = cuts.clip;
-    let mut out = Vec::with_capacity(verts.len());
-    for tri in verts.chunks_exact(3) {
-        let mut p = tri.to_vec();
+    let mut out = Vec::new();
+    for tri in tris {
+        let mut p = tri.map(|v| *v).to_vec();
         p = keep_above(p, 2, cuts.zmin);
         p = keep_below(p, 2, cuts.zmax);
         p = keep_above(p, 0, x0);

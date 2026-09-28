@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use glam::DVec3;
 use tiny_skia::{Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
-use crate::bsp::Bsp;
+use crate::bsp::{Bsp, Entity};
 use crate::camera::top_down;
 use crate::look::Look;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
@@ -15,6 +15,8 @@ pub struct Marker {
     pub bbox: Option<[f64; 4]>,
     pub color: [u8; 3],
     pub label: &'static str,
+    pub spawn: bool,
+    pub comp: Option<bool>,
 }
 
 pub const CT: [u8; 3] = [80, 140, 255];
@@ -22,33 +24,47 @@ pub const T: [u8; 3] = [255, 70, 60];
 pub const HOSTAGE: [u8; 3] = [255, 220, 0];
 pub const REMOVED: [u8; 3] = [200, 0, 0];
 
-fn marker_style(cls: &str) -> Option<([u8; 3], &'static str)> {
+fn marker_style(cls: &str) -> Option<([u8; 3], &'static str, bool)> {
     Some(match cls {
-        "info_player_start" => (CT, "CT"),
-        "info_player_deathmatch" => (T, "T"),
-        "hostage_entity" => (HOSTAGE, "H"),
-        "info_vip_start" => ([60, 220, 90], "VIP"),
-        "func_bomb_target" | "info_bomb_target" => ([255, 140, 0], "BOMB"),
-        "func_hostage_rescue" => ([0, 220, 220], "RESCUE"),
-        "func_vip_safetyzone" => ([0, 220, 220], "ESCAPE"),
+        "info_player_start" => (CT, "CT", true),
+        "info_player_deathmatch" => (T, "T", true),
+        "hostage_entity" => (HOSTAGE, "H", false),
+        "info_vip_start" => ([60, 220, 90], "VIP", true),
+        "func_bomb_target" | "info_bomb_target" => ([255, 140, 0], "BOMB", false),
+        "func_hostage_rescue" => ([0, 220, 220], "RESCUE", false),
+        "func_vip_safetyzone" => ([0, 220, 220], "ESCAPE", false),
         _ => return None,
     })
 }
 
+fn spawn_priority(e: &Entity) -> Option<f64> {
+    e.get("priority")?.trim().parse().ok()
+}
+
 pub fn entity_marks(bsp: &Bsp) -> Vec<Marker> {
+    let best = |cls: &str| {
+        let team = || bsp.entities.iter().filter(move |e| e.class() == cls);
+        team()
+            .any(|e| spawn_priority(e).is_some())
+            .then(|| team().map(|e| spawn_priority(e).unwrap_or(0.0)).fold(f64::INFINITY, f64::min))
+    };
+    let (best_ct, best_t) = (best("info_player_start"), best("info_player_deathmatch"));
     let mut out = Vec::new();
     for e in &bsp.entities {
-        let Some((color, label)) = marker_style(e.class()) else { continue };
+        let Some((color, label, spawn)) = marker_style(e.class()) else { continue };
+        let team_best = match e.class() {
+            "info_player_start" => best_ct,
+            "info_player_deathmatch" => best_t,
+            _ => None,
+        };
+        let comp = team_best.map(|b| spawn_priority(e).unwrap_or(0.0) <= b);
         if let Some(mi) = e.model() {
             let Some(m) = bsp.models.get(mi) else { continue };
-            out.push(Marker {
-                pos: (m.mins + m.maxs) / 2.0,
-                bbox: Some([m.mins.x, m.mins.y, m.maxs.x, m.maxs.y]),
-                color,
-                label,
-            });
+            let o = e.origin().unwrap_or(DVec3::ZERO);
+            let (lo, hi) = (m.mins + o, m.maxs + o);
+            out.push(Marker { pos: (lo + hi) / 2.0, bbox: Some([lo.x, lo.y, hi.x, hi.y]), color, label, spawn, comp });
         } else if let Some(p) = e.origin() {
-            out.push(Marker { pos: p, bbox: None, color, label });
+            out.push(Marker { pos: p, bbox: None, color, label, spawn, comp });
         }
     }
     out
@@ -286,4 +302,31 @@ pub fn grid_preview(r: &mut Renderer, bsp: &Bsp, path: &Path, cuts: &Cuts) -> Re
     let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     image::RgbImage::from_raw(wpx, hpx, rgb).context("image")?.save(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn spawn(cls: &str, priority: Option<&str>) -> Entity {
+        let mut kv = HashMap::from([("classname".to_string(), cls.to_string()), ("origin".to_string(), "0 0 0".to_string())]);
+        if let Some(p) = priority {
+            kv.insert("priority".to_string(), p.to_string());
+        }
+        Entity(kv)
+    }
+
+    #[test]
+    fn comp_spawns() {
+        let mut bsp = Bsp::empty(Path::new("x.bsp"));
+        bsp.entities = vec![
+            spawn("info_player_start", None),
+            spawn("info_player_start", Some("1")),
+            spawn("info_player_deathmatch", None),
+            spawn("info_player_deathmatch", None),
+        ];
+        let comp: Vec<Option<bool>> = entity_marks(&bsp).iter().map(|m| m.comp).collect();
+        assert_eq!(comp, [Some(true), Some(false), None, None]);
+    }
 }

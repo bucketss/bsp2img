@@ -4,7 +4,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 
 ## CS2
 
-`--game` is the CS2 `game` folder or the install folder above it. `health`, `stl` and `kills` are GoldSrc only.
+`--game` is the CS2 `game` folder or the install folder above it. `health`, `stl` and `kills` are GoldSrc only. `--sky` draws the map's `env_sky`; NAME may be another sky material.
 
 ## GUI
 
@@ -55,6 +55,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `--tex-max N` | CS2 texture size limit (512) |
 | `--nearest` | Pixelated textures |
 | `--no-cull` | Draw back faces |
+| `--timings` | Log phase times (or `BSP2IMG_TIMINGS=1`) |
 
 ### iso
 

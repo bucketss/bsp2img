@@ -6,7 +6,8 @@ use super::App;
 use crate::camera::{Camera, camera_basis, extents, top_down};
 use crate::look::Tilt;
 use crate::export::overview_params;
-use crate::grid::{entity_marks, nice_step};
+use crate::overview::Overview;
+use crate::grid::{Marker, entity_marks, nice_step};
 use crate::overview;
 use crate::post;
 use crate::render::{Cuts, NO_CLIP, Targets, View, wgpu};
@@ -17,6 +18,34 @@ pub enum Mode {
     Top,
     Overview,
     Free,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum SpawnShow {
+    All,
+    Comp,
+    None,
+}
+
+impl SpawnShow {
+    const ALL: [(SpawnShow, &'static str); 3] = [(SpawnShow::All, "All"), (SpawnShow::Comp, "Comp"), (SpawnShow::None, "None")];
+
+    pub fn key(self) -> &'static str {
+        SpawnShow::ALL.iter().find(|(s, _)| *s == self).map_or("All", |(_, n)| *n)
+    }
+
+    pub fn from_key(k: &str) -> Option<SpawnShow> {
+        match k.trim() {
+            "true" => Some(SpawnShow::All),
+            "false" => Some(SpawnShow::None),
+            k => SpawnShow::ALL.iter().find(|(_, n)| n.eq_ignore_ascii_case(k)).map(|(s, _)| *s),
+        }
+    }
+
+    fn step(self, by: usize) -> SpawnShow {
+        let i = SpawnShow::ALL.iter().position(|(s, _)| *s == self).unwrap_or(0);
+        SpawnShow::ALL[(i + by) % SpawnShow::ALL.len()].0
+    }
 }
 
 const FLY_SPEED: f64 = 0.25;
@@ -76,6 +105,15 @@ pub struct Frame {
     rect: Rect,
     view: View,
     upp: f64,
+}
+
+pub struct ViewCache {
+    key: String,
+    view: View,
+    upp: f64,
+    cuts: Cuts,
+    clear: [f64; 4],
+    ov: Option<Overview>,
 }
 
 impl App {
@@ -142,7 +180,13 @@ impl App {
             return;
         }
         let Some(r) = &self.renderer else { return };
-        let t = r.make_targets(w, h, fx);
+        let t = match r.make_targets(w, h, fx) {
+            Ok(t) => t,
+            Err(e) => {
+                self.log.push(format!("error: {e:#}"));
+                return;
+            }
+        };
         let mut er = self.egui_rend.write();
         let id = match &self.preview {
             Some(p) => {
@@ -181,6 +225,18 @@ impl App {
                 if self.mode == Mode::Free {
                     self.frame_free();
                 }
+            }
+            if self.mode == Mode::Top {
+                let b = ui
+                    .button(format!("Spawns: {}", self.top_spawns.key()))
+                    .on_hover_text("click: next, right-click: previous. Comp = the lowest-priority spawns each team fills first (CS2); a black dot marks them");
+                if b.clicked() {
+                    self.top_spawns = self.top_spawns.step(1);
+                } else if b.secondary_clicked() {
+                    self.top_spawns = self.top_spawns.step(2);
+                }
+                ui.checkbox(&mut self.top_grid, "Grid");
+                ui.checkbox(&mut self.top_objectives, "Objectives");
             }
             ui.weak(match self.mode {
                 Mode::Iso => "drag rotate, right-drag pan, wheel zoom",
@@ -230,8 +286,8 @@ impl App {
         } else {
             0.0
         };
-        let key = format!(
-            "{:?}{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{}",
+        let vkey = format!(
+            "{:?}{:?}{:?}{:?}{}{:?}{}{}{:?}{}{}{:?}",
             want,
             cuts,
             (self.mode as u8, self.yaw, self.zoom, self.pan.to_array()),
@@ -243,65 +299,73 @@ impl App {
             self.sky_loaded,
             self.ov.margin,
             self.renderer.as_ref().map(|r| r.points.len()).unwrap_or(0),
-            time
+            self.renderer.as_ref().map(|r| std::sync::Arc::as_ptr(r.scene())),
         );
+        let key = format!("{vkey}{time}");
         self.ensure_preview(wpx, hpx);
         let Some(r) = &self.renderer else { return };
-        let (view, upp, rcuts, clear) = match self.mode {
-            Mode::Iso => {
-                let b = camera_basis(self.yaw, self.iso.pitch);
-                let e = extents(&r.points_in(&cuts), &b);
-                let fit = ((e[0].1 - e[0].0) / rect.width() as f64).max((e[1].1 - e[1].0) / rect.height() as f64) * 1.08;
-                let upp = fit / self.zoom;
-                let v = View {
-                    basis: b,
-                    cx: (e[0].0 + e[0].1) / 2.0 + self.pan.dot(b.r),
-                    cy: (e[1].0 + e[1].1) / 2.0 + self.pan.dot(b.u),
-                    w: rect.width() as f64 * upp,
-                    h: rect.height() as f64 * upp,
-                    sky_yaw: Some(self.yaw),
-                    persp: None,
-                };
-                let bg = match self.look.bg {
-                    Some(c) => c.map(|v| v as f64 / 255.0),
-                    None => [0.094, 0.094, 0.1],
-                };
-                (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
-            }
-            Mode::Top => {
-                let rc = Cuts { clip: NO_CLIP, use_mask: false, ..cuts };
-                let pts = r.points_in(&rc);
-                let lo = pts.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
-                let hi = pts.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
-                let fit = ((hi.x - lo.x) / rect.width() as f64).max((hi.y - lo.y) / rect.height() as f64) * 1.08;
-                let upp = fit / self.zoom;
-                let v = View {
-                    basis: top_down(DVec3::X, DVec3::Y),
-                    cx: (lo.x + hi.x) / 2.0 + self.pan.x,
-                    cy: (lo.y + hi.y) / 2.0 + self.pan.y,
-                    w: rect.width() as f64 * upp,
-                    h: rect.height() as f64 * upp,
-                    sky_yaw: None,
-                    persp: None,
-                };
-                (v, upp, rc, [0.11, 0.11, 0.11, 1.0])
-            }
-            Mode::Overview => {
-                let Ok(ov) = overview_params(r, &cuts, &self.ov) else { return };
-                let v = overview::view(&ov);
-                let upp = v.w / rect.width() as f64;
-                (v, upp, cuts, [0.0, 1.0, 0.0, 1.0])
-            }
-            Mode::Free => {
-                let v = self.cam.view(wpx, hpx);
-                let upp = v.h / rect.height() as f64;
-                let bg = match self.look.bg {
-                    Some(c) => c.map(|v| v as f64 / 255.0),
-                    None => [0.094, 0.094, 0.1],
-                };
-                (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
-            }
-        };
+        if self.view_cache.as_ref().is_none_or(|c| c.key != vkey) {
+            let mut ov = None;
+            let (view, upp, cuts, clear) = match self.mode {
+                Mode::Iso => {
+                    let b = camera_basis(self.yaw, self.iso.pitch);
+                    let e = extents(&r.points_in(&cuts), &b);
+                    let fit = ((e[0].1 - e[0].0) / rect.width() as f64).max((e[1].1 - e[1].0) / rect.height() as f64) * 1.08;
+                    let upp = fit / self.zoom;
+                    let v = View {
+                        basis: b,
+                        cx: (e[0].0 + e[0].1) / 2.0 + self.pan.dot(b.r),
+                        cy: (e[1].0 + e[1].1) / 2.0 + self.pan.dot(b.u),
+                        w: rect.width() as f64 * upp,
+                        h: rect.height() as f64 * upp,
+                        sky_yaw: Some(self.yaw),
+                        persp: None,
+                    };
+                    let bg = match self.look.bg {
+                        Some(c) => c.map(|v| v as f64 / 255.0),
+                        None => [0.094, 0.094, 0.1],
+                    };
+                    (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
+                }
+                Mode::Top => {
+                    let rc = Cuts { clip: NO_CLIP, use_mask: false, ..cuts };
+                    let pts = r.points_in(&rc);
+                    let lo = pts.iter().copied().fold(DVec3::splat(f64::INFINITY), DVec3::min);
+                    let hi = pts.iter().copied().fold(DVec3::splat(f64::NEG_INFINITY), DVec3::max);
+                    let fit = ((hi.x - lo.x) / rect.width() as f64).max((hi.y - lo.y) / rect.height() as f64) * 1.08;
+                    let upp = fit / self.zoom;
+                    let v = View {
+                        basis: top_down(DVec3::X, DVec3::Y),
+                        cx: (lo.x + hi.x) / 2.0 + self.pan.x,
+                        cy: (lo.y + hi.y) / 2.0 + self.pan.y,
+                        w: rect.width() as f64 * upp,
+                        h: rect.height() as f64 * upp,
+                        sky_yaw: None,
+                        persp: None,
+                    };
+                    (v, upp, rc, [0.11, 0.11, 0.11, 1.0])
+                }
+                Mode::Overview => {
+                    let Ok(o) = overview_params(r, &cuts, &self.ov) else { return };
+                    let v = overview::view(&o);
+                    ov = Some(o);
+                    let upp = v.w / rect.width() as f64;
+                    (v, upp, cuts, [0.0, 1.0, 0.0, 1.0])
+                }
+                Mode::Free => {
+                    let v = self.cam.view(wpx, hpx);
+                    let upp = v.h / rect.height() as f64;
+                    let bg = match self.look.bg {
+                        Some(c) => c.map(|v| v as f64 / 255.0),
+                        None => [0.094, 0.094, 0.1],
+                    };
+                    (v, upp, cuts, [bg[0], bg[1], bg[2], 1.0])
+                }
+            };
+            self.view_cache = Some(ViewCache { key: vkey, view, upp, cuts, clear, ov });
+        }
+        let c = self.view_cache.as_ref().unwrap();
+        let (view, upp, rcuts, clear) = (c.view, c.upp, c.cuts, c.clear);
         if key != self.last_key {
             let p = self.preview.as_ref().unwrap();
             let mut enc = self.gpu.device.create_command_encoder(&Default::default());
@@ -325,8 +389,8 @@ impl App {
         match self.mode {
             Mode::Top => self.overlay_top(&painter, &resp, &cuts),
             Mode::Overview => {
-                if let Some(r) = &self.renderer {
-                    if let Ok(ov) = overview_params(r, &cuts, &self.ov) {
+                if let Some(c) = &self.view_cache {
+                    if let Some(ov) = c.ov {
                         painter.text(
                             rect.left_top() + Vec2::new(6.0, 6.0),
                             Align2::LEFT_TOP,
@@ -401,7 +465,7 @@ impl App {
         let step = nice_step((x1 - x0).max(y1 - y0));
         let font = FontId::monospace(11.0);
         let mut gx = (x0 / step).ceil() * step;
-        while gx < x1 {
+        while self.top_grid && gx < x1 {
             let p = to_screen(f, gx, 0.0);
             let major = gx == 0.0 || gx % (step * 4.0) == 0.0;
             let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
@@ -410,7 +474,7 @@ impl App {
             gx += step;
         }
         let mut gy = (y0 / step).ceil() * step;
-        while gy < y1 {
+        while self.top_grid && gy < y1 {
             let p = to_screen(f, 0.0, gy);
             let major = gy == 0.0 || gy % (step * 4.0) == 0.0;
             let c = if major { Color32::from_rgba_unmultiplied(255, 230, 0, 160) } else { Color32::from_white_alpha(50) };
@@ -419,14 +483,24 @@ impl App {
             gy += step;
         }
         if let Some(s) = &self.scene {
-            for m in entity_marks(&s.bsp) {
+            let shown = |m: &Marker| match (m.spawn, self.top_spawns) {
+                (false, _) => self.top_objectives,
+                (true, SpawnShow::All) => true,
+                (true, SpawnShow::Comp) => m.comp != Some(false),
+                (true, SpawnShow::None) => false,
+            };
+            for m in entity_marks(&s.bsp).into_iter().filter(shown) {
                 let c = Color32::from_rgb(m.color[0], m.color[1], m.color[2]);
                 if let Some(b) = m.bbox {
                     let r = Rect::from_two_pos(to_screen(f, b[0], b[1]), to_screen(f, b[2], b[3]));
                     painter.rect_stroke(r, 0.0, Stroke::new(2.0, c), StrokeKind::Inside);
                     painter.text(r.center(), Align2::CENTER_CENTER, m.label, font.clone(), c);
                 } else {
-                    painter.circle(to_screen(f, m.pos.x, m.pos.y), 4.0, c, Stroke::new(1.0, Color32::BLACK));
+                    let p = to_screen(f, m.pos.x, m.pos.y);
+                    painter.circle(p, 4.0, c, Stroke::new(1.0, Color32::BLACK));
+                    if m.comp == Some(true) {
+                        painter.circle_filled(p, 1.6, Color32::BLACK);
+                    }
                 }
             }
         }

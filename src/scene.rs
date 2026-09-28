@@ -8,7 +8,7 @@ use crate::light::LightParams;
 use crate::mesh::{Mesh, build_mesh, roof_levels, roof_zmax};
 use crate::paths::search_dirs;
 use crate::reach::{HullMask, analyze, hull_mask};
-use crate::render::{Cuts, Gpu, NO_CLIP, Renderer};
+use crate::render::{Cuts, Gpu, GpuScene, NO_CLIP, Renderer};
 use crate::sky::{find_sky, load_sky};
 use crate::sun::{hhmm, sun_env};
 use crate::look::Look;
@@ -130,7 +130,9 @@ pub fn num(v: f64) -> String {
 }
 
 fn levels(mesh: &Mesh, log: Log) -> Vec<(f64, f64, f64)> {
+    let mut tm = crate::prof::Timer::new("scene");
     let levels = roof_levels(mesh);
+    tm.lap("roof_levels");
     log(format!(
         "roof levels: {}",
         levels
@@ -182,7 +184,9 @@ impl Scene {
         } else {
             None
         };
+        let mut tm = crate::prof::Timer::new("goldsrc");
         let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim);
+        tm.lap("mesh");
         if !mesh.missing.is_empty() {
             log(format!("missing textures ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -266,27 +270,37 @@ impl Scene {
         Cuts { zmin: c.zmin.unwrap_or(-1e9), zmax: self.zmax(c, log), clip: c.clip_box(), use_mask: true }
     }
 
-    pub fn renderer(&self, gpu: &Gpu, nearest: bool) -> Renderer {
-        let mut r = Renderer::new(gpu, &self.mesh, nearest);
+    pub fn renderer(&self, gpu: &Gpu, shared: Option<&std::sync::Arc<GpuScene>>, nearest: bool) -> Result<Renderer> {
+        let mut r = match shared {
+            Some(s) => Renderer::with_scene(s.clone(), nearest),
+            None => Renderer::new(gpu, &self.mesh, nearest)?,
+        };
         r.set_mask(self.mask.clone());
         r.sun_env = sun_env(&self.bsp);
-        r
+        Ok(r)
     }
 
-    pub fn job_renderer(&self, gpu: &Gpu, nearest: bool, sky: Option<(String, f64, f64)>, log: Log) -> (Renderer, String) {
-        let mut r = self.renderer(gpu, nearest);
-        let Some((name, fov, pitch)) = sky else { return (r, String::new()) };
+    pub fn job_renderer(
+        &self,
+        gpu: &Gpu,
+        shared: Option<&std::sync::Arc<GpuScene>>,
+        nearest: bool,
+        sky: Option<(String, f64, f64)>,
+        log: Log,
+    ) -> Result<(Renderer, String)> {
+        let mut r = self.renderer(gpu, shared, nearest)?;
+        let Some((name, fov, pitch)) = sky else { return Ok((r, String::new())) };
         let sname = self.sky_name(Some(&name));
         match self.load_sky(&sname) {
             Some(f) => {
                 r.set_sky(Some(f), fov, pitch);
                 log(format!("sky: {sname}"));
                 let tag = if name.is_empty() { String::new() } else { format!("_{name}") };
-                (r, tag)
+                Ok((r, tag))
             }
             None => {
                 log(format!("sky: {sname} not found in gfx/env, using background"));
-                (r, String::new())
+                Ok((r, String::new()))
             }
         }
     }
@@ -307,6 +321,9 @@ impl Scene {
     }
 
     pub fn sky_name(&self, name: Option<&str>) -> String {
+        if let Some(x) = &self.bsp.cs2 {
+            return x.sky_material(name.unwrap_or("")).unwrap_or_else(|| "env_sky".into());
+        }
         match name {
             Some(n) if !n.is_empty() => n.to_string(),
             _ => self.bsp.worldspawn().get("skyname").unwrap_or("desert").to_string(),
@@ -314,6 +331,9 @@ impl Scene {
     }
 
     pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
+        if let Some(x) = &self.bsp.cs2 {
+            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
+        }
         let faces = find_sky(name, &self.dirs)?;
         load_sky(&faces, &self.opts.light.tex_lut()).ok()
     }

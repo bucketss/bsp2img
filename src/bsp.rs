@@ -244,6 +244,9 @@ impl Bsp {
             bail!("file too small");
         }
         let r = Rd { data };
+        if data.starts_with(b"VBSP") {
+            bail!("Source engine map (VBSP version {}); only GoldSrc and CS2 maps are supported", r.i32(4));
+        }
         let version = r.i32(0);
         if version != 30 {
             bail!("unsupported BSP version {version} (GoldSrc is 30)");

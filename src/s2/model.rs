@@ -57,6 +57,7 @@ pub struct Model {
     pub vbs: Vec<Buf>,
     pub ibs: Vec<Buf>,
     pub draws: Vec<DrawCall>,
+    pub groups: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -290,7 +291,15 @@ fn draw_call(dc: &Value) -> DrawCall {
 impl Model {
     pub fn load(bytes: Vec<u8>) -> Result<Model> {
         let res = Res::new(bytes)?;
-        let mut m = Model { vbs: Vec::new(), ibs: Vec::new(), draws: Vec::new() };
+        let mut m = Model { vbs: Vec::new(), ibs: Vec::new(), draws: Vec::new(), groups: Vec::new() };
+        if let Some(d) = res.find("DATA").and_then(|_| res.kv("DATA").ok()) {
+            m.groups = d
+                .get("m_materialGroups")
+                .arr()
+                .iter()
+                .map(|g| (g.get("m_name").s().to_lowercase(), g.get("m_materials").arr().iter().map(|v| v.s().to_lowercase()).collect()))
+                .collect();
+        }
         if res.find("CTRL").is_none() {
             return Ok(m);
         }
@@ -312,6 +321,24 @@ impl Model {
             m.draws.extend(so.get("m_drawCalls").arr().iter().map(draw_call));
         }
         Ok(m)
+    }
+
+    pub fn skin(&self, skin: &str) -> Option<usize> {
+        let s = skin.trim().to_lowercase();
+        if s.is_empty() || self.groups.len() < 2 {
+            return None;
+        }
+        let i = self.groups.iter().position(|g| g.0 == s).or_else(|| s.parse::<usize>().ok())?;
+        (i > 0 && i < self.groups.len()).then_some(i)
+    }
+
+    pub fn material(&self, dc: &DrawCall, skin: Option<usize>) -> String {
+        let m = dc.material.to_lowercase();
+        let Some(g) = skin else { return m };
+        match self.groups[0].1.iter().position(|x| *x == m) {
+            Some(j) => self.groups[g].1.get(j).cloned().unwrap_or(m),
+            None => m,
+        }
     }
 
     pub fn stream(&self, dc: &DrawCall, name: &str, index: u32) -> Option<Stream<'_>> {

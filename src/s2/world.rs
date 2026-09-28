@@ -38,6 +38,8 @@ pub struct Draw {
     pub xf: Xf,
     pub tint: [f32; 3],
     pub flags: u32,
+    pub skin: String,
+    pub probe: i64,
 }
 
 pub struct Lighting {
@@ -135,8 +137,7 @@ pub fn load(fs: &Fs, map: &str) -> Result<World> {
             }
             let flags = flag_bits(so.get("m_nObjectTypeFlags"));
             if flags & BLOCK_LIGHT != 0 {
-                *world.stats.entry("blocklight objects skipped").or_default() += 1;
-                continue;
+                *world.stats.entry("blocklight objects").or_default() += 1;
             }
             let t = so.get("m_vTintColor").fv();
             world.draws.push(Draw {
@@ -145,6 +146,8 @@ pub fn load(fs: &Fs, map: &str) -> Result<World> {
                 xf: Xf::from34(&flatten(so.get("m_vTransform"))),
                 tint: if t.len() >= 3 { [t[0] as f32, t[1] as f32, t[2] as f32] } else { [1.0; 3] },
                 flags,
+                skin: so.get("m_skin").s().to_string(),
+                probe: so.get("m_nLightProbeVolumePrecomputedHandshake").i(),
             });
             *world.stats.entry("scene objects").or_default() += 1;
         }
@@ -169,8 +172,7 @@ pub fn load(fs: &Fs, map: &str) -> Result<World> {
                 }
                 let flags = flag_bits(fr.get("m_objectFlags"));
                 if flags & BLOCK_LIGHT != 0 {
-                    *world.stats.entry("blocklight fragments skipped").or_default() += 1;
-                    continue;
+                    *world.stats.entry("blocklight fragments").or_default() += 1;
                 }
                 let mask = fr.get("m_nLODGroupMask").i();
                 let c = combined.get(&fr.get("m_nLODSetupIndex").i()).copied().unwrap_or(0);
@@ -185,6 +187,8 @@ pub fn load(fs: &Fs, map: &str) -> Result<World> {
                     xf,
                     tint: if t.len() >= 3 { [t[0] as f32 / 255.0, t[1] as f32 / 255.0, t[2] as f32 / 255.0] } else { [1.0; 3] },
                     flags,
+                    skin: String::new(),
+                    probe: -1,
                 });
                 *world.stats.entry("aggregate fragments").or_default() += 1;
             }

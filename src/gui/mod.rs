@@ -33,7 +33,7 @@ use crate::timing::TimingOpts;
 
 use export_ui::Exporter;
 use jobs::Running;
-use preview::{Frame, Mode, Preview};
+use preview::{Frame, Mode, Preview, SpawnShow};
 
 pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()> {
     let mode = match view {
@@ -60,6 +60,7 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
         let l = adapter.limits();
         wgpu::DeviceDescriptor {
             label: Some("bsp2img"),
+            required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
             required_limits: wgpu::Limits {
                 max_texture_dimension_2d: l.max_texture_dimension_2d,
                 max_buffer_size: l.max_buffer_size,
@@ -89,6 +90,8 @@ pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()>
     }))
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
+
+const RECENT_MAX: usize = 10;
 
 enum Msg {
     Log(String),
@@ -123,6 +126,7 @@ struct App {
     gpu: Gpu,
     egui_rend: Arc<RwLock<egui_wgpu::Renderer>>,
     game: String,
+    recent: Vec<String>,
     maps: Vec<(String, PathBuf)>,
     filter: String,
     current: Option<PathBuf>,
@@ -142,6 +146,9 @@ struct App {
     log_open: bool,
     tab: Tab,
     mode: Mode,
+    top_spawns: SpawnShow,
+    top_grid: bool,
+    top_objectives: bool,
     yaw: f64,
     zoom: f64,
     pan: DVec3,
@@ -178,6 +185,7 @@ struct App {
     out: String,
     preview: Option<Preview>,
     last_key: String,
+    view_cache: Option<preview::ViewCache>,
     frame: Option<Frame>,
     drag_start: Option<Pos2>,
     job: Option<Running>,
@@ -194,6 +202,7 @@ impl App {
             gpu,
             egui_rend: rs.renderer.clone(),
             game: String::new(),
+            recent: Vec::new(),
             maps: Vec::new(),
             filter: String::new(),
             current: None,
@@ -213,6 +222,9 @@ impl App {
             log_open: true,
             tab: Tab::Map,
             mode: Mode::Iso,
+            top_spawns: SpawnShow::All,
+            top_grid: true,
+            top_objectives: true,
             yaw: 45.0,
             zoom: 1.0,
             pan: DVec3::ZERO,
@@ -249,6 +261,7 @@ impl App {
             out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),
             preview: None,
             last_key: String::new(),
+            view_cache: None,
             frame: None,
             drag_start: None,
             job: None,
@@ -263,6 +276,12 @@ impl App {
 
     fn refresh_maps(&mut self) {
         self.maps = if self.game.is_empty() { Vec::new() } else { list_maps(Path::new(&self.game)) };
+        if !self.maps.is_empty() {
+            let g = self.game.clone();
+            self.recent.retain(|r| Path::new(r) != Path::new(&g));
+            self.recent.insert(0, g);
+            self.recent.truncate(RECENT_MAX);
+        }
     }
 
     fn map_name(&self) -> Option<String> {
@@ -271,6 +290,9 @@ impl App {
 
     fn start_load(&mut self, ctx: &egui::Context) {
         let Some(path) = self.current.clone() else { return };
+        self.renderer = None;
+        self.scene = None;
+        self.last_key.clear();
         let (tx, rx) = channel();
         self.load_rx = Some(rx);
         let opts = self.wanted_load();
@@ -315,7 +337,10 @@ impl App {
                             self.frame_cam = true;
                             self.cam_map = self.current.clone();
                         }
-                        self.renderer = Some(scene.renderer(&self.gpu, self.look.nearest));
+                        match scene.renderer(&self.gpu, None, self.look.nearest) {
+                            Ok(r) => self.renderer = Some(r),
+                            Err(e) => self.log.push(format!("error: {e:#}")),
+                        }
                         self.scene = Some(Arc::new(scene));
                         self.sky_loaded = None;
                         self.last_key.clear();
@@ -325,12 +350,12 @@ impl App {
             }
         }
         self.poll_job();
+        self.log.extend(crate::prof::take_gpu_errors().into_iter().map(|e| format!("gpu error: {e}")));
     }
 
-    fn rebuild_renderer(&mut self) {
-        if let Some(s) = &self.scene {
-            self.renderer = Some(s.renderer(&self.gpu, self.look.nearest));
-            self.sky_loaded = None;
+    fn apply_nearest(&mut self) {
+        if let Some(r) = &mut self.renderer {
+            r.set_nearest(self.look.nearest);
             self.last_key.clear();
         }
     }
