@@ -94,6 +94,7 @@ const CS2_COLS: [&str; 11] = [
     "collision_holes",
     "radar_img",
 ];
+const HOLE: [u8; 3] = [230, 60, 230];
 const GREEN: [u8; 3] = [70, 190, 90];
 const AMBER: [u8; 3] = [240, 170, 40];
 const RED: [u8; 3] = [230, 60, 50];
@@ -1310,7 +1311,10 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
     }
     let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
     let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
-    let off: Vec<DVec3> = h.nav.as_ref().map(|n| n.off_ground.iter().map(|(_, p)| *p).collect()).unwrap_or_default();
+    let mut off: Vec<DVec3> = h.nav.as_ref().map(|n| n.off_ground.iter().map(|(_, p)| *p).collect()).unwrap_or_default();
+    if let Engine::Cs2(c) = &h.engine {
+        off.extend(c.stuck.iter().flatten().map(|s| s.1));
+    }
     for (pts, col) in [(&h.t, T), (&h.ct, CT)] {
         for p in pts {
             if let Some(c) = PathBuilder::from_circle(sx(p.x), sy(p.y), 3.0) {
@@ -1334,6 +1338,15 @@ fn card(r: &mut Renderer, h: &Health, cuts: &Cuts, size: u32) -> Result<image::R
             let l = format!("{}", i + 1);
             let (tw, th) = text.size(&l);
             text.draw(&mut pm, cx - tw / 2.0, cy - th / 2.0, &l, [255, 230, 0]);
+        }
+    }
+    if let Engine::Cs2(c) = &h.engine
+        && let Ok(k) = &c.collision
+    {
+        for (p, _) in &k.clusters {
+            if let Some(c) = PathBuilder::from_circle(sx(p.x), sy(p.y), 6.0) {
+                pm.stroke_path(&c, &paint(HOLE, 255), &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+            }
         }
     }
 
@@ -1371,13 +1384,70 @@ fn card_facts(h: &Health) -> Vec<(String, [u8; 3])> {
     }
 }
 
-fn cs2_facts(h: &Health, _c: &Cs2Health) -> Vec<(String, [u8; 3])> {
+fn cs2_facts(h: &Health, c: &Cs2Health) -> Vec<(String, [u8; 3])> {
     let white = [220, 220, 220];
     let ok = |b: bool| if b { GREEN } else { RED };
-    let mut v = vec![(format!("spawns: T {}, CT {}", h.t.len(), h.ct.len()), white)];
+    let mut v = Vec::new();
+    let (nm, nt) = (c.missing_materials.len(), c.missing_textures.len());
+    v.push((
+        format!("load: {} failed models, {nm} missing materials, {nt} textures", c.bad_models.len()),
+        ok(c.bad_models.is_empty() && nm == 0 && nt == 0),
+    ));
+    let lm = c.lightmap.map_or("none".to_string(), |(w, h)| format!("{w}x{h}"));
+    v.push((format!("geometry: {:.1}M triangles, {} draws, lightmap {lm}", c.tris as f64 / 1e6, c.draws), white));
+    let comp_ok = c.comp.iter().all(|&n| n >= COMP_MIN);
+    v.push((
+        format!("spawns: T {} (comp {}), CT {} (comp {})", h.t.len(), c.comp[0], h.ct.len(), c.comp[1]),
+        if comp_ok { GREEN } else { AMBER },
+    ));
     match &h.nav {
         Ok(n) => v.push((format!("spawns off nav: {}", n.off_ground.len()), ok(n.off_ground.is_empty()))),
         Err(_) => v.push(("spawns off nav: unknown".into(), AMBER)),
+    }
+    match &c.stuck {
+        Ok(x) => v.push((format!("spawns in collision: {}", x.len()), ok(x.is_empty()))),
+        Err(_) => v.push(("spawns in collision: unknown".into(), AMBER)),
+    }
+    if let Some(g) = c.gaps.iter().flatten().map(|g| g.0).reduce(f64::min) {
+        v.push((format!("closest spawns: {g:.0} units"), if g >= SPAWN_GAP { GREEN } else { AMBER }));
+    }
+    let obj: Vec<String> = h.objectives.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{n} {k}")).collect();
+    v.push((format!("objectives: {}", list(&obj)), if obj.is_empty() { AMBER } else { white }));
+    v.push((format!("buy zones: {}", h.buyzones), white));
+    match &c.collision {
+        Ok(k) if k.checked > 0 => v.push((
+            format!("collision holes: {} cells in {} clusters", k.holes, k.nclusters),
+            if k.holes == 0 { GREEN } else { AMBER },
+        )),
+        Ok(_) => v.push(("collision holes: unknown".into(), AMBER)),
+        Err(_) => v.push(("collision: failed to load".into(), RED)),
+    }
+    let r = &c.radar;
+    let have = r.images.iter().filter(|i| i.1.is_some()).count();
+    let txt = match (&r.err, r.txt) {
+        (Some(_), _) => "txt broken",
+        (None, true) => "txt",
+        (None, false) => "no txt",
+    };
+    v.push((
+        format!("overview: {txt}, radar images {have}/{}", r.images.len()),
+        if r.txt && r.err.is_none() && r.images_ok() { GREEN } else { AMBER },
+    ));
+    if let Some((_, m)) = r.cover {
+        v.push((format!("radar frame holds {:.1}% of reachable nav", m * 100.0), if m >= COVER_MIN { GREEN } else { AMBER }));
+    }
+    let far = r.icons.iter().filter(|(_, d)| d.is_some_and(|d| d > ICON_FAR)).count();
+    if !r.icons.is_empty() {
+        v.push((format!("radar icons: {} of {} far from ours", far, r.icons.len()), if far == 0 { GREEN } else { AMBER }));
+    }
+    match &h.nav {
+        Ok(n) => {
+            v.push((format!("walkable area: {:.0} m2", n.walkable_m2), white));
+            for (i, s) in n.spots.iter().enumerate() {
+                v.push((format!("open area {}: {:.0} {:.0}, radius {:.0}", i + 1, s.pos.x, s.pos.y, s.radius), [255, 230, 0]));
+            }
+        }
+        Err(e) => v.push((format!("nav: {e}"), AMBER)),
     }
     v
 }
