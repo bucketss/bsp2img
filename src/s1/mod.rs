@@ -3,8 +3,6 @@ pub mod collide;
 pub mod cube;
 pub mod dds;
 pub mod disp;
-#[allow(dead_code)]
-pub mod disp_geo;
 pub mod entities;
 pub mod fs;
 pub mod light;

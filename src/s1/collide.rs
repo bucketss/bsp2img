@@ -6,7 +6,7 @@ use glam::{DAffine3, DVec3, Vec3};
 use rayon::prelude::*;
 
 use super::bsp::{LUMP_BRUSHES, LUMP_BRUSHSIDES, LUMP_GAME_LUMP, LUMP_LEAFBRUSHES, LUMP_LEAFS, LUMP_NODES, Map, Plane, World};
-use super::disp_geo::{self, NO_HULL};
+use super::disp;
 use super::entities::rotation;
 use super::sprp::StaticProps;
 use crate::bsp::Entity;
@@ -28,6 +28,7 @@ pub const SOLID_VPHYSICS: u8 = 6;
 const MDL_HEAD: usize = 152;
 const EPS: f64 = 0.01;
 pub const DISP_THICK: f64 = 16.0;
+pub const DISP_NO_HULL: i32 = 0x4;
 
 pub const SOLID_ENTS: &[&str] = &[
     "func_brush",
@@ -276,11 +277,13 @@ pub fn load(fs: &Fs, map: &Map) -> Result<Phys> {
             None => b.stats.skipped_hulls += 1,
         }
     }
-    for d in disp_geo::build(map, &w)? {
-        let c = if d.flags & NO_HULL != 0 { Class::Decor } else { Class::Solid };
-        let off = w.face_normal(d.face) * -DISP_THICK;
-        for t in &d.tris {
-            match prism(t.map(|i| d.pos[i as usize]), off) {
+    let ds = if w.faces.iter().any(|f| f.dispinfo >= 0) { Some(disp::read(map)?) } else { None };
+    for (fi, f) in w.faces.iter().enumerate().filter(|(_, f)| f.dispinfo >= 0) {
+        let Some((ds, g)) = ds.as_ref().and_then(|ds| Some((ds, disp::grid(&w, ds, f.dispinfo as usize, fi)?))) else { continue };
+        let c = if ds.info[f.dispinfo as usize].flags & DISP_NO_HULL != 0 { Class::Decor } else { Class::Solid };
+        let off = w.face_normal(fi) * -DISP_THICK;
+        for t in g.idx.chunks_exact(3) {
+            match prism([t[0], t[1], t[2]].map(|i| g.pos[i as usize]), off) {
                 Some(h) => b.hull(&h.0, &h.1, &DAffine3::IDENTITY, c),
                 None => b.stats.skipped_tris += 1,
             }
