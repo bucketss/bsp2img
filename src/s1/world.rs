@@ -77,6 +77,7 @@ impl MatStats {
 pub struct Opts<'a> {
     pub tex_max: usize,
     pub crop: Option<[f64; 4]>,
+    pub band: Option<[f64; 2]>,
     pub map: &'a Map,
     pub light: &'a LightParams,
     pub lm_cap: usize,
@@ -340,6 +341,9 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                     continue;
                 }
             }
+            if o.band.is_some_and(|[lo, hi]| verts.iter().all(|v| (v.pos[2] as f64) < lo) || verts.iter().all(|v| (v.pos[2] as f64) > hi)) {
+                continue;
+            }
             used.insert(tdi);
             polys.push(Poly { key, verts, idx: Vec::new(), block });
         }
@@ -367,18 +371,18 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                 }
             })
             .collect();
-        let idx: Vec<u32> = match o.crop {
-            Some(b) => g
+        let idx: Vec<u32> = match (o.crop, o.band) {
+            (None, None) => g.idx.clone(),
+            (b, z) => g
                 .idx
                 .chunks_exact(3)
                 .filter(|t| {
                     let c: [f32; 3] = std::array::from_fn(|k| t.iter().map(|&i| verts[i as usize].pos[k]).sum::<f32>() / 3.0);
-                    inside(c, b)
+                    b.is_none_or(|b| inside(c, b)) && z.is_none_or(|[lo, hi]| (lo..=hi).contains(&(c[2] as f64)))
                 })
                 .flatten()
                 .copied()
                 .collect(),
-            None => g.idx.clone(),
         };
         if idx.is_empty() {
             continue;

@@ -12,6 +12,7 @@ use crate::s2::vpk::Fs;
 const SPAWN_REACH: f32 = 64.0;
 const CROP_CELL: f64 = 16.0;
 pub const CROP_PAD: f64 = 512.0;
+const SKY_GAP: f64 = 1024.0;
 const REACH_MIN: f64 = 0.5;
 
 pub enum PhysSrc {
@@ -114,6 +115,26 @@ fn raise_spawns_to(bsp: &mut Bsp, floor_below: &dyn Fn(f32, f32, f32) -> Option<
 }
 
 pub fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
+    crop_region(bsp, log).map(|r| r.0)
+}
+
+pub fn skybox_band(ents: &[crate::bsp::Entity], xy: [f64; 4], z: [f64; 2], log: &mut dyn FnMut(String)) -> Option<[f64; 2]> {
+    let o = ents.iter().find(|e| e.class() == "sky_camera")?.origin()?;
+    if o.x < xy[0] || o.x > xy[2] || o.y < xy[1] || o.y > xy[3] {
+        return None;
+    }
+    let band = if o.z < z[0] - 2.0 * SKY_GAP {
+        [z[0] - SKY_GAP, f64::INFINITY]
+    } else if o.z > z[1] + 2.0 * SKY_GAP {
+        [f64::NEG_INFINITY, z[1] + SKY_GAP]
+    } else {
+        return None;
+    };
+    log(format!("auto crop: 3D skybox (sky_camera at z {:.0}) cut at z {:.0}", o.z, if band[0].is_finite() { band[0] } else { band[1] }));
+    Some(band)
+}
+
+pub fn crop_region(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<([f64; 4], [f64; 2])> {
     let t = Instant::now();
     let nav = crate::nav::Nav::build_with(bsp, CROP_CELL, 250.0, false).ok()?;
     let Some(mut reach) = crate::reach::nav_reach(&nav, bsp, 250.0) else {
@@ -126,10 +147,13 @@ pub fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
         reach.fill(true);
     }
     let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut z = [f64::INFINITY, f64::NEG_INFINITY];
     let mut n = 0;
     for (u, _) in reach.iter().enumerate().filter(|(_, r)| **r) {
         let (x, y) = nav.cell_xy(nav.col[u] as usize);
         b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+        let h = nav.nodes[u].z as f64;
+        z = [z[0].min(h), z[1].max(h)];
         n += 1;
     }
     if n == 0 {
@@ -143,5 +167,5 @@ pub fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
         b[3],
         t.elapsed().as_secs_f64()
     ));
-    Some([b[0] - CROP_PAD, b[1] - CROP_PAD, b[2] + CROP_PAD, b[3] + CROP_PAD])
+    Some(([b[0] - CROP_PAD, b[1] - CROP_PAD, b[2] + CROP_PAD, b[3] + CROP_PAD], z))
 }

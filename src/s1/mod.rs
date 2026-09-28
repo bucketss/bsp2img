@@ -87,9 +87,11 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         b.extra = Some(x);
     }
     let t1 = t0.elapsed().as_secs_f64();
-    let crop = if opts.auto_crop { crate::extra::crop_box(&b, log) } else { None };
+    let region = if opts.auto_crop { crate::extra::crop_region(&b, log) } else { None };
+    let crop = region.map(|r| r.0);
+    let band = region.and_then(|(xy, z)| crate::extra::skybox_band(&b.entities, xy, z, log));
     let x = b.extra.as_ref().unwrap();
-    let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop, map: &map, light: &opts.light, lm_cap: light::LIGHTMAP_MAX.min(max_dim as usize) });
+    let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop, band, map: &map, light: &opts.light, lm_cap: light::LIGHTMAP_MAX.min(max_dim as usize) });
     log(built.materials.summary());
     for m in built.materials.bad.iter().take(10) {
         log(format!("texture failed: {m}"));
@@ -97,7 +99,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     for n in &built.notes {
         log(n.clone());
     }
-    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, light: &opts.light });
+    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, band, light: &opts.light });
     log(pr.summary());
     if !pr.bad_models.is_empty() {
         log(format!("{} models failed ({} missing)", pr.bad_models.len(), pr.missing_models.len()));

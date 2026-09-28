@@ -40,6 +40,7 @@ pub const CLASSES: &[&str] = &[
 pub struct Opts<'a> {
     pub tex_max: usize,
     pub crop: Option<[f64; 4]>,
+    pub band: Option<[f64; 2]>,
     pub light: &'a LightParams,
 }
 
@@ -267,6 +268,9 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
         if let Some([x0, y0, x1, y1]) = o.crop {
             *k = hi.x >= x0 && lo.x <= x1 && hi.y >= y0 && lo.y <= y1;
             e.clip = !(lo.x >= x0 && hi.x <= x1 && lo.y >= y0 && hi.y <= y1);
+        }
+        if let Some([z0, z1]) = o.band {
+            *k &= hi.z >= z0 && lo.z <= z1;
         }
     }
     let mut i = 0;
