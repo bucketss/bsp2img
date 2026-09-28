@@ -21,7 +21,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `peel` | Animation lifting roof levels off one by one |
 | `slice` | Animation raising a height cut from floor to sky |
 | `poster` | Print-size tiled PNG with title block, legend and scale bar |
-| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2 radar `.png` and `.txt` |
+| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2 radar `.png` per vertical section and `.txt`, on the official framing |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV demos |
 | `health` | Asset, compile, engine limit and spawn report; `health_summary.csv` for several maps |
@@ -132,6 +132,10 @@ Also the spin output options.
 | `--from-txt FILE` | Reuse framing from a `.txt` |
 | `--margin F` | Border (0.04) |
 | `--png` | Also write a PNG |
+| `--fit` | CS2: fit to the geometry, not the official framing |
+| `--sections auto\|none\|Z,...` | CS2: radar sections (the overview's) |
+| `--tga` | CS2: also write 32-bit TGAs |
+| `--official` | CS2: also write the official radar images |
 
 ### svg
 
