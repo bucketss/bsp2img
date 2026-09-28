@@ -191,6 +191,90 @@ pub fn dark_base(r: &mut Renderer, cuts: &Cuts, size: u32) -> Result<(GridFrame,
     Ok((g, base))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Backdrop {
+    #[default]
+    Render,
+    Radar,
+}
+
+impl Backdrop {
+    pub fn key(self) -> &'static str {
+        match self {
+            Backdrop::Render => "render",
+            Backdrop::Radar => "radar",
+        }
+    }
+
+    pub fn from_key(k: &str) -> Option<Backdrop> {
+        match k.trim() {
+            "render" => Some(Backdrop::Render),
+            "radar" => Some(Backdrop::Radar),
+            _ => None,
+        }
+    }
+}
+
+pub struct Base {
+    pub tag: String,
+    pub title: String,
+    pub g: GridFrame,
+    pub px: Vec<u8>,
+    pub cuts: Cuts,
+}
+
+pub const RADAR_DIM: f64 = 0.8;
+
+pub fn radar_frame(f: &crate::overview::Radar, size: u32) -> GridFrame {
+    let s = f.size();
+    GridFrame { x0: f.pos_x, y0: f.pos_y - s, x1: f.pos_x + s, y1: f.pos_y, upp: s / size as f64, wpx: size, hpx: size }
+}
+
+pub fn radar_bases(bsp: &Bsp, cuts: &Cuts, size: u32, log: &mut dyn FnMut(String)) -> Result<Vec<Base>> {
+    let Some(x) = &bsp.cs2 else { return Ok(Vec::new()) };
+    let Some(o) = &x.radar else { return Ok(Vec::new()) };
+    let map = bsp.name().to_lowercase();
+    let mut out = Vec::new();
+    for s in o.levels() {
+        let Some((n, im)) = crate::s2::radar::image(&x.fs, &map, &s.name, 4096)? else {
+            log(format!("no official radar image for section {}", s.name));
+            continue;
+        };
+        let img = image::RgbaImage::from_raw(im.w as u32, im.h as u32, im.rgba).context("radar image size")?;
+        let img = image::imageops::resize(&img, size, size, image::imageops::FilterType::Triangle);
+        let mut px = img.into_raw();
+        for p in px.chunks_exact_mut(4) {
+            let a = p[3] as f64 / 255.0;
+            for c in &mut p[..3] {
+                *c = ((*c as f64 * a + 0x1c as f64 * (1.0 - a)) * RADAR_DIM) as u8;
+            }
+            p[3] = 255;
+        }
+        log(format!("backdrop {}: {n}, {}", s.name, s.range()));
+        let default = s.name.eq_ignore_ascii_case(crate::radar::DEFAULT);
+        out.push(Base {
+            tag: if default { String::new() } else { format!("_{}", s.name) },
+            title: if default { String::new() } else { format!(" {}", s.name) },
+            g: radar_frame(&o.frame, size),
+            px,
+            cuts: s.cuts(cuts),
+        });
+    }
+    Ok(out)
+}
+
+pub fn bases(r: &mut Renderer, bsp: &Bsp, cuts: &Cuts, size: u32, b: Backdrop, log: &mut dyn FnMut(String)) -> Result<Vec<Base>> {
+    if b == Backdrop::Radar {
+        match radar_bases(bsp, cuts, size, log) {
+            Ok(v) if !v.is_empty() => return Ok(v),
+            Ok(_) => log("no official radar for this map; using the rendered backdrop".into()),
+            Err(e) => log(format!("official radar: {e:#}; using the rendered backdrop")),
+        }
+    }
+    let (g, px) = dark_base(r, cuts, size)?;
+    Ok(vec![Base { tag: String::new(), title: String::new(), g, px, cuts: *cuts }])
+}
+
 pub fn spawn_dots(pm: &mut Pixmap, bsp: &Bsp, g: &GridFrame) {
     for e in &bsp.entities {
         let col = match e.class() {

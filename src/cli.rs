@@ -276,6 +276,8 @@ pub struct TimingArgs {
     pub interval: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image per section)")]
+    pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -404,10 +406,18 @@ pub struct OverviewArgs {
     pub c: Common,
     #[arg(long, default_value_t = 0.04, help = "border around the map")]
     pub margin: f64,
-    #[arg(long = "from-txt", help = "reuse ZOOM/ORIGIN/ROTATED from an existing overview .txt")]
+    #[arg(long = "from-txt", help = "reuse the framing from an existing overview .txt (GoldSrc ZOOM/ORIGIN/ROTATED, CS2 pos_x/pos_y/scale and sections)")]
     pub from_txt: Option<PathBuf>,
     #[arg(long, help = "also write a transparent PNG")]
     pub png: bool,
+    #[arg(long, help = "CS2: fit the radar to the geometry instead of the map's official overview")]
+    pub fit: bool,
+    #[arg(long, allow_hyphen_values = true, value_name = "auto|none|Z,..", help = "CS2: one radar per vertical section: auto, none, or split heights (default: the overview's sections)")]
+    pub sections: Option<String>,
+    #[arg(long, help = "CS2: also write 32-bit <map>_radar.tga with alpha")]
+    pub tga: bool,
+    #[arg(long, help = "CS2: also write the decoded official radar images as PNG")]
+    pub official: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -564,7 +574,8 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = TimingOpts { speed: a.speed, cell: a.cell, interval: a.interval, size: a.size };
+    let base = crate::grid::Backdrop::from_key(&a.base).unwrap_or_default();
+    let o = TimingOpts { speed: a.speed, cell: a.cell, interval: a.interval, size: a.size, base };
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
@@ -782,6 +793,10 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         from_txt: a.from_txt.clone(),
         png: a.png,
         grid: a.c.grid,
+        fit: a.fit,
+        split: a.sections.as_deref().map(crate::radar::Split::parse).transpose()?.unwrap_or_default(),
+        tga: a.tga,
+        official: a.official,
     };
     for m in &a.c.maps {
         let path = resolve_map(m, a.c.game.as_deref())?;

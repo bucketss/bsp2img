@@ -529,6 +529,16 @@ fn free_camera(app: &mut App, ui: &mut egui::Ui) {
 fn overview_camera(app: &mut App) {
     let cuts = app.cuts();
     let Some(r) = &app.renderer else { return };
+    if let Some(s) = app.scene.as_ref().filter(|s| s.bsp.is_cs2()) {
+        let Ok((f, _, _)) = crate::export::radar_params(r, &s.bsp, &cuts, &app.ov) else { return };
+        let ((x, y), (z0, z1)) = (f.center(), r.z_range(&cuts));
+        let c = &mut app.cam;
+        (c.yaw, c.pitch, c.roll, c.ortho) = (90.0, 90.0, 0.0, true);
+        c.target = glam::DVec3::new(x, y, (z0 + z1) / 2.0);
+        c.set_height(f.size());
+        app.mode = Mode::Free;
+        return;
+    }
     let Ok(ov) = overview_params(r, &cuts, &app.ov) else { return };
     let (rr, _) = overview::axes(ov.rotated);
     let c = &mut app.cam;

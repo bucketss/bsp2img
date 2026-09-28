@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::bsp::Bsp;
-use crate::grid::{Text, dark_base, line, outline, paint, rect, spawn_dots};
+use crate::grid::{Backdrop, Text, line, outline, paint, rect, spawn_dots};
 use crate::nav::{JUMP_COST, LADDER_SPEED, NONE, Nav, STAND_OFS, STEP, Zone, zones};
 use crate::paths::{Partial, free_name};
 use crate::render::{Cuts, Renderer};
@@ -19,11 +19,12 @@ pub struct TimingOpts {
     pub cell: f64,
     pub interval: f64,
     pub size: u32,
+    pub base: Backdrop,
 }
 
 impl Default for TimingOpts {
     fn default() -> Self {
-        TimingOpts { speed: 250.0, cell: 8.0, interval: 5.0, size: 1600 }
+        TimingOpts { speed: 250.0, cell: 8.0, interval: 5.0, size: 1600, base: Backdrop::Render }
     }
 }
 fn zone_time(nav: &Nav, z: &Zone, d: &[f32]) -> f32 {
@@ -286,107 +287,112 @@ pub fn export_timing(
         rep.log(format!("  {line}"));
     }
 
-    let (g, base) = dark_base(r, cuts, o.size)?;
+    let bases = crate::grid::bases(r, bsp, cuts, o.size, o.base, &mut |s| rep.log(format!("  {s}")))?;
     let mut files = Partial::default();
     if let Some(removed) = nav.removed.as_ref().filter(|_| std::env::var("BSP2IMG_NAV_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0")) {
-        let f = free_name(out, &format!("{name}{cut_tag}_navlinks"), ".png");
-        files.add(f.clone());
-        nav_debug(&nav, removed, &base, &g, &f)?;
-        rep.log(format!("  {}", f.display()));
+        if let Some(b) = bases.first() {
+            let f = free_name(out, &format!("{name}{cut_tag}_navlinks"), ".png");
+            files.add(f.clone());
+            nav_debug(&nav, removed, &b.px, &b.g, &f)?;
+            rep.log(format!("  {}", f.display()));
+        }
     }
-    let field = sample_field(&nav, &dt, &dct, cuts.zmax, &g);
-    let firsts: Vec<f32> = (0..field.t.len()).map(|i| field.first(i)).collect();
-    let tmax_both = percentile(firsts, 0.98);
-    let tmax_t = percentile(field.t.clone(), 0.98);
-    let tmax_ct = percentile(field.ct.clone(), 0.98);
-    rep.step(0.7)?;
+    for b in &bases {
+        let g = &b.g;
+        let field = sample_field(&nav, &dt, &dct, b.cuts.zmax, g);
+        let firsts: Vec<f32> = (0..field.t.len()).map(|i| field.first(i)).collect();
+        let tmax_both = percentile(firsts, 0.98);
+        let tmax_t = percentile(field.t.clone(), 0.98);
+        let tmax_ct = percentile(field.ct.clone(), 0.98);
+        rep.step(0.7)?;
 
-    let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
-    let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
-    let text = Text::new(14.0);
-    let small = Text::new(12.0);
+        let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
+        let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
+        let text = Text::new(14.0);
+        let small = Text::new(12.0);
 
-    for (k, (suffix, kind, tmax)) in [
-        ("", Kind::Both, tmax_both),
-        ("_t", Kind::Team(true), tmax_t),
-        ("_ct", Kind::Team(false), tmax_ct),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        rep.step(0.7 + 0.1 * k as f32)?;
-        let px = paint_heat(&base, &field, &kind, tmax, o.interval);
-        let mut pm = Pixmap::from_vec(px, tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?)
-            .context("pixmap")?;
-        let (fw, fh) = (g.wpx as f32, g.hpx as f32);
+        for (k, (suffix, kind, tmax)) in [
+            ("", Kind::Both, tmax_both),
+            ("_t", Kind::Team(true), tmax_t),
+            ("_ct", Kind::Team(false), tmax_ct),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            rep.step(0.7 + 0.1 * k as f32)?;
+            let px = paint_heat(&b.px, &field, &kind, tmax, o.interval);
+            let mut pm = Pixmap::from_vec(px, tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?)
+                .context("pixmap")?;
+            let (fw, fh) = (g.wpx as f32, g.hpx as f32);
 
-        spawn_dots(&mut pm, bsp, &g);
-        for (z, (label, a, b)) in zs.iter().zip(&rows) {
-            let (x0, y0, x1, y1) = (sx(z.lo.x), sy(z.hi.y), sx(z.hi.x), sy(z.lo.y));
-            if z.boxed {
-                outline(&mut pm, x0, y0, x1, y1, z.color, 2.0);
-            } else if let Some(c) = PathBuilder::from_circle((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0) {
-                pm.stroke_path(&c, &paint(z.color, 255), &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+            spawn_dots(&mut pm, bsp, g);
+            for (z, (label, a, b)) in zs.iter().zip(&rows) {
+                let (x0, y0, x1, y1) = (sx(z.lo.x), sy(z.hi.y), sx(z.hi.x), sy(z.lo.y));
+                if z.boxed {
+                    outline(&mut pm, x0, y0, x1, y1, z.color, 2.0);
+                } else if let Some(c) = PathBuilder::from_circle((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0) {
+                    pm.stroke_path(&c, &paint(z.color, 255), &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+                }
+                let s = match kind {
+                    Kind::Both => format!("{label}  T {}  CT {}", fmt_t(*a), fmt_t(*b)),
+                    Kind::Team(true) => format!("{label}  {} s", fmt_t(*a)),
+                    Kind::Team(false) => format!("{label}  {} s", fmt_t(*b)),
+                };
+                let (tw, th) = small.size(&s);
+                let (lx, ly) = (x0.clamp(4.0, (fw - tw - 8.0).max(4.0)), (y0 - th - 6.0).max(4.0));
+                rect(&mut pm, lx - 3.0, ly - 1.0, lx + tw + 3.0, ly + th + 1.0, [0, 0, 0], 200);
+                small.draw(&mut pm, lx, ly, &s, z.color);
             }
-            let s = match kind {
-                Kind::Both => format!("{label}  T {}  CT {}", fmt_t(*a), fmt_t(*b)),
-                Kind::Team(true) => format!("{label}  {} s", fmt_t(*a)),
-                Kind::Team(false) => format!("{label}  {} s", fmt_t(*b)),
+
+            let title = match kind {
+                Kind::Both => format!("{name}{}  rush timings  {} u/s", b.title, o.speed),
+                Kind::Team(true) => format!("{name}{}  T arrival times  {} u/s", b.title, o.speed),
+                Kind::Team(false) => format!("{name}{}  CT arrival times  {} u/s", b.title, o.speed),
             };
-            let (tw, th) = small.size(&s);
-            let (lx, ly) = (x0.clamp(4.0, (fw - tw - 8.0).max(4.0)), (y0 - th - 6.0).max(4.0));
-            rect(&mut pm, lx - 3.0, ly - 1.0, lx + tw + 3.0, ly + th + 1.0, [0, 0, 0], 200);
-            small.draw(&mut pm, lx, ly, &s, z.color);
-        }
+            let (tw, th) = text.size(&title);
+            rect(&mut pm, 4.0, 4.0, tw + 14.0, th + 12.0, [0, 0, 0], 200);
+            text.draw(&mut pm, 9.0, 8.0, &title, [255, 255, 255]);
 
-        let title = match kind {
-            Kind::Both => format!("{name}  rush timings  {} u/s", o.speed),
-            Kind::Team(true) => format!("{name}  T arrival times  {} u/s", o.speed),
-            Kind::Team(false) => format!("{name}  CT arrival times  {} u/s", o.speed),
-        };
-        let (tw, th) = text.size(&title);
-        rect(&mut pm, 4.0, 4.0, tw + 14.0, th + 12.0, [0, 0, 0], 200);
-        text.draw(&mut pm, 9.0, 8.0, &title, [255, 255, 255]);
-
-        let lw = 190.0;
-        let (lx, ly) = (fw - lw - 8.0, fh - 92.0);
-        rect(&mut pm, lx - 8.0, ly - 8.0, fw - 4.0, fh - 4.0, [0, 0, 0], 200);
-        match kind {
-            Kind::Both => {
-                let items: [([u8; 3], String); 4] = [
-                    ([225, 110, 60], "T arrives first".into()),
-                    ([70, 130, 220], "CT arrives first".into()),
-                    ([255, 255, 255], "both arrive together".into()),
-                    ([30, 30, 30], format!("lines every {} s", o.interval)),
-                ];
-                for (k, (c, s)) in items.iter().enumerate() {
-                    let yy = ly + k as f32 * 20.0;
-                    rect(&mut pm, lx, yy + 3.0, lx + 12.0, yy + 15.0, *c, 255);
-                    if k == 3 {
-                        outline(&mut pm, lx, yy + 3.0, lx + 12.0, yy + 15.0, [200, 200, 200], 1.0);
+            let lw = 190.0;
+            let (lx, ly) = (fw - lw - 8.0, fh - 92.0);
+            rect(&mut pm, lx - 8.0, ly - 8.0, fw - 4.0, fh - 4.0, [0, 0, 0], 200);
+            match kind {
+                Kind::Both => {
+                    let items: [([u8; 3], String); 4] = [
+                        ([225, 110, 60], "T arrives first".into()),
+                        ([70, 130, 220], "CT arrives first".into()),
+                        ([255, 255, 255], "both arrive together".into()),
+                        ([30, 30, 30], format!("lines every {} s", o.interval)),
+                    ];
+                    for (k, (c, s)) in items.iter().enumerate() {
+                        let yy = ly + k as f32 * 20.0;
+                        rect(&mut pm, lx, yy + 3.0, lx + 12.0, yy + 15.0, *c, 255);
+                        if k == 3 {
+                            outline(&mut pm, lx, yy + 3.0, lx + 12.0, yy + 15.0, [200, 200, 200], 1.0);
+                        }
+                        small.draw(&mut pm, lx + 20.0, yy + 1.0, s, [255, 255, 255]);
                     }
-                    small.draw(&mut pm, lx + 20.0, yy + 1.0, s, [255, 255, 255]);
+                }
+                Kind::Team(_) => {
+                    let bw = lw - 10.0;
+                    for k in 0..bw as usize {
+                        let c = viridis(k as f64 / bw as f64).map(|v| v as u8);
+                        line(&mut pm, (lx + k as f32, ly + 24.0), (lx + k as f32, ly + 44.0), c, 255, 1.2);
+                    }
+                    small.draw(&mut pm, lx, ly, &format!("seconds, lines every {} s", o.interval), [255, 255, 255]);
+                    small.draw(&mut pm, lx, ly + 50.0, "0", [255, 255, 255]);
+                    let e = format!("{tmax:.0}+");
+                    let (ew, _) = small.size(&e);
+                    small.draw(&mut pm, lx + bw - ew, ly + 50.0, &e, [255, 255, 255]);
                 }
             }
-            Kind::Team(_) => {
-                let bw = lw - 10.0;
-                for k in 0..bw as usize {
-                    let c = viridis(k as f64 / bw as f64).map(|v| v as u8);
-                    line(&mut pm, (lx + k as f32, ly + 24.0), (lx + k as f32, ly + 44.0), c, 255, 1.2);
-                }
-                small.draw(&mut pm, lx, ly, &format!("seconds, lines every {} s", o.interval), [255, 255, 255]);
-                small.draw(&mut pm, lx, ly + 50.0, "0", [255, 255, 255]);
-                let e = format!("{tmax:.0}+");
-                let (ew, _) = small.size(&e);
-                small.draw(&mut pm, lx + bw - ew, ly + 50.0, &e, [255, 255, 255]);
-            }
-        }
 
-        let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-        let f = free_name(out, &format!("{name}{cut_tag}_timing{suffix}"), ".png");
-        files.add(f.clone());
-        image::RgbImage::from_raw(g.wpx, g.hpx, rgb).context("image")?.save(&f)?;
-        rep.log(format!("  {}", f.display()));
+            let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let f = free_name(out, &format!("{name}{cut_tag}{}_timing{suffix}", b.tag), ".png");
+            files.add(f.clone());
+            image::RgbImage::from_raw(g.wpx, g.hpx, rgb).context("image")?.save(&f)?;
+            rep.log(format!("  {}", f.display()));
+        }
     }
     rep.step(1.0)?;
     let f = free_name(out, &format!("{name}{cut_tag}_timing"), ".txt");

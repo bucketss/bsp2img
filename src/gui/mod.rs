@@ -33,7 +33,7 @@ use crate::timing::TimingOpts;
 
 use export_ui::Exporter;
 use jobs::Running;
-use preview::{Frame, Mode, Preview, SpawnShow};
+use preview::{Frame, Mode, Overlay, Preview, SpawnShow};
 
 pub fn run(map: Option<String>, game: Option<PathBuf>, view: &str) -> Result<()> {
     let mode = match view {
@@ -164,6 +164,12 @@ struct App {
     iso: IsoOpts,
     yaws_text: String,
     ov: OverviewOpts,
+    split_text: String,
+    radar_sec: String,
+    radar_overlay: Overlay,
+    radar_opacity: f32,
+    radar_icons: bool,
+    radar_tex: Option<(String, Option<egui::TextureHandle>)>,
     spin: AnimOpts,
     peel: PeelOpts,
     slice: SliceOpts,
@@ -240,6 +246,12 @@ impl App {
             iso: IsoOpts::default(),
             yaws_text: String::new(),
             ov: OverviewOpts::default(),
+            split_text: String::new(),
+            radar_sec: crate::radar::DEFAULT.into(),
+            radar_overlay: Overlay::Off,
+            radar_opacity: 0.5,
+            radar_icons: true,
+            radar_tex: None,
             spin: AnimOpts::default(),
             peel: PeelOpts::default(),
             slice: SliceOpts::default(),

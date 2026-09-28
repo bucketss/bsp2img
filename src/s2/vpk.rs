@@ -159,6 +159,14 @@ impl Fs {
         self.read_limit(name, usize::MAX)
     }
 
+    pub fn names_with(&self, prefix: &str) -> Vec<String> {
+        let p = prefix.to_lowercase();
+        let mut v: Vec<String> = self.paks.iter().flat_map(|k| k.entries.keys().filter(|n| n.starts_with(&p)).cloned()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
     pub fn read_limit(&self, name: &str, limit: usize) -> Result<Vec<u8>> {
         let Some((p, e)) = self.find(name) else { bail!("not found: {name}") };
         p.read_limit(e, limit).with_context(|| format!("reading {name}"))
