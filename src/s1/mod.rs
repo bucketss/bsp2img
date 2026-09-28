@@ -1,4 +1,7 @@
 pub mod bsp;
+pub mod fs;
+pub mod vmt;
+pub mod vtf;
 
 use std::path::Path;
 

@@ -239,6 +239,7 @@ fn read_file(p: &Path, limit: usize) -> Result<Vec<u8>> {
 pub enum Src {
     Vpk(Vpk),
     Dir(Dir),
+    Zip(crate::s1::fs::Zip),
 }
 
 impl Src {
@@ -246,6 +247,7 @@ impl Src {
         match self {
             Src::Vpk(v) => &v.path,
             Src::Dir(d) => &d.root,
+            Src::Zip(z) => z.path(),
         }
     }
 
@@ -253,6 +255,7 @@ impl Src {
         match self {
             Src::Vpk(v) => v.entries.contains_key(k),
             Src::Dir(d) => d.path(k).is_some(),
+            Src::Zip(z) => z.has(k),
         }
     }
 
@@ -260,12 +263,14 @@ impl Src {
         match self {
             Src::Vpk(v) => v.entries.get(k).map(|e| v.read_limit(e, limit)),
             Src::Dir(d) => d.path(k).map(|p| read_file(&p, limit)),
+            Src::Zip(z) => z.read_limit(k, limit),
         }
     }
 
     fn names_with(&self, p: &str, out: &mut Vec<String>) {
         match self {
             Src::Vpk(v) => out.extend(v.entries.keys().filter(|n| n.starts_with(p)).cloned()),
+            Src::Zip(z) => z.names_with(p, out),
             Src::Dir(d) => {
                 let (dir, _) = p.rsplit_once('/').unwrap_or(("", p));
                 if dir.split('/').any(|c| c == "..") {
