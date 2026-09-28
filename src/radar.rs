@@ -2,6 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
+use crate::bsp::Bsp;
 use crate::kv1::{self, Block, Value};
 use crate::overview::Radar;
 use crate::render::Cuts;
@@ -162,7 +163,7 @@ impl Official {
     }
 
     pub fn icon_world(&self, name: &str) -> Option<(f64, f64)> {
-        self.icon(name).map(|[u, v]| self.frame.from_norm(u, v))
+        self.icon(name).map(|[u, v]| self.frame.world(u, v))
     }
 
     pub fn txt(&self) -> String {
@@ -219,6 +220,157 @@ impl Official {
     }
 }
 
+pub const AUTO_CELL: f64 = 32.0;
+pub const AUTO_SEP: f32 = 128.0;
+pub const AUTO_PAD: f32 = 16.0;
+pub const AUTO_MIN: f64 = 0.05;
+pub const AUTO_STEP: f32 = 8.0;
+pub const AUTO_PLATEAU: f64 = 0.9;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Split {
+    #[default]
+    Official,
+    Auto,
+    None,
+    At(Vec<f64>),
+}
+
+impl Split {
+    pub fn parse(s: &str) -> Result<Split> {
+        let t = s.trim();
+        Ok(match t.to_lowercase().as_str() {
+            "" | "official" => Split::Official,
+            "auto" => Split::Auto,
+            "none" => Split::None,
+            _ => {
+                let zs = t
+                    .split([',', ' '])
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| p.trim().parse::<f64>().with_context(|| format!("bad split height: {p}")))
+                    .collect::<Result<Vec<f64>>>()?;
+                Split::At(zs)
+            }
+        })
+    }
+
+    pub fn key(&self) -> String {
+        match self {
+            Split::Official => "official".into(),
+            Split::Auto => "auto".into(),
+            Split::None => "none".into(),
+            Split::At(zs) => zs.iter().map(|z| num(*z)).collect::<Vec<_>>().join(","),
+        }
+    }
+
+    pub fn sections(&self, info: Option<&Official>, bsp: &Bsp, cuts: &Cuts) -> (Vec<Section>, Option<String>) {
+        match self {
+            Split::Official => (info.map_or_else(|| vec![Section::all()], |o| o.sections.clone()), None),
+            Split::None => (vec![Section::all()], None),
+            Split::Auto => {
+                let (zs, why) = auto_split(bsp, cuts);
+                (split_at(&zs), Some(why))
+            }
+            Split::At(zs) => (split_at(zs), None),
+        }
+    }
+}
+
+pub fn auto_split(bsp: &Bsp, cuts: &Cuts) -> (Vec<f64>, String) {
+    let nav = match crate::nav::Nav::build(bsp, AUTO_CELL, 250.0) {
+        Ok(n) => n,
+        Err(e) => return (Vec::new(), format!("none ({e:#})")),
+    };
+    let (mut cols, mut pairs) = (0usize, Vec::new());
+    for c in 0..nav.nx * nav.ny {
+        let mut zs: Vec<f32> = nav.column(c).map(|n| nav.nodes[n].z).filter(|&z| z as f64 >= cuts.zmin && z as f64 <= cuts.zmax).collect();
+        if zs.is_empty() {
+            continue;
+        }
+        cols += 1;
+        zs.sort_by(f32::total_cmp);
+        pairs.extend(zs.windows(2).filter(|w| w[1] - w[0] >= AUTO_SEP).map(|w| (w[0], w[1])));
+    }
+    let frac = pairs.len() as f64 / cols.max(1) as f64;
+    let stat = format!("{:.1}% of {cols} nav columns have floors {AUTO_SEP} units apart", frac * 100.0);
+    if pairs.is_empty() || frac < AUTO_MIN {
+        return (Vec::new(), format!("none, {stat}"));
+    }
+    let mut lo: Vec<f32> = pairs.iter().map(|p| p.0 + AUTO_PAD).collect();
+    let mut hi: Vec<f32> = pairs.iter().map(|p| p.1 - AUTO_PAD).collect();
+    lo.sort_by(f32::total_cmp);
+    hi.sort_by(f32::total_cmp);
+    let above = |v: &[f32], z: f32| v.len() - v.partition_point(|&x| x < z);
+    let z0 = lo[0].floor();
+    let steps = ((hi[hi.len() - 1] - z0) / AUTO_STEP).ceil() as usize + 1;
+    let count: Vec<usize> = (0..steps).map(|i| above(&hi, z0 + i as f32 * AUTO_STEP) - above(&lo, z0 + i as f32 * AUTO_STEP)).collect();
+    let (arg, &best) = count.iter().enumerate().max_by_key(|(_, n)| **n).unwrap_or((0, &0));
+    let keep = |i: &usize| count[*i] as f64 >= AUTO_PLATEAU * best as f64;
+    let a = (0..arg).rev().take_while(keep).last().unwrap_or(arg);
+    let b = (arg..steps).take_while(keep).last().unwrap_or(arg);
+    let z = (z0 + (a + b) as f32 * AUTO_STEP / 2.0).round();
+    let range = format!("{} .. {}", z0 + a as f32 * AUTO_STEP, z0 + b as f32 * AUTO_STEP);
+    (vec![z as f64], format!("split at z {z} (middle of {range}), separating {best} of {} stacked columns; {stat}", pairs.len()))
+}
+
+pub fn split_at(zs: &[f64]) -> Vec<Section> {
+    let mut zs: Vec<f64> = zs.iter().copied().filter(|z| z.is_finite() && z.abs() < OPEN).collect();
+    zs.sort_by(|a, b| b.total_cmp(a));
+    zs.dedup();
+    let mut edges = vec![OPEN];
+    edges.extend(&zs);
+    edges.push(-OPEN);
+    edges
+        .windows(2)
+        .enumerate()
+        .map(|(i, w)| Section {
+            name: match i {
+                0 => DEFAULT.into(),
+                1 => "lower".into(),
+                _ => format!("lower{i}"),
+            },
+            alt_min: w[1],
+            alt_max: w[0],
+            frame: None,
+        })
+        .collect()
+}
+
+pub fn icons(bsp: &crate::bsp::Bsp, frame: &Radar, info: Option<&Official>) -> Vec<(String, [f64; 2])> {
+    let marks = crate::grid::entity_marks(bsp);
+    let norm = |x: f64, y: f64| {
+        let (u, v) = frame.norm(x, y);
+        [u, v]
+    };
+    let mut out = Vec::new();
+    for (key, label) in [("CTSpawn", "CT"), ("TSpawn", "T")] {
+        let pts: Vec<_> = marks.iter().filter(|m| m.spawn && m.label == label && m.comp != Some(false)).map(|m| m.pos).collect();
+        if !pts.is_empty() {
+            let c = pts.iter().copied().sum::<glam::DVec3>() / pts.len() as f64;
+            out.push((key.to_string(), norm(c.x, c.y)));
+        }
+    }
+    let mut sites: Vec<glam::DVec3> = marks.iter().filter(|m| m.label == "BOMB").map(|m| m.pos).collect();
+    let refs = info.map(|o| (o.icon_world("bombA"), o.icon_world("bombB")));
+    let d = |p: glam::DVec3, q: (f64, f64)| (p.x - q.0).hypot(p.y - q.1);
+    match refs {
+        Some((Some(a), Some(b))) if sites.len() >= 2 => {
+            sites.sort_by(|p, q| d(*p, a).total_cmp(&d(*q, a)));
+            let rest = &mut sites[1..];
+            rest.sort_by(|p, q| d(*p, b).total_cmp(&d(*q, b)));
+        }
+        _ => sites.sort_by(|p, q| p.x.total_cmp(&q.x)),
+    }
+    for (p, k) in sites.iter().zip(["bombA", "bombB"]) {
+        out.push((k.to_string(), norm(p.x, p.y)));
+    }
+    let hostages = bsp.entities.iter().filter(|e| matches!(e.class(), "hostage_entity" | "info_hostage_spawn"));
+    for (i, p) in hostages.filter_map(|e| e.origin()).enumerate() {
+        out.push((format!("Hostage{}", i + 1), norm(p.x, p.y)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +392,19 @@ mod tests {
         assert_eq!(back.frame, o.frame);
         assert_eq!(stem("de_nuke", "lower"), "de_nuke_lower");
         assert_eq!(stem("de_nuke", "Default"), "de_nuke");
+    }
+
+    #[test]
+    fn splits() {
+        assert_eq!(Split::parse("").unwrap(), Split::Official);
+        assert_eq!(Split::parse("Auto").unwrap(), Split::Auto);
+        assert_eq!(Split::parse("-600, -300").unwrap(), Split::At(vec![-600.0, -300.0]));
+        assert!(Split::parse("x").is_err());
+        let s = split_at(&[-600.0, -300.0]);
+        let names: Vec<&str> = s.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["default", "lower", "lower2"]);
+        assert_eq!((s[1].alt_min, s[1].alt_max), (-600.0, -300.0));
+        assert_eq!(Split::parse(&Split::At(vec![-600.0, 12.5]).key()).unwrap(), Split::At(vec![-600.0, 12.5]));
     }
 
     #[test]

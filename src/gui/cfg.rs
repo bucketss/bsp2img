@@ -174,6 +174,10 @@ impl Cfg for OverviewOpts {
             ("ss", self.ss.to_string()),
             ("png", self.png.to_string()),
             ("grid", self.grid.to_string()),
+            ("fit", self.fit.to_string()),
+            ("sections", self.split.key()),
+            ("tga", self.tga.to_string()),
+            ("official", self.official.to_string()),
         ])
     }
 
@@ -183,6 +187,10 @@ impl Cfg for OverviewOpts {
             "ss" => put(&mut self.ss, v),
             "png" => put(&mut self.png, v),
             "grid" => put(&mut self.grid, v),
+            "fit" => put(&mut self.fit, v),
+            "sections" => self.split = crate::radar::Split::parse(v).unwrap_or_default(),
+            "tga" => put(&mut self.tga, v),
+            "official" => put(&mut self.official, v),
             _ => {}
         }
     }

@@ -131,17 +131,32 @@ pub fn bmp_bytes(img: &image::RgbaImage) -> Vec<u8> {
 }
 
 pub fn tga_bytes(img: &image::RgbaImage) -> Vec<u8> {
+    tga(img, false)
+}
+
+pub fn tga_rgba_bytes(img: &image::RgbaImage) -> Vec<u8> {
+    tga(img, true)
+}
+
+fn tga(img: &image::RgbaImage, alpha: bool) -> Vec<u8> {
     let (w, h) = img.dimensions();
     let mut out = vec![0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     out.extend_from_slice(&(w as u16).to_le_bytes());
     out.extend_from_slice(&(h as u16).to_le_bytes());
-    out.extend_from_slice(&[24, 0]);
-    let px = |x: u32, y: u32| -> [u8; 3] {
+    out.extend_from_slice(if alpha { &[32, 8] } else { &[24, 0] });
+    let n = if alpha { 4 } else { 3 };
+    let px = |x: u32, y: u32| -> [u8; 4] {
         let p = img.get_pixel(x, y);
-        if p[3] < 128 { [KEY[2], KEY[1], KEY[0]] } else { [p[2], p[1], p[0]] }
+        if alpha {
+            [p[2], p[1], p[0], p[3]]
+        } else if p[3] < 128 {
+            [KEY[2], KEY[1], KEY[0], 0]
+        } else {
+            [p[2], p[1], p[0], 0]
+        }
     };
     for y in (0..h).rev() {
-        let row: Vec<[u8; 3]> = (0..w).map(|x| px(x, y)).collect();
+        let row: Vec<[u8; 4]> = (0..w).map(|x| px(x, y)).collect();
         let mut i = 0;
         while i < row.len() {
             let mut run = 1;
@@ -150,19 +165,19 @@ pub fn tga_bytes(img: &image::RgbaImage) -> Vec<u8> {
             }
             if run > 1 {
                 out.push(0x80 | (run as u8 - 1));
-                out.extend_from_slice(&row[i]);
+                out.extend_from_slice(&row[i][..n]);
                 i += run;
                 continue;
             }
-            let mut n = 1;
-            while i + n < row.len() && n < 128 && (i + n + 1 >= row.len() || row[i + n] != row[i + n + 1]) {
-                n += 1;
+            let mut k = 1;
+            while i + k < row.len() && k < 128 && (i + k + 1 >= row.len() || row[i + k] != row[i + k + 1]) {
+                k += 1;
             }
-            out.push(n as u8 - 1);
-            for p in &row[i..i + n] {
-                out.extend_from_slice(p);
+            out.push(k as u8 - 1);
+            for p in &row[i..i + k] {
+                out.extend_from_slice(&p[..n]);
             }
-            i += n;
+            i += k;
         }
     }
     out.extend_from_slice(&[0; 8]);
@@ -180,24 +195,24 @@ pub struct Radar {
 }
 
 impl Radar {
-    pub fn size(&self) -> f64 {
+    pub fn size(self) -> f64 {
         self.scale * RADAR as f64
     }
 
-    pub fn center(&self) -> (f64, f64) {
+    pub fn center(self) -> (f64, f64) {
         (self.pos_x + self.size() / 2.0, self.pos_y - self.size() / 2.0)
     }
 
-    pub fn to_px(&self, x: f64, y: f64, size: f64) -> (f64, f64) {
+    pub fn world_to_px(self, x: f64, y: f64, size: f64) -> (f64, f64) {
         let k = size / RADAR as f64;
         ((x - self.pos_x) / self.scale * k, (self.pos_y - y) / self.scale * k)
     }
 
-    pub fn to_norm(&self, x: f64, y: f64) -> (f64, f64) {
+    pub fn norm(self, x: f64, y: f64) -> (f64, f64) {
         ((x - self.pos_x) / self.size(), (self.pos_y - y) / self.size())
     }
 
-    pub fn from_norm(&self, u: f64, v: f64) -> (f64, f64) {
+    pub fn world(self, u: f64, v: f64) -> (f64, f64) {
         (self.pos_x + u * self.size(), self.pos_y - v * self.size())
     }
 }
@@ -217,21 +232,31 @@ pub fn radar_view(r: &Radar) -> View {
     View { basis: top_down(DVec3::X, DVec3::Y), cx, cy, w: s, h: s, sky_yaw: None, persp: None }
 }
 
-pub fn radar_txt(name: &str, r: &Radar) -> String {
-    let lines = [
-        format!("// overview description file for {name}"),
-        String::new(),
-        format!("\"{name}\""),
-        "{".into(),
-        format!("\t\"material\"\t\"overviews/{name}\""),
-        format!("\t\"pos_x\"\t\t\"{}\"", crate::scene::num(r.pos_x)),
-        format!("\t\"pos_y\"\t\t\"{}\"", crate::scene::num(r.pos_y)),
-        format!("\t\"scale\"\t\t\"{}\"", crate::scene::num(r.scale)),
-        "\t\"rotate\"\t\"0\"".into(),
-        "\t\"zoom\"\t\t\"1\"".into(),
-        "}".into(),
-    ];
-    lines.iter().map(|l| format!("{l}\r\n")).collect()
+pub fn render_radar(r: &mut Renderer, frame: &Radar, ss: u32, cuts: &Cuts, cull: bool) -> Result<image::RgbaImage> {
+    r.render_view(&radar_view(frame), RADAR, RADAR, ss, cuts, &crate::look::Look::plain(cull, None), 0.0)
+}
+
+pub fn radar_exts(png: bool, tga: bool) -> Vec<&'static str> {
+    [(png, ".png"), (tga, ".tga")].into_iter().filter(|x| x.0).map(|x| x.1).collect()
+}
+
+pub fn save_radar(dir: &Path, stem: &str, img: &image::RgbaImage, png: bool, tga: bool) -> Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    for ext in radar_exts(png, tga) {
+        let f = dir.join(format!("{stem}_radar{ext}"));
+        match ext {
+            ".png" => img.save(&f)?,
+            _ => std::fs::write(&f, tga_rgba_bytes(img))?,
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
+pub fn coverage(frame: &Radar, points: &[DVec3]) -> f64 {
+    let s = frame.size();
+    let inside = points.iter().filter(|p| p.x >= frame.pos_x && p.x <= frame.pos_x + s && p.y <= frame.pos_y && p.y >= frame.pos_y - s).count();
+    inside as f64 / points.len().max(1) as f64
 }
 
 pub fn exts(png: bool) -> &'static [&'static str] {

@@ -6,10 +6,12 @@ use crate::bsp::Bsp;
 use crate::camera::{Framing, auto_persp, camera_basis, extents};
 use crate::grid::grid_preview;
 use crate::look::Look;
-use crate::overview::{self, Overview};
+use crate::overview::{self, Overview, Radar};
+use crate::radar::{Official, Split, icons, stem};
+use crate::s2::radar as s2radar;
 use crate::paths::{Partial, free_name, set_suffix};
 use crate::render::{Cuts, Renderer};
-use crate::scene::Report;
+use crate::scene::{Report, num};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoOpts {
@@ -44,11 +46,26 @@ pub struct OverviewOpts {
     pub from_txt: Option<PathBuf>,
     pub png: bool,
     pub grid: bool,
+    pub fit: bool,
+    pub split: Split,
+    pub tga: bool,
+    pub official: bool,
 }
 
 impl Default for OverviewOpts {
     fn default() -> Self {
-        OverviewOpts { margin: 0.04, ss: 3, cull: true, from_txt: None, png: false, grid: false }
+        OverviewOpts {
+            margin: 0.04,
+            ss: 3,
+            cull: true,
+            from_txt: None,
+            png: false,
+            grid: false,
+            fit: false,
+            split: Split::Official,
+            tga: false,
+            official: false,
+        }
     }
 }
 
@@ -118,6 +135,129 @@ pub fn overview_params(r: &Renderer, cuts: &Cuts, o: &OverviewOpts) -> Result<Ov
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RadarSource {
+    Official,
+    Fitted,
+    Txt,
+}
+
+impl RadarSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            RadarSource::Official => "official",
+            RadarSource::Fitted => "fitted",
+            RadarSource::Txt => "from txt",
+        }
+    }
+}
+
+pub fn official(bsp: &Bsp) -> Option<&Official> {
+    bsp.cs2.as_ref().and_then(|x| x.radar.as_ref())
+}
+
+pub fn radar_params(r: &Renderer, bsp: &Bsp, cuts: &Cuts, o: &OverviewOpts) -> Result<(Radar, RadarSource, Option<Official>)> {
+    if let Some(t) = &o.from_txt {
+        let t = Official::read(t)?;
+        return Ok((t.frame, RadarSource::Txt, Some(t)));
+    }
+    let off = official(bsp).cloned();
+    match &off {
+        Some(x) if !o.fit => Ok((x.frame, RadarSource::Official, off)),
+        _ => Ok((overview::fit_radar(&r.points_in(cuts), o.margin), RadarSource::Fitted, off)),
+    }
+}
+
+pub fn radar_alignment(r: &Renderer, bsp: &Bsp, cuts: &Cuts, margin: f64) -> Option<String> {
+    let off = official(bsp)?.frame;
+    let pts = r.points_in(cuts);
+    let fit = overview::fit_radar(&pts, margin);
+    let ((fx, fy), (ox, oy)) = (fit.center(), off.center());
+    let (dx, dy) = (fx - ox, fy - oy);
+    Some(format!(
+        "fit vs official: centre offset {dx:.0} {dy:.0} units ({:.0} px), scale {} vs {} ({:.2}x), {:.1}% of geometry inside the official frame",
+        dx.hypot(dy) / off.scale,
+        num(fit.scale),
+        num(off.scale),
+        fit.scale / off.scale,
+        overview::coverage(&off, &pts) * 100.0
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_radar(
+    r: &mut Renderer,
+    bsp: &Bsp,
+    name: &str,
+    cuts: &Cuts,
+    o: &OverviewOpts,
+    out: &Path,
+    mut files: Partial,
+    rep: &mut Report,
+) -> Result<()> {
+    let (frame, src, info) = radar_params(r, bsp, cuts, o)?;
+    rep.log(format!(
+        "  framing: {}  pos_x {}  pos_y {}  scale {}",
+        src.label(),
+        num(frame.pos_x),
+        num(frame.pos_y),
+        num(frame.scale)
+    ));
+    match radar_alignment(r, bsp, cuts, o.margin) {
+        Some(a) => rep.log(format!("  {a}")),
+        None => rep.log("  no official overview for this map".into()),
+    }
+    let (mut secs, why) = o.split.sections(info.as_ref(), bsp, cuts);
+    if let Some(w) = why {
+        rep.log(format!("  auto sections: {w}"));
+    }
+    if !matches!(o.split, Split::Official | Split::None) {
+        secs.extend(info.iter().flat_map(|i| i.volumes().cloned()));
+    }
+    let fs = bsp.cs2.as_ref().map(|x| &x.fs);
+    let total = secs.len() as f32 + 0.5;
+    for (i, s) in secs.iter().enumerate() {
+        rep.step((i as f32 + 0.3) / total)?;
+        let f = s.frame.unwrap_or(frame);
+        let img = overview::render_radar(r, &f, o.ss, &s.cuts(cuts), o.cull)?;
+        let st = stem(name, &s.name);
+        for e in overview::radar_exts(true, o.tga) {
+            files.add(out.join(format!("{st}_radar{e}")));
+        }
+        let saved = overview::save_radar(out, &st, &img, true, o.tga)?;
+        let what = if s.frame.is_some() { format!("pos_x {} pos_y {} scale {}", num(f.pos_x), num(f.pos_y), num(f.scale)) } else { s.range() };
+        rep.log(format!("  {} ({what}): {}", s.name, saved.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("  ")));
+        if o.official {
+            match fs.map(|fs| s2radar::image(fs, &bsp.name().to_lowercase(), &s.name, 4096)).transpose()?.flatten() {
+                Some((n, im)) => {
+                    let p = out.join(format!("{st}_radar_official.png"));
+                    files.add(p.clone());
+                    image::RgbaImage::from_raw(im.w as u32, im.h as u32, im.rgba).map(|x| x.save(&p)).transpose()?;
+                    rep.log(format!("  {} official {}x{} from {n}: {}", s.name, im.w, im.h, p.display()));
+                }
+                None => rep.log(format!("  {} has no official radar image", s.name)),
+            }
+        }
+    }
+    let mut t = Official::new(name, frame);
+    if src != RadarSource::Fitted
+        && let Some(i) = &info
+    {
+        (t.rotate, t.zoom, t.insets) = (i.rotate, i.zoom, i.insets);
+    }
+    t.sections = secs;
+    t.icons = icons(bsp, &frame, info.as_ref());
+    t.autogen = o.tga;
+    let txt = out.join(format!("{name}.txt"));
+    files.add(txt.clone());
+    std::fs::write(&txt, t.txt())?;
+    files.keep();
+    let _ = rep.step(1.0);
+    rep.log(format!("  {}", txt.display()));
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn export_overview(
     r: &mut Renderer,
     bsp: &Bsp,
@@ -137,23 +277,7 @@ pub fn export_overview(
         rep.step(0.3)?;
     }
     if bsp.is_cs2() {
-        let rd = match &o.from_txt {
-            Some(t) => crate::radar::Official::read(t)?.frame,
-            None => overview::fit_radar(&r.points_in(cuts), o.margin),
-        };
-        let n = overview::RADAR;
-        let img = r.render_view(&overview::radar_view(&rd), n, n, o.ss, cuts, &crate::look::Look::plain(o.cull, None), 0.0)?;
-        rep.step(0.8)?;
-        let (png, txt) = (out.join(format!("{name}_radar.png")), out.join(format!("{name}.txt")));
-        files.add(png.clone());
-        files.add(txt.clone());
-        img.save(&png)?;
-        std::fs::write(&txt, overview::radar_txt(name, &rd))?;
-        files.keep();
-        let _ = rep.step(1.0);
-        rep.log(format!("  pos_x {}  pos_y {}  scale {}", crate::scene::num(rd.pos_x), crate::scene::num(rd.pos_y), rd.scale));
-        rep.log(format!("  {}  {}", png.display(), txt.display()));
-        return Ok(());
+        return export_radar(r, bsp, name, cuts, o, out, files, rep);
     }
     let ov = overview_params(r, cuts, o)?;
     let img = overview::render(r, &ov, o.ss, cuts, o.cull)?;
