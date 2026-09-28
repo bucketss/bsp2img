@@ -83,6 +83,7 @@ pub struct Built {
     pub dropped: usize,
     pub displacements: usize,
     pub brush_ents: usize,
+    pub tex_ids: HashMap<String, usize>,
 }
 
 pub struct Draw {
@@ -400,5 +401,6 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         dropped: total - faces,
         displacements: disps,
         brush_ents: draws.len() - 1,
+        tex_ids: ids,
     }
 }

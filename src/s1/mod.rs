@@ -1,15 +1,14 @@
 pub mod bsp;
+pub mod cube;
 pub mod dds;
 pub mod entities;
 pub mod fs;
-#[allow(dead_code)]
 pub mod model;
 pub mod nav;
+pub mod props;
 pub mod radar;
 pub mod sky;
-#[allow(dead_code)]
 pub mod sprp;
-#[allow(dead_code)]
 pub mod vhv;
 pub mod vmt;
 pub mod vtf;
@@ -72,10 +71,18 @@ pub fn load(path: &Path, opts: &LoadOpts, _max_dim: u32, log: &mut dyn FnMut(Str
     let t1 = t0.elapsed().as_secs_f64();
     let crop = if opts.auto_crop { crate::extra::crop_box(&b, log) } else { None };
     let x = b.extra.as_ref().unwrap();
-    let built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop });
+    let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop });
     log(built.materials.summary());
     for m in built.materials.bad.iter().take(10) {
         log(format!("texture failed: {m}"));
+    }
+    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, light: &opts.light });
+    log(pr.summary());
+    if !pr.bad_models.is_empty() {
+        log(format!("{} models failed ({} missing)", pr.bad_models.len(), pr.missing_models.len()));
+    }
+    for m in pr.bad_models.iter().take(10) {
+        log(format!("model failed: {m}"));
     }
     if built.displacements > 0 {
         log(format!("{} displacement faces not drawn yet", built.displacements));
@@ -91,6 +98,8 @@ pub fn load(path: &Path, opts: &LoadOpts, _max_dim: u32, log: &mut dyn FnMut(Str
     ));
     if let Some(x) = b.extra.as_mut() {
         x.stats.missing = built.mesh.missing.clone();
+        x.stats.bad_models = pr.bad_models;
+        x.stats.models = pr.models;
         x.stats.draws = built.faces;
         x.stats.dropped = built.dropped;
         x.stats.materials = w.texdata.len();

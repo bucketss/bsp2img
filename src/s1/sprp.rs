@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result, bail};
 use glam::{DMat3, DVec3};
 
@@ -45,6 +47,7 @@ pub struct StaticProp {
     pub lighting_origin: [f32; 3],
     pub forced_fade: f32,
     pub scale: f32,
+    pub color: [u8; 4],
 }
 
 pub struct StaticProps {
@@ -138,16 +141,21 @@ fn record(r: &[u8], lay: Layout) -> StaticProp {
         lighting_origin: vec_at(r, 44),
         forced_fade: 1.0,
         scale: 1.0,
+        color: [255; 4],
     };
     if lay != Layout::V4 {
         p.forced_fade = f32_at(r, 56);
     }
     match lay {
         Layout::Tf2 => p.flags |= u32_at(r, 64),
-        Layout::Csgo10 => p.flags_ex = u32_at(r, 72),
+        Layout::Csgo10 => {
+            p.flags_ex = u32_at(r, 72);
+            p.color = r[64..68].try_into().unwrap();
+        }
         Layout::Csgo11 => {
             p.flags_ex = u32_at(r, 72);
             p.scale = f32_at(r, 76);
+            p.color = r[64..68].try_into().unwrap();
         }
         _ => {}
     }
@@ -234,7 +242,7 @@ mod tests {
         assert!((r * DVec3::X + DVec3::Z).length() < 1e-9);
         let r = rotation([0.0, 0.0, 90.0]);
         assert!((r * DVec3::Y - DVec3::Z).length() < 1e-9);
-        let p = StaticProp { origin: [1.0, 2.0, 3.0], angles: [0.0, 90.0, 0.0], model: 0, first_leaf: 0, leaf_count: 0, solid: 0, flags: 0, flags_ex: 0, skin: 0, fade: [0.0; 2], lighting_origin: [0.0; 3], forced_fade: 1.0, scale: 2.0 };
+        let p = StaticProp { origin: [1.0, 2.0, 3.0], angles: [0.0, 90.0, 0.0], model: 0, first_leaf: 0, leaf_count: 0, solid: 0, flags: 0, flags_ex: 0, skin: 0, fade: [0.0; 2], lighting_origin: [0.0; 3], forced_fade: 1.0, scale: 2.0, color: [255; 4] };
         assert!((p.xf().apply(DVec3::X) - DVec3::new(1.0, 4.0, 3.0)).length() < 1e-9);
     }
 

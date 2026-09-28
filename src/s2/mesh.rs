@@ -657,7 +657,7 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [V
     });
 }
 
-fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
+pub fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
     let planes: [(usize, f32, f32); 4] = [(0, 1.0, x0 as f32), (0, -1.0, -x1 as f32), (1, 1.0, y0 as f32), (1, -1.0, -y1 as f32)];
     let mut out = Vec::new();
     for tri in v.chunks_exact(3) {
