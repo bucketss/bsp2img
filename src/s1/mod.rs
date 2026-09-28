@@ -55,12 +55,18 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         .map(|m| BModel { mins: m.mins, maxs: m.maxs, headnode: [-1; 4], visleafs: 0, firstface: 0, numfaces: 0 })
         .collect();
     b.entities = ents.list;
-    let (navmesh, places): (Option<NavMesh>, _) = nav::load(&opened.fs, &name, map.bytes().len(), log);
+    let (mut navmesh, mut places): (Option<NavMesh>, _) = nav::load(&opened.fs, &name, map.bytes().len(), log);
     let (radar, radar_err) = radar::load(&opened.fs, &name, log);
     let raised = match &navmesh {
         Some(m) => crate::extra::raise_spawns(&mut b, m, log),
         None => Vec::new(),
     };
+    let seeds = b.entities.iter().filter(|e| crate::reach::SEED_CLASSES.contains(&e.class())).count();
+    if navmesh.is_some() && raised.is_empty() && seeds > 0 {
+        log(format!("{} covers none of the {seeds} spawn points: timing, svg, auto crop and --hull walk the brush collision instead", nav::name(&name)));
+        navmesh = None;
+        places = None;
+    }
     let stats = LoadStats { disabled: ents.disabled, raised, ..Default::default() };
     b.extra = Some(Box::new(Extra {
         nav: navmesh,
