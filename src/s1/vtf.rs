@@ -290,6 +290,36 @@ pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
     image(&fs.read(name)?, max_dim).with_context(|| name.to_string())
 }
 
+pub const FLAGS_RADAR: u32 = 0x4 | 0x8 | 0x100 | 0x200 | 0x2000;
+
+pub fn encode_bgra8888(w: usize, h: usize, rgba: &[u8], flags: u32) -> Vec<u8> {
+    let mut o = vec![0u8; 80];
+    let put = |o: &mut Vec<u8>, at: usize, b: &[u8]| o[at..at + b.len()].copy_from_slice(b);
+    put(&mut o, 0, b"VTF ");
+    put(&mut o, 4, &7u32.to_le_bytes());
+    put(&mut o, 8, &2u32.to_le_bytes());
+    put(&mut o, 12, &80u32.to_le_bytes());
+    put(&mut o, 16, &(w as u16).to_le_bytes());
+    put(&mut o, 18, &(h as u16).to_le_bytes());
+    put(&mut o, 20, &flags.to_le_bytes());
+    put(&mut o, 24, &1u16.to_le_bytes());
+    let n = (w * h).max(1) as f64;
+    for c in 0..3 {
+        let m = rgba.chunks_exact(4).map(|p| (p[c] as f64 / 255.0).powf(2.2)).sum::<f64>() / n;
+        put(&mut o, 32 + c * 4, &(m as f32).to_le_bytes());
+    }
+    put(&mut o, 48, &1f32.to_le_bytes());
+    put(&mut o, 52, &BGRA8888.to_le_bytes());
+    o[56] = 1;
+    put(&mut o, 57, &(-1i32).to_le_bytes());
+    put(&mut o, 63, &1u16.to_le_bytes());
+    o.reserve(w * h * 4);
+    for p in rgba.chunks_exact(4) {
+        o.extend([p[2], p[1], p[0], p[3]]);
+    }
+    o
+}
+
 pub fn path(tex: &str) -> String {
     let t = super::fs::norm(tex);
     let t = t.strip_suffix(".vtf").unwrap_or(&t);

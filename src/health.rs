@@ -623,8 +623,11 @@ fn inside(f: &Radar, p: DVec3) -> bool {
 }
 
 fn image_px(fs: &crate::s2::vpk::Fs, name: &str) -> Option<(usize, usize)> {
-    let inf = crate::s2::texture::info(&fs.read_limit(name, 1 << 16).ok()?).ok()?;
-    Some((inf.w, inf.h))
+    let h = fs.read_limit(name, 1 << 16).ok()?;
+    match crate::s2::texture::info(&h) {
+        Ok(inf) => Some((inf.w, inf.h)),
+        Err(_) => crate::s1::radar::dims(name, &h),
+    }
 }
 
 fn icon_gap(bsp: &Bsp, key: &str, p: (f64, f64)) -> Option<f64> {
@@ -649,7 +652,7 @@ fn radar_check(bsp: &Bsp, x: &Extra, map: &str, reach: &[DVec3]) -> RadarCheck {
         None => vec![DEFAULT.to_string()],
     };
     for n in names {
-        let img = s2radar::image_name(&x.fs, map, &n);
+        let img = x.radar_image_name(map, &n);
         let px = img.as_deref().and_then(|i| image_px(&x.fs, i));
         rc.images.push((n, img, px));
     }

@@ -15,7 +15,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 
 ## CS:S and CS:GO
 
-`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Four-way blends show their first layer. `--sky` draws the map's `skyname`, HDR skies included.
+`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Four-way blends show their first layer. `--sky` draws the map's `skyname`, HDR skies included. Timing, svg, stl, auto crop and `--hull` use the map's `.nav`, or walk the collision (brushes, displacements, static props) when there is none. Overviews read the official `.txt` and radar `.vtf`/`.dds`.
 
 ## GUI
 
@@ -32,11 +32,11 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 | `peel` | Animation lifting roof levels off one by one |
 | `slice` | Animation raising a height cut from floor to sky |
 | `poster` | Print-size tiled PNG with title block, legend and scale bar |
-| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2, CS:S and CS:GO radar `.png` per vertical section and `.txt`, on the official framing |
+| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2, CS:S and CS:GO radar `.png` per vertical section and `.txt`, on the official framing; CS:S also `.vtf`/`.vmt`, CS:GO `.dds` |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV and CS2 demos |
 | `health` | Asset, compile, engine limit, spawn, collision and overview report; `health_summary.csv` for several maps |
-| `svg` | Vector callout map of reachable floors, walls, objectives and spawns |
+| `svg` | Vector callout map of reachable floors, walls, objectives, spawns and nav place names |
 | `stl` | Watertight 3D-printable diorama |
 | `gltf` | `.glb` with textures and lighting, Y up, metres |
 | `obj` | `.obj`, `.mtl` and PNGs, same options as `gltf` (no `separate` lighting) |
@@ -143,17 +143,17 @@ Also the spin output options.
 | `--from-txt FILE` | Reuse framing from a `.txt` |
 | `--margin F` | Border (0.04) |
 | `--png` | Also write a PNG |
-| `--fit` | CS2: fit to the geometry, not the official framing |
-| `--sections auto\|none\|Z,...` | CS2: radar sections (the overview's) |
+| `--fit` | CS2, Source: fit to the geometry, not the official framing |
+| `--sections auto\|none\|Z,...` | CS2, Source: radar sections (the overview's) |
 | `--tga` | CS2: also write 32-bit TGAs |
-| `--official` | CS2: also write the official radar images |
+| `--official` | CS2, Source: also write the official radar images |
 | `--compile ADDON` | CS2: write the radar into an existing `csgo_addons` addon and compile it |
 
 ### timing, kills
 
 | Option | Effect |
 |---|---|
-| `--base render\|radar` | CS2: backdrop, the official radar gives one set per section (render) |
+| `--base render\|radar` | CS2, Source: backdrop, the official radar gives one set per section (render) |
 
 ### svg
 

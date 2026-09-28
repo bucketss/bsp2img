@@ -236,7 +236,7 @@ pub fn radar_bases(bsp: &Bsp, cuts: &Cuts, size: u32, log: &mut dyn FnMut(String
     let map = bsp.name().to_lowercase();
     let mut out = Vec::new();
     for s in o.levels() {
-        let Some((n, im)) = crate::s2::radar::image(&x.fs, &map, &s.name, 4096)? else {
+        let Some((n, im)) = x.radar_image(&map, &s.name, 4096)? else {
             log(format!("no official radar image for section {}", s.name));
             continue;
         };

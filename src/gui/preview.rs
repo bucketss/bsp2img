@@ -246,7 +246,7 @@ impl App {
         if self.radar_tex.as_ref().is_none_or(|(k, _)| *k != key) {
             let x = s.bsp.extra.as_ref()?;
             let map = s.bsp.name().to_lowercase();
-            let t = match crate::s2::radar::image(&x.fs, &map, sec, 2048) {
+            let t = match x.radar_image(&map, sec, 2048) {
                 Ok(Some((n, im))) => {
                     self.log.push(format!("official radar: {n} {}x{}", im.w, im.h));
                     let img = egui::ColorImage::from_rgba_unmultiplied([im.w, im.h], &im.rgba);

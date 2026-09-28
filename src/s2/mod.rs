@@ -123,7 +123,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         }
     };
     let stats = LoadStats { legacy_ents: lumps.legacy, disabled: lumps.disabled.clone(), raised, ..Default::default() };
-    bsp.extra = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err, root, stats }));
+    bsp.extra = Some(Box::new(Extra { nav: navmesh, places: None, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err, root, stats }));
     let fs = &bsp.extra.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");

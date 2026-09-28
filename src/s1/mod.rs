@@ -1,4 +1,5 @@
 pub mod bsp;
+pub mod collide;
 pub mod cube;
 pub mod dds;
 pub mod disp;
@@ -7,6 +8,7 @@ pub mod fs;
 pub mod light;
 pub mod model;
 pub mod nav;
+pub mod phy;
 pub mod props;
 pub mod radar;
 pub mod sky;
@@ -53,7 +55,8 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         .map(|m| BModel { mins: m.mins, maxs: m.maxs, headnode: [-1; 4], visleafs: 0, firstface: 0, numfaces: 0 })
         .collect();
     b.entities = ents.list;
-    let navmesh: Option<NavMesh> = None;
+    let (navmesh, places): (Option<NavMesh>, _) = nav::load(&opened.fs, &name, map.bytes().len(), log);
+    let (radar, radar_err) = radar::load(&opened.fs, &name, log);
     let raised = match &navmesh {
         Some(m) => crate::extra::raise_spawns(&mut b, m, log),
         None => Vec::new(),
@@ -61,19 +64,34 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let stats = LoadStats { disabled: ents.disabled, raised, ..Default::default() };
     b.extra = Some(Box::new(Extra {
         nav: navmesh,
+        places,
         fs: opened.fs,
         sky: ents.sky,
         phys_src: PhysSrc::Source(map.clone()),
         phys: OnceLock::new(),
-        radar: None,
-        radar_err: None,
+        radar,
+        radar_err,
         root: opened.root,
         stats,
     }));
+    if let Some(mut x) = b.extra.take() {
+        if x.nav.is_none() {
+            x.stats.raised = match x.phys() {
+                Ok(p) => crate::extra::raise_spawns_phys(&mut b, p, log),
+                Err(e) => {
+                    log(format!("{e:#}"));
+                    Vec::new()
+                }
+            };
+        }
+        b.extra = Some(x);
+    }
     let t1 = t0.elapsed().as_secs_f64();
-    let crop = if opts.auto_crop { crate::extra::crop_box(&b, log) } else { None };
+    let region = if opts.auto_crop { crate::extra::crop_region(&b, log) } else { None };
+    let crop = region.map(|r| r.0);
+    let band = region.and_then(|(xy, z)| crate::extra::skybox_band(&b.entities, xy, z, log));
     let x = b.extra.as_ref().unwrap();
-    let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop, map: &map, light: &opts.light, lm_cap: light::LIGHTMAP_MAX.min(max_dim as usize) });
+    let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop, band, map: &map, light: &opts.light, lm_cap: light::LIGHTMAP_MAX.min(max_dim as usize) });
     log(built.materials.summary());
     for m in built.materials.bad.iter().take(10) {
         log(format!("texture failed: {m}"));
@@ -81,7 +99,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     for n in &built.notes {
         log(n.clone());
     }
-    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, light: &opts.light });
+    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, band, light: &opts.light });
     log(pr.summary());
     if !pr.bad_models.is_empty() {
         log(format!("{} models failed ({} missing)", pr.bad_models.len(), pr.missing_models.len()));

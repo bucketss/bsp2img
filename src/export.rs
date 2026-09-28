@@ -9,7 +9,6 @@ use crate::grid::grid_preview;
 use crate::look::Look;
 use crate::overview::{self, Overview, Radar};
 use crate::radar::{Official, Split, icons, stem};
-use crate::s2::radar as s2radar;
 use crate::paths::{Partial, free_name, set_suffix};
 use crate::render::{Cuts, Renderer};
 use crate::scene::{Report, num};
@@ -227,7 +226,6 @@ fn export_radar(
         }
     }
     let mut sent = Vec::new();
-    let fs = bsp.extra.as_ref().map(|x| &x.fs);
     let total = secs.len() as f32 + 0.5;
     for (i, s) in secs.iter().enumerate() {
         rep.step((i as f32 + 0.3) / total)?;
@@ -245,11 +243,19 @@ fn export_radar(
         for e in overview::radar_exts(true, o.tga) {
             files.add(out.join(format!("{st}_radar{e}")));
         }
-        let saved = overview::save_radar(out, st, &img, true, o.tga)?;
+        let mut saved = overview::save_radar(out, st, &img, true, o.tga)?;
+        if let crate::bsp::Engine::Source(v) = bsp.engine() {
+            for (n, b) in crate::s1::radar::export(st, img.width() as usize, img.height() as usize, img.as_raw(), v) {
+                let p = out.join(n);
+                files.add(p.clone());
+                std::fs::write(&p, b)?;
+                saved.push(p);
+            }
+        }
         let what = if s.frame.is_some() { format!("pos_x {} pos_y {} scale {}", num(f.pos_x), num(f.pos_y), num(f.scale)) } else { s.range() };
         rep.log(format!("  {} ({what}): {}", s.name, saved.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("  ")));
         if o.official {
-            match fs.map(|fs| s2radar::image(fs, &bsp.name().to_lowercase(), &s.name, 4096)).transpose()?.flatten() {
+            match bsp.extra.as_ref().map(|x| x.radar_image(&bsp.name().to_lowercase(), &s.name, 4096)).transpose()?.flatten() {
                 Some((n, im)) => {
                     let p = out.join(format!("{st}_radar_official.png"));
                     files.add(p.clone());
@@ -268,7 +274,7 @@ fn export_radar(
     }
     t.sections = secs;
     t.icons = icons(bsp, &frame, info.as_ref());
-    t.autogen = o.tga || addon.is_some();
+    t.autogen = (o.tga || addon.is_some()) && bsp.is_cs2();
     let txt = out.join(format!("{name}.txt"));
     files.add(txt.clone());
     std::fs::write(&txt, t.txt())?;

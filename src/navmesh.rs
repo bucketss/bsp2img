@@ -21,6 +21,19 @@ pub struct NavMesh {
     pub ladders: Vec<Ladder>,
 }
 
+#[derive(Clone, Default)]
+pub struct Places {
+    pub names: Vec<String>,
+    pub area: Vec<u16>,
+}
+
+impl Places {
+    pub fn of(&self, area: usize) -> Option<&str> {
+        let p = *self.area.get(area)? as usize;
+        self.names.get(p.checked_sub(1)?).map(String::as_str)
+    }
+}
+
 impl NavMesh {
     pub fn from_ids(ids: &[u32], mut areas: Vec<Area>, mut ladders: Vec<Ladder>) -> NavMesh {
         let index: HashMap<u32, u32> = ids.iter().enumerate().map(|(k, &id)| (id, k as u32)).collect();

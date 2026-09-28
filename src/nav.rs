@@ -13,6 +13,8 @@ pub const STEP: f32 = 18.0;
 const JUMP: f32 = 63.0;
 pub const MAX_DROP: f32 = 655.0;
 const HEAD: f32 = 72.0;
+const DUCK_HEIGHT: f32 = 54.0;
+const HALF_WIDTH: f64 = 16.0;
 const THIN: f64 = 4.0;
 const SAMPLE: f64 = 2.0;
 const REACH: f64 = 32.0;
@@ -146,6 +148,7 @@ pub struct Nav {
     pub warn: Option<String>,
     pub ladders: usize,
     pub blockers: usize,
+    pub walked: bool,
 }
 
 const DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -180,7 +183,17 @@ impl Nav {
 
     pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<Nav> {
         if let Some(x) = &bsp.extra {
-            let Some(m) = &x.nav else { bail!("map has no nav mesh") };
+            let Some(m) = &x.nav else {
+                if let crate::extra::PhysSrc::Source(map) = &x.phys_src {
+                    let p = x.phys()?;
+                    let ladders = crate::s1::collide::ladders(map).unwrap_or_default();
+                    let (lo, hi) = bsp.models.first().map_or((DVec3::ZERO, DVec3::ZERO), |m| (m.mins, m.maxs));
+                    let mut nav = Nav::from_phys(p, lo, hi, cell, &ladders, speed);
+                    nav.warn = Some("no nav mesh: walkable floor from brush collision, falls and drops unchecked".into());
+                    return Ok(nav);
+                }
+                bail!("map has no nav mesh")
+            };
             let gate = std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height");
             let phys = (gate && collide).then(|| x.phys());
             let mut nav = Nav::from_areas(m, cell, speed, gate, phys.as_ref().and_then(|p| p.as_ref().ok()).copied())?;
@@ -232,6 +245,63 @@ impl Nav {
         let mut nav = Nav::assemble(lo, cell, nx, ny, cols, bl.len(), None);
         nav.add_ladders(bsp, speed);
         Ok(nav)
+    }
+
+    pub fn from_phys(p: &Phys, lo: DVec3, hi: DVec3, cell: f64, ladders: &[(DVec3, DVec3)], speed: f64) -> Nav {
+        let lo = DVec3::new(lo.x - cell, lo.y - cell, lo.z);
+        let nx = ((hi.x + cell - lo.x) / cell).ceil().max(1.0) as usize;
+        let ny = ((hi.y + cell - lo.y) / cell).ceil().max(1.0) as usize;
+        let center = |c: usize| (lo.x + ((c / ny) as f64 + 0.5) * cell, lo.y + ((c % ny) as f64 + 0.5) * cell);
+        let raw: Vec<Vec<(f32, f32)>> = (0..nx * ny)
+            .into_par_iter()
+            .map_init(Vec::new, |iv, c| {
+                let (x, y) = center(c);
+                p.column(x, y, Mask::PLAYER, iv);
+                iv.clone()
+            })
+            .collect();
+        let r = (HALF_WIDTH / cell).round() as i64;
+        let cols: Vec<Vec<(Node, Vec<u32>)>> = (0..nx * ny)
+            .into_par_iter()
+            .map_init(Vec::new, |iv: &mut Vec<(f32, f32)>, c| {
+                let (i, j) = ((c / ny) as i64, (c % ny) as i64);
+                iv.clear();
+                for a in (i - r).max(0)..=(i + r).min(nx as i64 - 1) {
+                    for b in (j - r).max(0)..=(j + r).min(ny as i64 - 1) {
+                        iv.extend(&raw[a as usize * ny + b as usize]);
+                    }
+                }
+                iv.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+                let mut merged: Vec<(f32, f32)> = Vec::with_capacity(iv.len());
+                for &(a, b) in iv.iter() {
+                    match merged.last_mut() {
+                        Some(m) if a <= m.1 => m.1 = m.1.max(b),
+                        _ => merged.push((a, b)),
+                    }
+                }
+                let mut out = Vec::new();
+                for (k, &(_, z)) in merged.iter().enumerate() {
+                    if !z.is_finite() {
+                        continue;
+                    }
+                    let ceil = merged.get(k + 1).map_or(f32::INFINITY, |m| m.0);
+                    if ceil - z < DUCK_HEIGHT {
+                        continue;
+                    }
+                    out.push((Node { z, top: ceil - DUCK_HEIGHT, stand: ceil - z >= HEAD }, Vec::new()));
+                }
+                out
+            })
+            .collect();
+        drop(raw);
+        let mut nav = Nav::assemble(lo, cell, nx, ny, cols, 0, None);
+        nav.walked = true;
+        for &(a, b) in ladders {
+            if nav.ladder(a - LADDER_PAD, b + LADDER_PAD, speed) {
+                nav.ladders += 1;
+            }
+        }
+        nav
     }
 
     pub fn from_areas(m: &NavMesh, cell: f64, speed: f64, gate: bool, phys: Option<&Phys>) -> Result<Nav> {
@@ -355,6 +425,7 @@ impl Nav {
             warn: None,
             ladders: 0,
             blockers,
+            walked: false,
         };
         let res: Vec<_> = (0..nav.nodes.len())
             .into_par_iter()

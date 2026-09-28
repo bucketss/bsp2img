@@ -1,8 +1,8 @@
-#![allow(dead_code)]
-
 use anyhow::{Context, Result};
 
 use crate::radar::{Official, stem};
+use crate::s2::texture::Image;
+use crate::s2::vpk::Fs;
 
 pub const TXT_DIR: &str = "resource/overviews/";
 pub const DDS_DIR: &str = "resource/overviews/";
@@ -18,6 +18,69 @@ pub fn parse(b: &[u8], map: &str) -> Result<Official> {
         o.name = map.to_string();
     }
     Ok(o)
+}
+
+pub fn load(fs: &Fs, map: &str, log: &mut dyn FnMut(String)) -> (Option<Official>, Option<String>) {
+    let n = txt_name(map);
+    if !fs.has(&n) {
+        log(format!("no {n}"));
+        return (None, None);
+    }
+    match fs.read(&n).and_then(|b| parse(&b, map)) {
+        Ok(o) => {
+            let secs: Vec<&str> = o.sections.iter().map(|s| s.name.as_str()).collect();
+            let (f, num) = (o.frame, crate::scene::num);
+            let ims: Vec<String> = images(|k| fs.has(k), map, &o).into_iter().map(|(s, i)| format!("{s}={}", i.unwrap_or_else(|| "none".into()))).collect();
+            log(format!("overview {n}: pos_x {} pos_y {} scale {}, sections {}, images {}", num(f.pos_x), num(f.pos_y), num(f.scale), secs.join(" "), ims.join(" ")));
+            (Some(o), None)
+        }
+        Err(e) => {
+            log(format!("overview: {e:#}"));
+            (None, Some(format!("{e:#}")))
+        }
+    }
+}
+
+pub fn decode(name: &str, b: &[u8], max_dim: usize) -> Result<Image> {
+    if name.ends_with(".dds") { super::dds::decode(b, max_dim) } else { super::vtf::image(b, max_dim) }
+}
+
+pub fn dims(name: &str, head: &[u8]) -> Option<(usize, usize)> {
+    if name.ends_with(".dds") {
+        super::dds::info(head).ok().map(|i| (i.w, i.h))
+    } else {
+        super::vtf::info(head).ok().map(|i| (i.w, i.h))
+    }
+}
+
+pub fn image(fs: &Fs, map: &str, section: &str, material: Option<&str>, max_dim: usize) -> Result<Option<(String, Image)>> {
+    let Some(n) = image_name(|k| fs.has(k), map, section, material) else { return Ok(None) };
+    let img = decode(&n, &fs.read(&n)?, max_dim).with_context(|| format!("decoding {n}"))?;
+    Ok(Some((n, img)))
+}
+
+pub fn vmt(texture: &str) -> String {
+    format!("\"UnlitGeneric\"
+{{
+	\"$translucent\" \"1\"
+	\"$basetexture\" \"{texture}\"
+	\"$vertexalpha\" \"1\"
+	\"$no_fullbright\" \"1\"
+	\"$ignorez\" \"1\"
+}}
+")
+}
+
+pub fn export(stem: &str, w: usize, h: usize, rgba: &[u8], version: u32) -> Vec<(String, Vec<u8>)> {
+    if version >= 21 {
+        return vec![(format!("{stem}_radar.dds"), super::dds::encode_bgra(w, h, rgba))];
+    }
+    let tex = format!("overviews/{stem}_radar");
+    vec![
+        (format!("{stem}_radar.vtf"), super::vtf::encode_bgra8888(w, h, rgba, super::vtf::FLAGS_RADAR)),
+        (format!("{stem}_radar.vmt"), vmt(&tex).into_bytes()),
+        (format!("{stem}.vmt"), vmt(&tex).into_bytes()),
+    ]
 }
 
 fn material_path(m: &str) -> Option<String> {
@@ -70,6 +133,57 @@ mod tests {
         assert_eq!(im[1].1.as_deref(), Some("resource/overviews/de_nuke_lower_radar.dds"));
         let o = parse(b"\"pos_x\" \"1\" \"pos_y\" \"2\" \"scale\" \"3\"", "cs_x").unwrap();
         assert_eq!(o.name, "cs_x");
+    }
+
+    #[test]
+    fn export_round_trip() {
+        let (w, h) = (8, 4);
+        let rgba: Vec<u8> = (0..w * h * 4).map(|i| (i * 7 % 256) as u8).collect();
+        for v in [19, 21] {
+            for (n, b) in export("de_x", w, h, &rgba, v) {
+                if n.ends_with(".vmt") {
+                    let t = String::from_utf8(b).unwrap();
+                    let m = crate::s1::vmt::parse(&t).unwrap();
+                    assert!(m.0.eq_ignore_ascii_case("UnlitGeneric") && m.1.len() == 5 && t.contains("\"overviews/de_x_radar\""));
+                    continue;
+                }
+                let im = decode(&n, &b, 4096).unwrap();
+                assert_eq!((im.w, im.h), (w, h));
+                assert_eq!(im.rgba, rgba, "{n}");
+                assert_eq!(dims(&n, &b), Some((w, h)));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn written_exports() {
+        let root = std::path::PathBuf::from(std::env::var("RADAR_OUT").unwrap());
+        let mut n = 0;
+        let mut dirs = vec![root];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()).map(|e| e.path()) {
+                if e.is_dir() {
+                    dirs.push(e);
+                    continue;
+                }
+                let name = e.file_name().unwrap().to_string_lossy().to_lowercase();
+                if name.ends_with("_radar.vtf") || name.ends_with("_radar.dds") {
+                    let im = decode(&name, &std::fs::read(&e).unwrap(), 4096).unwrap();
+                    let png = image::open(e.with_extension("png")).unwrap().to_rgba8();
+                    assert_eq!((im.w as u32, im.h as u32), png.dimensions());
+                    assert!(im.rgba == png.as_raw().as_slice(), "{}", e.display());
+                    n += 1;
+                } else if name.ends_with(".txt") && !name.ends_with("_timing.txt") {
+                    let stem = name.trim_end_matches(".txt");
+                    let o = parse(&std::fs::read(&e).unwrap(), stem).unwrap();
+                    println!("{}: {} sections, icons {:?}", e.display(), o.sections.len(), o.icons.iter().map(|i| i.0.as_str()).collect::<Vec<_>>());
+                    n += 1;
+                }
+            }
+        }
+        println!("{n} files checked");
+        assert!(n > 0);
     }
 
     fn pak(bsp: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
