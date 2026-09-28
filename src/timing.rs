@@ -289,13 +289,13 @@ pub fn export_timing(
 
     let bases = crate::grid::bases(r, bsp, cuts, o.size, o.base, &mut |s| rep.log(format!("  {s}")))?;
     let mut files = Partial::default();
-    if let Some(removed) = nav.removed.as_ref().filter(|_| std::env::var("BSP2IMG_NAV_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0")) {
-        if let Some(b) = bases.first() {
-            let f = free_name(out, &format!("{name}{cut_tag}_navlinks"), ".png");
-            files.add(f.clone());
-            nav_debug(&nav, removed, &b.px, &b.g, &f)?;
-            rep.log(format!("  {}", f.display()));
-        }
+    if let Some(removed) = nav.removed.as_ref().filter(|_| std::env::var("BSP2IMG_NAV_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0"))
+        && let Some(b) = bases.first()
+    {
+        let f = free_name(out, &format!("{name}{cut_tag}_navlinks"), ".png");
+        files.add(f.clone());
+        nav_debug(&nav, removed, &b.px, &b.g, &f)?;
+        rep.log(format!("  {}", f.display()));
     }
     for b in &bases {
         let g = &b.g;
