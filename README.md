@@ -137,6 +137,12 @@ Also the spin output options.
 | `--tga` | CS2: also write 32-bit TGAs |
 | `--official` | CS2: also write the official radar images |
 
+### timing
+
+| Option | Effect |
+|---|---|
+| `--base render\|radar` | CS2: backdrop, the official radar gives one set per section (render) |
+
 ### svg
 
 | Option | Effect |

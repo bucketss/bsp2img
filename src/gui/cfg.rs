@@ -203,6 +203,7 @@ impl Cfg for TimingOpts {
             ("cell", self.cell.to_string()),
             ("interval", self.interval.to_string()),
             ("size", self.size.to_string()),
+            ("base", self.base.key().to_string()),
         ])
     }
 
@@ -212,6 +213,7 @@ impl Cfg for TimingOpts {
             "cell" => put(&mut self.cell, v),
             "interval" => put(&mut self.interval, v),
             "size" => put(&mut self.size, v),
+            "base" => self.base = crate::grid::Backdrop::from_key(v).unwrap_or_default(),
             _ => {}
         }
     }

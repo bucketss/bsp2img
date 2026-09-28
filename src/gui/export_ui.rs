@@ -295,6 +295,13 @@ impl App {
         ui.add(egui::Slider::new(&mut self.timing.cell, 4.0..=32.0).text("walk grid units"));
         ui.add(egui::Slider::new(&mut self.timing.interval, 1.0..=10.0).text("contour s"));
         ui.add(egui::Slider::new(&mut self.timing.size, 512..=4096).text("size px"));
+        if self.is_cs2() {
+            ui.horizontal(|ui| {
+                ui.label("Backdrop");
+                ui.radio_value(&mut self.timing.base, crate::grid::Backdrop::Render, "render");
+                ui.radio_value(&mut self.timing.base, crate::grid::Backdrop::Radar, "official radar");
+            });
+        }
         ui.weak("Uses the roof and height cuts on the Scene tab.");
     }
 

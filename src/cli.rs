@@ -276,6 +276,8 @@ pub struct TimingArgs {
     pub interval: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image per section)")]
+    pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -572,7 +574,8 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = TimingOpts { speed: a.speed, cell: a.cell, interval: a.interval, size: a.size };
+    let base = crate::grid::Backdrop::from_key(&a.base).unwrap_or_default();
+    let o = TimingOpts { speed: a.speed, cell: a.cell, interval: a.interval, size: a.size, base };
     for m in &a.c.maps {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
