@@ -1,10 +1,14 @@
 pub mod bsp;
+pub mod collide;
 pub mod dds;
+#[allow(dead_code)]
+pub mod disp_geo;
 pub mod entities;
 pub mod fs;
 #[allow(dead_code)]
 pub mod model;
 pub mod nav;
+pub mod phy;
 pub mod radar;
 pub mod sky;
 #[allow(dead_code)]
@@ -52,7 +56,8 @@ pub fn load(path: &Path, opts: &LoadOpts, _max_dim: u32, log: &mut dyn FnMut(Str
         .map(|m| BModel { mins: m.mins, maxs: m.maxs, headnode: [-1; 4], visleafs: 0, firstface: 0, numfaces: 0 })
         .collect();
     b.entities = ents.list;
-    let navmesh: Option<NavMesh> = None;
+    let (navmesh, places): (Option<NavMesh>, _) = nav::load(&opened.fs, &name, map.bytes().len(), log);
+    let (radar, radar_err) = radar::load(&opened.fs, &name, log);
     let raised = match &navmesh {
         Some(m) => crate::extra::raise_spawns(&mut b, m, log),
         None => Vec::new(),
@@ -60,15 +65,28 @@ pub fn load(path: &Path, opts: &LoadOpts, _max_dim: u32, log: &mut dyn FnMut(Str
     let stats = LoadStats { disabled: ents.disabled, raised, ..Default::default() };
     b.extra = Some(Box::new(Extra {
         nav: navmesh,
+        places,
         fs: opened.fs,
         sky: ents.sky,
         phys_src: PhysSrc::Source(map.clone()),
         phys: OnceLock::new(),
-        radar: None,
-        radar_err: None,
+        radar,
+        radar_err,
         root: opened.root,
         stats,
     }));
+    if let Some(mut x) = b.extra.take() {
+        if x.nav.is_none() {
+            x.stats.raised = match x.phys() {
+                Ok(p) => crate::extra::raise_spawns_phys(&mut b, p, log),
+                Err(e) => {
+                    log(format!("{e:#}"));
+                    Vec::new()
+                }
+            };
+        }
+        b.extra = Some(x);
+    }
     let t1 = t0.elapsed().as_secs_f64();
     let crop = if opts.auto_crop { crate::extra::crop_box(&b, log) } else { None };
     let x = b.extra.as_ref().unwrap();

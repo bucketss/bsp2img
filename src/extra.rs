@@ -21,6 +21,7 @@ pub enum PhysSrc {
 
 pub struct Extra {
     pub nav: Option<NavMesh>,
+    pub places: Option<crate::navmesh::Places>,
     pub fs: Fs,
     pub sky: Option<String>,
     pub phys_src: PhysSrc,
@@ -53,12 +54,30 @@ impl Extra {
             .get_or_init(|| {
                 let r = match &self.phys_src {
                     PhysSrc::Cs2(s) => crate::s2::phys::load(&self.fs, s),
-                    PhysSrc::Source(m) => Err(anyhow::anyhow!("not implemented for Source BSP v{} yet", m.version)),
+                    PhysSrc::Source(m) => crate::s1::collide::load(&self.fs, m),
                 };
                 r.map_err(|e| format!("{e:#}"))
             })
             .as_ref()
             .map_err(|e| anyhow::anyhow!("collision: {e}"))
+    }
+
+    fn material(&self) -> Option<&str> {
+        self.radar.as_ref().and_then(|o| o.material.as_deref())
+    }
+
+    pub fn radar_image_name(&self, map: &str, section: &str) -> Option<String> {
+        match &self.phys_src {
+            PhysSrc::Cs2(_) => crate::s2::radar::image_name(&self.fs, map, section),
+            PhysSrc::Source(_) => crate::s1::radar::image_name(|n| self.fs.has(n), map, section, self.material()),
+        }
+    }
+
+    pub fn radar_image(&self, map: &str, section: &str, max_dim: usize) -> Result<Option<(String, crate::s2::texture::Image)>> {
+        match &self.phys_src {
+            PhysSrc::Cs2(_) => crate::s2::radar::image(&self.fs, map, section, max_dim),
+            PhysSrc::Source(_) => crate::s1::radar::image(&self.fs, map, section, self.material(), max_dim),
+        }
     }
 
     pub fn sky_material(&self, name: &str) -> Option<String> {
@@ -67,17 +86,30 @@ impl Extra {
 }
 
 pub fn raise_spawns(bsp: &mut Bsp, m: &NavMesh, log: &mut dyn FnMut(String)) -> Vec<usize> {
+    raise_spawns_to(bsp, &|x, y, z| m.floor_below(x, y, z), "nav floor", log)
+}
+
+pub fn raise_spawns_phys(bsp: &mut Bsp, p: &crate::phys::Phys, log: &mut dyn FnMut(String)) -> Vec<usize> {
+    let floor = |x: f32, y: f32, z: f32| {
+        let mut out = Vec::new();
+        p.column(x as f64, y as f64, crate::phys::Mask::PLAYER, &mut out);
+        out.iter().map(|iv| iv.1).filter(|&t| t.is_finite() && t <= z).reduce(f32::max)
+    };
+    raise_spawns_to(bsp, &floor, "collision floor", log)
+}
+
+fn raise_spawns_to(bsp: &mut Bsp, floor_below: &dyn Fn(f32, f32, f32) -> Option<f32>, what: &str, log: &mut dyn FnMut(String)) -> Vec<usize> {
     let mut raised = Vec::new();
     for (i, e) in bsp.entities.iter_mut().enumerate().filter(|(_, e)| crate::reach::SEED_CLASSES.contains(&e.class())) {
         let Some(o) = e.origin() else { continue };
         let ring = [(0.0, 0.0), (24.0, 0.0), (-24.0, 0.0), (0.0, 24.0), (0.0, -24.0), (48.0, 0.0), (-48.0, 0.0), (0.0, 48.0), (0.0, -48.0)];
-        let found = ring.iter().find_map(|&(dx, dy)| m.floor_below(o.x as f32 + dx, o.y as f32 + dy, o.z as f32 + SPAWN_REACH));
+        let found = ring.iter().find_map(|&(dx, dy)| floor_below(o.x as f32 + dx, o.y as f32 + dy, o.z as f32 + SPAWN_REACH));
         if let Some(z) = found {
             e.0.insert("origin".into(), format!("{} {} {}", o.x, o.y, z as f64 + crate::nav::STAND_OFS));
             raised.push(i);
         }
     }
-    log(format!("{} spawn points raised to nav floor + {}", raised.len(), crate::nav::STAND_OFS));
+    log(format!("{} spawn points raised to {what} + {}", raised.len(), crate::nav::STAND_OFS));
     raised
 }
 
@@ -89,7 +121,7 @@ pub fn crop_box(bsp: &Bsp, log: &mut dyn FnMut(String)) -> Option<[f64; 4]> {
         return None;
     };
     let hit = reach.iter().filter(|r| **r).count();
-    if (hit as f64) < REACH_MIN * reach.len() as f64 {
+    if (hit as f64) < REACH_MIN * reach.len() as f64 && !nav.walked {
         log(format!("auto crop: spawns reach only {hit} of {} nav cells, keeping the whole nav mesh", reach.len()));
         reach.fill(true);
     }

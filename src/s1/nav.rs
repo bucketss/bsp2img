@@ -1,13 +1,13 @@
-#![allow(dead_code)]
-
 use anyhow::{Result, bail, ensure};
 
-use crate::navmesh::{Area, Ladder, NavMesh};
+use crate::navmesh::{Area, Ladder, NavMesh, Places};
+use crate::s2::vpk::Fs;
 use crate::s2::buf::Rd;
 
 pub const MAGIC: u32 = 0xFEEDFACE;
 pub const MAX_VERSION: u32 = 16;
 const CROUCH: u32 = 0x1;
+pub const MIN_AREAS: usize = 16;
 
 pub struct SrcNav {
     pub version: u32,
@@ -15,6 +15,7 @@ pub struct SrcNav {
     pub bsp_size: u32,
     pub analyzed: bool,
     pub places: Vec<String>,
+    #[allow(dead_code)]
     pub area_ids: Vec<u32>,
     pub area_place: Vec<u16>,
     pub connections: usize,
@@ -23,9 +24,58 @@ pub struct SrcNav {
 }
 
 impl SrcNav {
+    pub fn places(&self) -> Places {
+        Places { names: self.places.clone(), area: self.area_place.clone() }
+    }
+
     pub fn place(&self, area: usize) -> Option<&str> {
         let p = *self.area_place.get(area)? as usize;
         self.places.get(p.checked_sub(1)?).map(String::as_str)
+    }
+}
+
+pub fn name(map: &str) -> String {
+    format!("maps/{map}.nav")
+}
+
+pub fn load(fs: &Fs, map: &str, bsp_len: usize, log: &mut dyn FnMut(String)) -> (Option<NavMesh>, Option<Places>) {
+    let n = name(map);
+    if std::env::var("BSP2IMG_SOURCE_NAV").is_ok_and(|v| v == "off") {
+        log(format!("BSP2IMG_SOURCE_NAV=off: {n} ignored, timing, svg, auto crop and --hull walk the brush collision instead"));
+        return (None, None);
+    }
+    if !fs.has(&n) {
+        log(format!("no {n}: timing, svg, auto crop and --hull walk the brush collision instead"));
+        return (None, None);
+    }
+    match fs.read(&n).and_then(|b| parse(&b)) {
+        Ok(s) if s.mesh.areas.len() >= MIN_AREAS => {
+            let named = (0..s.mesh.areas.len()).filter(|&a| s.place(a).is_some()).count();
+            log(format!(
+                "nav {n}: v{}.{}{}, {} areas, {} connections ({} dangling), {} ladders, {} places on {named} areas",
+                s.version,
+                s.sub_version,
+                if s.analyzed { ", analyzed" } else { "" },
+                s.mesh.areas.len(),
+                s.connections,
+                s.dangling,
+                s.mesh.ladders.len(),
+                s.places.len()
+            ));
+            if s.bsp_size != 0 && s.bsp_size as usize != bsp_len {
+                log(format!("nav {n} was generated for a {} byte BSP, this one is {bsp_len}", s.bsp_size));
+            }
+            let p = s.places();
+            (Some(s.mesh), Some(p))
+        }
+        Ok(_) => {
+            log(format!("nav {n} has fewer than {MIN_AREAS} areas: timing, svg, auto crop and --hull walk the brush collision instead"));
+            (None, None)
+        }
+        Err(e) => {
+            log(format!("nav {n}: {e:#}; timing, svg, auto crop and --hull walk the brush collision instead"));
+            (None, None)
+        }
     }
 }
 
