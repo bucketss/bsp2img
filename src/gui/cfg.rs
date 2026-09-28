@@ -233,6 +233,7 @@ impl Cfg for KillOpts {
             ("presence", self.presence.to_string()),
             ("presence_every", self.presence_every.to_string()),
             ("size", self.size.to_string()),
+            ("base", self.base.key().to_string()),
         ])
     }
 
@@ -247,6 +248,7 @@ impl Cfg for KillOpts {
             "presence" => put(&mut self.presence, v),
             "presence_every" => put(&mut self.presence_every, v),
             "size" => put(&mut self.size, v),
+            "base" => self.base = crate::grid::Backdrop::from_key(v).unwrap_or_default(),
             _ => {}
         }
     }

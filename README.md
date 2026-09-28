@@ -138,7 +138,7 @@ Also the spin output options.
 | `--official` | CS2: also write the official radar images |
 | `--compile ADDON` | CS2: write the radar into an existing `csgo_addons` addon and compile it |
 
-### timing
+### timing, kills
 
 | Option | Effect |
 |---|---|

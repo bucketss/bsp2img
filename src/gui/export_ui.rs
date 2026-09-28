@@ -398,6 +398,13 @@ impl App {
             ui.add(egui::Slider::new(&mut self.kills.presence_every, 0.1..=5.0).text("sample every s"));
         }
         ui.add(egui::Slider::new(&mut self.kills.size, 512..=4096).text("size px"));
+        if self.is_cs2() {
+            ui.horizontal(|ui| {
+                ui.label("Backdrop");
+                ui.radio_value(&mut self.kills.base, crate::grid::Backdrop::Render, "render");
+                ui.radio_value(&mut self.kills.base, crate::grid::Backdrop::Radar, "official radar");
+            });
+        }
         ui.weak("Uses the roof, height and XY cuts on the Scene tab. Kills on floors under the visible one are left out.");
     }
 

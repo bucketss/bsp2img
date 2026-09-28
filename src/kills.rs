@@ -10,7 +10,7 @@ use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::bsp::Bsp;
 use crate::demo::{self, Death, Event, Kind, Team};
-use crate::grid::{CT, GridFrame, T, Text, dark_base, line, outline, paint, rect, spawn_dots};
+use crate::grid::{Backdrop, CT, GridFrame, T, Text, line, outline, paint, rect, spawn_dots};
 use crate::health::csv_quote;
 use crate::nav::{NONE, Nav, STAND_OFS, STEP, zones};
 use crate::paths::{Partial, free_name};
@@ -59,6 +59,7 @@ pub struct KillOpts {
     pub presence: bool,
     pub presence_every: f64,
     pub size: u32,
+    pub base: Backdrop,
 }
 
 impl Default for KillOpts {
@@ -73,6 +74,7 @@ impl Default for KillOpts {
             presence: true,
             presence_every: 0.5,
             size: 1600,
+            base: Backdrop::Render,
         }
     }
 }
@@ -265,6 +267,8 @@ fn is_kill(d: &Death) -> bool {
 
 struct Floor {
     nav: Nav,
+    reach: Vec<f32>,
+    zmax: f64,
     top: Vec<u32>,
 }
 
@@ -279,7 +283,17 @@ impl Floor {
             .filter_map(|p| nav.nearest(p, STAND_OFS))
             .collect();
         let reach = nav.flood(&seeds, 250.0);
-        let top = (0..nav.nx * nav.ny)
+        let mut f = Floor { nav, reach, zmax: f64::NAN, top: Vec::new() };
+        f.set_top(zmax);
+        Ok(f)
+    }
+
+    fn set_top(&mut self, zmax: f64) {
+        if zmax == self.zmax {
+            return;
+        }
+        let (nav, reach) = (&self.nav, &self.reach);
+        self.top = (0..nav.nx * nav.ny)
             .into_par_iter()
             .map(|c| {
                 nav.column(c)
@@ -288,7 +302,7 @@ impl Floor {
                     .map_or(NONE, |n| n as u32)
             })
             .collect();
-        Ok(Floor { nav, top })
+        self.zmax = zmax;
     }
 
     fn col_at(&self, x: f64, y: f64) -> Option<usize> {
@@ -558,7 +572,7 @@ pub fn export_kills(
     let step = |rep: &mut Report, f: f32| rep.step(p0 + (1.0 - p0) * f);
     step(rep, 0.0)?;
     let t0 = std::time::Instant::now();
-    let floor = match Floor::build(bsp, cuts.zmax) {
+    let mut floor = match Floor::build(bsp, cuts.zmax) {
         Ok(f) => Some(f),
         Err(e) => {
             rep.log(format!("  {e:#}: events are not matched to floors"));
@@ -566,199 +580,217 @@ pub fn export_kills(
         }
     };
     step(rep, 0.3)?;
+    let bases = crate::grid::bases(r, bsp, cuts, o.size, o.base, &mut |s| rep.log(format!("  {s}")))?;
+    let nb = bases.len().max(1) as f32;
     let mask = r.mask.clone();
-    let [cx0, cy0, cx1, cy1] = cuts.clip;
-    let visible = |p: [f32; 3]| -> bool {
-        let (x, y, z) = (p[0] as f64, p[1] as f64, p[2] as f64);
-        if x < cx0 || x > cx1 || y < cy0 || y > cy1 || z < cuts.zmin {
-            return false;
-        }
-        if mask.as_ref().is_some_and(|m| !m.test(x, y)) {
-            return false;
-        }
-        match &floor {
-            Some(f) => f.visible(p, cuts.zmax),
-            None => z - STAND_OFS <= cuts.zmax,
-        }
-    };
-
     let sel: Vec<(usize, &Death)> =
         data.iter().enumerate().flat_map(|(i, d)| d.deaths.iter().map(move |x| (i, x))).filter(|(_, d)| o.keeps(d)).collect();
-    let drawn: Vec<bool> =
-        sel.par_iter().map(|(_, d)| is_kill(d) && d.victim_pos.is_some_and(visible) && d.victim_team.playing()).collect();
-    let pres: Vec<([f32; 3], Team)> = if o.presence {
-        data.par_iter()
-            .flat_map_iter(|d| d.presence.iter())
-            .filter(|s| o.rounds.is_none_or(|(a, b)| (s.round as u32) >= a && (s.round as u32) <= b) && o.team.keeps(s.team))
-            .map(|s| (s.pos.map(|v| v as f32), s.team))
-            .filter(|(p, _)| visible(*p))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    rep.log(format!(
-        "  {} of {} deaths drawn, {} presence samples ({:.1}s)",
-        drawn.iter().filter(|&&b| b).count(),
-        sel.len(),
-        pres.len(),
-        t0.elapsed().as_secs_f64()
-    ));
-    step(rep, 0.45)?;
-
-    let (g, base) = dark_base(r, cuts, o.size)?;
-    let fpx = floor.as_ref().map(|f| f.floor_px(&g));
-    let kills = || sel.iter().zip(&drawn).filter(|(_, b)| **b).map(|((_, d), _)| *d);
-    let heat = Heat::new(&g, kills().map(|d| (d.victim_pos.unwrap_or_default(), d.victim_team)), o.radius, fpx.as_deref());
-    step(rep, 0.6)?;
-    let (st, sct) = (Heat::scale(&heat.t), Heat::scale(&heat.ct));
-    let both = heat.total_scale();
-    let tops = peaks(&heat, &g, o.radius, 8);
-
-    let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
-    let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
-    let (fw, fh) = (g.wpx as f32, g.hpx as f32);
     let text = Text::new(14.0);
     let small = Text::new(12.0);
     let zs = zones(bsp);
     let ndemos = data.len();
-    let nkills = kills().count();
-
-    let decorate = |pm: &mut Pixmap, title: &str, key: Key, teams: &[Team], lines: bool, marks: bool| {
-        for z in &zs {
-            if !z.boxed && z.label.starts_with("hostage") {
-                continue;
-            }
-            let (x0, y0, x1, y1) = (sx(z.lo.x), sy(z.hi.y), sx(z.hi.x), sy(z.lo.y));
-            if z.boxed {
-                outline(pm, x0, y0, x1, y1, z.color, 2.0);
-            } else if let Some(c) = PathBuilder::from_circle((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0) {
-                pm.stroke_path(&c, &paint(z.color, 255), &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
-            }
-            let (tw, th) = small.size(&z.label);
-            let (lx, ly) = (x0.clamp(4.0, (fw - tw - 8.0).max(4.0)), (y0 - th - 6.0).max(4.0));
-            rect(pm, lx - 3.0, ly - 1.0, lx + tw + 3.0, ly + th + 1.0, [0, 0, 0], 200);
-            small.draw(pm, lx, ly, &z.label, z.color);
-        }
-        spawn_dots(pm, bsp, &g);
-        if lines {
-            for d in kills() {
-                let (Some(a), Some(b)) = (d.killer_pos, d.victim_pos) else { continue };
-                if !teams.contains(&d.victim_team) {
-                    continue;
-                }
-                let c = if d.killer_team == Team::T { T } else { CT };
-                line(pm, (sx(a[0] as f64), sy(a[1] as f64)), (sx(b[0] as f64), sy(b[1] as f64)), c, 70, 1.0);
-            }
-        }
-        if marks {
-            for (k, p) in tops.iter().enumerate() {
-                let (x, y) = (sx(p.0), sy(p.1));
-                let s = format!("{}", k + 1);
-                let (tw, th) = small.size(&s);
-                if let Some(c) = PathBuilder::from_circle(x, y, 9.0) {
-                    pm.fill_path(&c, &paint([0, 0, 0], 200), tiny_skia::FillRule::Winding, Transform::identity(), None);
-                    pm.stroke_path(&c, &paint([255, 255, 255], 255), &Stroke { width: 1.5, ..Default::default() }, Transform::identity(), None);
-                }
-                small.draw(pm, x - tw / 2.0, y - th / 2.0, &s, [255, 255, 255]);
-            }
-        }
-        let (tw, th) = text.size(title);
-        rect(pm, 4.0, 4.0, tw + 14.0, th + 12.0, [0, 0, 0], 200);
-        text.draw(pm, 9.0, 8.0, title, [255, 255, 255]);
-        let lw = 200.0;
-        let rows = if matches!(key, Key::Mix(_)) { 2.0 } else { 1.0 } + if lines { 0.6 } else { 0.0 };
-        let (lx, ly) = (fw - lw - 8.0, fh - 36.0 * rows - 12.0);
-        rect(pm, lx - 8.0, ly - 8.0, fw - 4.0, fh - 4.0, [0, 0, 0], 200);
-        let bw = lw - 10.0;
-        let bar = |pm: &mut Pixmap, yy: f32, f: &dyn Fn(f64) -> ([f64; 3], f64)| {
-            for x in 0..bw as usize {
-                let (c, a) = f(x as f64 / bw as f64);
-                line(pm, (lx + x as f32, yy), (lx + x as f32, yy + 12.0), c.map(|v| v as u8), (a * 255.0) as u8, 1.2);
-            }
-        };
-        let mut yy = ly;
-        match key {
-            Key::Team(team, label) => {
-                small.draw(pm, lx, yy, label, [255, 255, 255]);
-                bar(pm, yy + 17.0, &|t| (seq(team, t), alpha(t).max(0.3)));
-                yy += 36.0;
-            }
-            Key::Mix(label) => {
-                small.draw(pm, lx, yy, label, [255, 255, 255]);
-                bar(pm, yy + 17.0, &|t| (mix(t, 0.5), 0.9));
-                let (tw, _) = small.size("T");
-                small.draw(pm, lx, yy + 32.0, "CT", [255, 255, 255]);
-                small.draw(pm, lx + bw / 2.0 - 14.0, yy + 32.0, "both", [255, 255, 255]);
-                small.draw(pm, lx + bw - tw, yy + 32.0, "T", [255, 255, 255]);
-                yy += 54.0;
-                small.draw(pm, lx, yy, "fainter = fewer", [200, 200, 200]);
-                yy += 20.0;
-            }
-        }
-        if lines {
-            line(pm, (lx, yy + 9.0), (lx + 12.0, yy + 9.0), T, 255, 2.0);
-            line(pm, (lx + 14.0, yy + 9.0), (lx + 26.0, yy + 9.0), CT, 255, 2.0);
-            small.draw(pm, lx + 34.0, yy + 1.0, "killer to victim", [255, 255, 255]);
-        }
-    };
-
-    let save = |px: Vec<u8>, suffix: &str, files: &mut Partial, rep: &mut Report, dec: &dyn Fn(&mut Pixmap)| -> Result<()> {
-        let mut pm = Pixmap::from_vec(px, tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?).context("pixmap")?;
-        dec(&mut pm);
-        let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-        let f = free_name(out, &format!("{name}{cut_tag}_{suffix}"), ".png");
-        files.add(f.clone());
-        let enc = image::codecs::png::PngEncoder::new_with_quality(
-            std::io::BufWriter::new(std::fs::File::create(&f)?),
-            image::codecs::png::CompressionType::Fast,
-            image::codecs::png::FilterType::Adaptive,
-        );
-        image::ImageEncoder::write_image(enc, &rgb, g.wpx, g.hpx, image::ExtendedColorType::Rgb8)?;
-        rep.log(format!("  {}", f.display()));
-        Ok(())
-    };
-
-    let mut files = Partial::default();
-    let head = |what: &str| format!("{name}  {what}  {ndemos} demo{}", if ndemos == 1 { "" } else { "s" });
     let filt = o.filters();
     let tail = if filt.is_empty() { String::new() } else { format!("  ({filt})") };
-    let n_t = kills().filter(|d| d.victim_team == Team::T).count();
-    let n_ct = nkills - n_t;
-    let variants: [(&str, bool, bool, String); 3] = [
-        ("kills", o.team.keeps(Team::T), o.team.keeps(Team::Ct), format!("{}  {nkills} deaths{tail}", head("kills"))),
-        ("kills_t", true, false, format!("{}  {n_t} T deaths{tail}", head("kills"))),
-        ("kills_ct", false, true, format!("{}  {n_ct} CT deaths{tail}", head("kills"))),
-    ];
-    for (k, (suffix, show_t, show_ct, title)) in variants.iter().enumerate() {
-        step(rep, 0.6 + 0.08 * k as f32)?;
-        let key = match (show_t, show_ct, k) {
-            (_, _, 0) => Key::Mix("deaths by victim team"),
-            (true, _, _) => Key::Team(Team::T, "T deaths"),
-            _ => Key::Team(Team::Ct, "CT deaths"),
-        };
-        let scale = match k {
-            0 => both,
-            1 => st,
-            _ => sct,
-        };
-        let teams: Vec<Team> = [(Team::T, *show_t), (Team::Ct, *show_ct)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
-        let px = paint_heat(&base, &heat, key, scale);
-        save(px, suffix, &mut files, rep, &|pm| decorate(pm, title, key, &teams, o.lines, k == 0))?;
-    }
+    let mut files = Partial::default();
+    let mut drawn_any = vec![false; sel.len()];
+    let mut npres = 0;
+    let mut busiest = Vec::new();
 
-    if o.presence && !pres.is_empty() {
-        step(rep, 0.85)?;
-        let ph = Heat::new(&g, pres.iter().copied(), o.radius, fpx.as_deref());
-        let px = paint_heat(&base, &ph, Key::Mix("player time by team"), ph.total_scale());
-        let title = format!("{}  {} samples every {} s{tail}", head("presence"), pres.len(), o.presence_every);
-        save(px, "presence", &mut files, rep, &|pm| decorate(pm, &title, Key::Mix("player time by team"), &[], false, false))?;
+    for (bi, b) in bases.iter().enumerate() {
+        let at = |x: f32| 0.45 + (bi as f32 + (x - 0.45) / 0.48) / nb * 0.48;
+        let (c, g) = (&b.cuts, &b.g);
+        if let Some(f) = floor.as_mut() {
+            f.set_top(c.zmax);
+        }
+        let floor = floor.as_ref();
+        let [cx0, cy0, cx1, cy1] = c.clip;
+        let visible = |p: [f32; 3]| -> bool {
+            let (x, y, z) = (p[0] as f64, p[1] as f64, p[2] as f64);
+            if x < cx0 || x > cx1 || y < cy0 || y > cy1 || z < c.zmin {
+                return false;
+            }
+            if mask.as_ref().is_some_and(|m| !m.test(x, y)) {
+                return false;
+            }
+            match floor {
+                Some(f) => f.visible(p, c.zmax),
+                None => z - STAND_OFS <= c.zmax,
+            }
+        };
+        let drawn: Vec<bool> =
+            sel.par_iter().map(|(_, d)| is_kill(d) && d.victim_pos.is_some_and(visible) && d.victim_team.playing()).collect();
+        let pres: Vec<([f32; 3], Team)> = if o.presence {
+            data.par_iter()
+                .flat_map_iter(|d| d.presence.iter())
+                .filter(|s| o.rounds.is_none_or(|(a, b)| (s.round as u32) >= a && (s.round as u32) <= b) && o.team.keeps(s.team))
+                .map(|s| (s.pos.map(|v| v as f32), s.team))
+                .filter(|(p, _)| visible(*p))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        rep.log(format!(
+            "  {}{} of {} deaths drawn, {} presence samples ({:.1}s)",
+            if b.title.is_empty() { String::new() } else { format!("{}: ", b.title.trim()) },
+            drawn.iter().filter(|&&b| b).count(),
+            sel.len(),
+            pres.len(),
+            t0.elapsed().as_secs_f64()
+        ));
+        for (a, d) in drawn_any.iter_mut().zip(&drawn) {
+            *a |= *d;
+        }
+        npres += pres.len();
+        step(rep, at(0.45))?;
+
+        let fpx = floor.map(|f| f.floor_px(g));
+        let kills = || sel.iter().zip(&drawn).filter(|(_, b)| **b).map(|((_, d), _)| *d);
+        let heat = Heat::new(g, kills().map(|d| (d.victim_pos.unwrap_or_default(), d.victim_team)), o.radius, fpx.as_deref());
+        step(rep, at(0.6))?;
+        let (st, sct) = (Heat::scale(&heat.t), Heat::scale(&heat.ct));
+        let both = heat.total_scale();
+        let tops = peaks(&heat, g, o.radius, 8);
+
+        let sx = |x: f64| ((x - g.x0) / g.upp) as f32;
+        let sy = |y: f64| ((g.y1 - y) / g.upp) as f32;
+        let (fw, fh) = (g.wpx as f32, g.hpx as f32);
+        let nkills = kills().count();
+
+        let decorate = |pm: &mut Pixmap, title: &str, key: Key, teams: &[Team], lines: bool, marks: bool| {
+            for z in &zs {
+                if !z.boxed && z.label.starts_with("hostage") {
+                    continue;
+                }
+                let (x0, y0, x1, y1) = (sx(z.lo.x), sy(z.hi.y), sx(z.hi.x), sy(z.lo.y));
+                if z.boxed {
+                    outline(pm, x0, y0, x1, y1, z.color, 2.0);
+                } else if let Some(c) = PathBuilder::from_circle((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0) {
+                    pm.stroke_path(&c, &paint(z.color, 255), &Stroke { width: 2.0, ..Default::default() }, Transform::identity(), None);
+                }
+                let (tw, th) = small.size(&z.label);
+                let (lx, ly) = (x0.clamp(4.0, (fw - tw - 8.0).max(4.0)), (y0 - th - 6.0).max(4.0));
+                rect(pm, lx - 3.0, ly - 1.0, lx + tw + 3.0, ly + th + 1.0, [0, 0, 0], 200);
+                small.draw(pm, lx, ly, &z.label, z.color);
+            }
+            spawn_dots(pm, bsp, g);
+            if lines {
+                for d in kills() {
+                    let (Some(a), Some(b)) = (d.killer_pos, d.victim_pos) else { continue };
+                    if !teams.contains(&d.victim_team) {
+                        continue;
+                    }
+                    let c = if d.killer_team == Team::T { T } else { CT };
+                    line(pm, (sx(a[0] as f64), sy(a[1] as f64)), (sx(b[0] as f64), sy(b[1] as f64)), c, 70, 1.0);
+                }
+            }
+            if marks {
+                for (k, p) in tops.iter().enumerate() {
+                    let (x, y) = (sx(p.0), sy(p.1));
+                    let s = format!("{}", k + 1);
+                    let (tw, th) = small.size(&s);
+                    if let Some(c) = PathBuilder::from_circle(x, y, 9.0) {
+                        pm.fill_path(&c, &paint([0, 0, 0], 200), tiny_skia::FillRule::Winding, Transform::identity(), None);
+                        pm.stroke_path(&c, &paint([255, 255, 255], 255), &Stroke { width: 1.5, ..Default::default() }, Transform::identity(), None);
+                    }
+                    small.draw(pm, x - tw / 2.0, y - th / 2.0, &s, [255, 255, 255]);
+                }
+            }
+            let (tw, th) = text.size(title);
+            rect(pm, 4.0, 4.0, tw + 14.0, th + 12.0, [0, 0, 0], 200);
+            text.draw(pm, 9.0, 8.0, title, [255, 255, 255]);
+            let lw = 200.0;
+            let rows = if matches!(key, Key::Mix(_)) { 2.0 } else { 1.0 } + if lines { 0.6 } else { 0.0 };
+            let (lx, ly) = (fw - lw - 8.0, fh - 36.0 * rows - 12.0);
+            rect(pm, lx - 8.0, ly - 8.0, fw - 4.0, fh - 4.0, [0, 0, 0], 200);
+            let bw = lw - 10.0;
+            let bar = |pm: &mut Pixmap, yy: f32, f: &dyn Fn(f64) -> ([f64; 3], f64)| {
+                for x in 0..bw as usize {
+                    let (c, a) = f(x as f64 / bw as f64);
+                    line(pm, (lx + x as f32, yy), (lx + x as f32, yy + 12.0), c.map(|v| v as u8), (a * 255.0) as u8, 1.2);
+                }
+            };
+            let mut yy = ly;
+            match key {
+                Key::Team(team, label) => {
+                    small.draw(pm, lx, yy, label, [255, 255, 255]);
+                    bar(pm, yy + 17.0, &|t| (seq(team, t), alpha(t).max(0.3)));
+                    yy += 36.0;
+                }
+                Key::Mix(label) => {
+                    small.draw(pm, lx, yy, label, [255, 255, 255]);
+                    bar(pm, yy + 17.0, &|t| (mix(t, 0.5), 0.9));
+                    let (tw, _) = small.size("T");
+                    small.draw(pm, lx, yy + 32.0, "CT", [255, 255, 255]);
+                    small.draw(pm, lx + bw / 2.0 - 14.0, yy + 32.0, "both", [255, 255, 255]);
+                    small.draw(pm, lx + bw - tw, yy + 32.0, "T", [255, 255, 255]);
+                    yy += 54.0;
+                    small.draw(pm, lx, yy, "fainter = fewer", [200, 200, 200]);
+                    yy += 20.0;
+                }
+            }
+            if lines {
+                line(pm, (lx, yy + 9.0), (lx + 12.0, yy + 9.0), T, 255, 2.0);
+                line(pm, (lx + 14.0, yy + 9.0), (lx + 26.0, yy + 9.0), CT, 255, 2.0);
+                small.draw(pm, lx + 34.0, yy + 1.0, "killer to victim", [255, 255, 255]);
+            }
+        };
+
+        let save = |px: Vec<u8>, suffix: &str, files: &mut Partial, rep: &mut Report, dec: &dyn Fn(&mut Pixmap)| -> Result<()> {
+            let mut pm = Pixmap::from_vec(px, tiny_skia::IntSize::from_wh(g.wpx, g.hpx).context("bad size")?).context("pixmap")?;
+            dec(&mut pm);
+            let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+            let f = free_name(out, &format!("{name}{cut_tag}{}_{suffix}", b.tag), ".png");
+            files.add(f.clone());
+            let enc = image::codecs::png::PngEncoder::new_with_quality(
+                std::io::BufWriter::new(std::fs::File::create(&f)?),
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Adaptive,
+            );
+            image::ImageEncoder::write_image(enc, &rgb, g.wpx, g.hpx, image::ExtendedColorType::Rgb8)?;
+            rep.log(format!("  {}", f.display()));
+            Ok(())
+        };
+
+        let head = |what: &str| format!("{name}{}  {what}  {ndemos} demo{}", b.title, if ndemos == 1 { "" } else { "s" });
+        let n_t = kills().filter(|d| d.victim_team == Team::T).count();
+        let n_ct = nkills - n_t;
+        let variants: [(&str, bool, bool, String); 3] = [
+            ("kills", o.team.keeps(Team::T), o.team.keeps(Team::Ct), format!("{}  {nkills} deaths{tail}", head("kills"))),
+            ("kills_t", true, false, format!("{}  {n_t} T deaths{tail}", head("kills"))),
+            ("kills_ct", false, true, format!("{}  {n_ct} CT deaths{tail}", head("kills"))),
+        ];
+        for (k, (suffix, show_t, show_ct, title)) in variants.iter().enumerate() {
+            step(rep, at(0.6 + 0.08 * k as f32))?;
+            let key = match (show_t, show_ct, k) {
+                (_, _, 0) => Key::Mix("deaths by victim team"),
+                (true, _, _) => Key::Team(Team::T, "T deaths"),
+                _ => Key::Team(Team::Ct, "CT deaths"),
+            };
+            let scale = match k {
+                0 => both,
+                1 => st,
+                _ => sct,
+            };
+            let teams: Vec<Team> = [(Team::T, *show_t), (Team::Ct, *show_ct)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
+            let px = paint_heat(&b.px, &heat, key, scale);
+            save(px, suffix, &mut files, rep, &|pm| decorate(pm, title, key, &teams, o.lines, k == 0))?;
+        }
+
+        if o.presence && !pres.is_empty() {
+            step(rep, at(0.85))?;
+            let ph = Heat::new(g, pres.iter().copied(), o.radius, fpx.as_deref());
+            let px = paint_heat(&b.px, &ph, Key::Mix("player time by team"), ph.total_scale());
+            let title = format!("{}  {} samples every {} s{tail}", head("presence"), pres.len(), o.presence_every);
+            save(px, "presence", &mut files, rep, &|pm| decorate(pm, &title, Key::Mix("player time by team"), &[], false, false))?;
+        }
+        busiest.push((b.tag.clone(), tops, drawn));
     }
     step(rep, 0.93)?;
 
     let mut csv = String::from(
         "demo,round,time,killer,victim,killer_team,victim_team,weapon,headshot,killer_x,killer_y,killer_z,victim_x,victim_y,victim_z,drawn\n",
     );
-    for ((i, d), dr) in sel.iter().zip(&drawn) {
+    for ((i, d), dr) in sel.iter().zip(&drawn_any) {
         writeln!(
             csv,
             "{},{},{:.2},{},{},{},{},{},{},{},{},{}",
@@ -795,7 +827,7 @@ pub fn export_kills(
     }
     let mut weapons: Vec<(&str, (usize, usize))> = per_weapon.into_iter().collect();
     weapons.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(b.0)));
-    let n_drawn = drawn.iter().filter(|&&b| b).count();
+    let n_drawn = drawn_any.iter().filter(|&&b| b).count();
 
     let mut txt = String::new();
     writeln!(txt, "{name} kills from {} demos", if bsp.is_cs2() { "CS2" } else { "HLTV" })?;
@@ -834,18 +866,24 @@ pub fn export_kills(
     for (w, (n, h)) in &weapons {
         writeln!(txt, "{:<16}{:>8}{:>12.1}", w, n, pct(*h, *n))?;
     }
-    writeln!(txt)?;
-    writeln!(txt, "busiest areas, numbered on {name}{cut_tag}_kills.png (world X Y; kills within {} units)", o.radius)?;
-    for (k, p) in tops.iter().enumerate() {
-        let near: Vec<&Death> = kills()
-            .filter(|d| d.victim_pos.is_some_and(|v| (v[0] as f64 - p.0).hypot(v[1] as f64 - p.1) <= o.radius))
-            .collect();
-        let t = near.iter().filter(|d| d.victim_team == Team::T).count();
-        writeln!(txt, "{:>2}  {:>7.0} {:>7.0}  {:>5}  (T {t}, CT {})", k + 1, p.0, p.1, near.len(), near.len() - t)?;
+    for (tag, tops, drawn) in &busiest {
+        writeln!(txt)?;
+        writeln!(txt, "busiest areas, numbered on {name}{cut_tag}{tag}_kills.png (world X Y; kills within {} units)", o.radius)?;
+        for (k, p) in tops.iter().enumerate() {
+            let near: Vec<&Death> = sel
+                .iter()
+                .zip(drawn)
+                .filter(|(_, b)| **b)
+                .map(|((_, d), _)| *d)
+                .filter(|d| d.victim_pos.is_some_and(|v| (v[0] as f64 - p.0).hypot(v[1] as f64 - p.1) <= o.radius))
+                .collect();
+            let t = near.iter().filter(|d| d.victim_team == Team::T).count();
+            writeln!(txt, "{:>2}  {:>7.0} {:>7.0}  {:>5}  (T {t}, CT {})", k + 1, p.0, p.1, near.len(), near.len() - t)?;
+        }
     }
     if o.presence {
         writeln!(txt)?;
-        writeln!(txt, "presence: {} samples of living players every {} s, freeze time left out", pres.len(), o.presence_every)?;
+        writeln!(txt, "presence: {} samples of living players every {} s, freeze time left out", npres, o.presence_every)?;
     }
     writeln!(txt)?;
     writeln!(txt, "{:<48}{:>8}{:>8}{:>10}", "demo", "rounds", "deaths", "length")?;
@@ -871,7 +909,7 @@ pub fn export_kills(
         ct_deaths: sel.iter().filter(|(_, d)| d.victim_team == Team::Ct).count(),
         drawn: n_drawn,
         top_weapon: weapons.first().map(|w| w.0.to_string()).unwrap_or_default(),
-        presence: pres.len(),
+        presence: npres,
     };
     Ok((files.keep(), stats))
 }

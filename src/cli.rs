@@ -305,6 +305,8 @@ pub struct KillsArgs {
     pub presence_every: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image set per section)")]
+    pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -633,6 +635,7 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
         presence: a.presence_every > 0.0,
         presence_every: a.presence_every,
         size: a.size,
+        base: crate::grid::Backdrop::from_key(&a.base).unwrap_or_default(),
     };
     let files = expand_demos(&a.demos);
     if files.is_empty() {
