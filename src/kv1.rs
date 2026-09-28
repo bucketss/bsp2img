@@ -122,6 +122,10 @@ fn block(toks: &[(Tok, usize)], i: &mut usize, depth: usize) -> Result<Block> {
                 *i += 1;
                 out.push((key, Value::Block(block(toks, i, depth + 1)?)));
             }
+            Some((Tok::Close, _)) if depth > 0 => {
+                *i += 1;
+                return Ok(out);
+            }
             _ => bail!("line {line}: \"{key}\" has no value"),
         }
     }
@@ -161,5 +165,8 @@ mod tests {
         assert_eq!(num(b[0].1.block().unwrap(), "b"), Some(1.0));
         assert!(parse("\"a\" }").is_err());
         assert!(parse("\"a\" \"b").is_err());
+        let b = parse("\"a\" { \"b\" \"1\" CREDITS: x y } \"c\" \"2\"").unwrap();
+        assert_eq!(b[0].1.block().unwrap().len(), 2);
+        assert_eq!(b[1], ("c".to_string(), Value::Str("2".into())));
     }
 }
