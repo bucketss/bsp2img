@@ -41,6 +41,7 @@ pub struct Extra {
     phys: OnceLock<Result<crate::phys::Phys, String>>,
     pub radar: Option<crate::radar::Official>,
     pub radar_err: Option<String>,
+    pub root: Option<std::path::PathBuf>,
 }
 
 impl Extra {
@@ -190,7 +191,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
             (None, Some(format!("{e:#}")))
         }
     };
-    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err }));
+    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, phys_src, phys: OnceLock::new(), radar, radar_err, root }));
     let fs = &bsp.cs2.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");

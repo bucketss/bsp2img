@@ -209,6 +209,13 @@ fn blocks<T: Copy + Default + Send>(
     Ok(())
 }
 
+pub fn decode_bytes(full: &[u8], max_dim: usize) -> Result<Image> {
+    let inf = info(full)?;
+    let m = inf.pick(max_dim);
+    let (w, h) = inf.dims(m);
+    Ok(Image { w, h, rgba: decode(inf.format, w, h, &mip(&inf, full, m)?)? })
+}
+
 pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {
     let (inf, m, raw) = mip_bytes(fs, name, max_dim)?;
     let (w, h) = inf.dims(m);

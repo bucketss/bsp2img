@@ -143,8 +143,9 @@ Also the spin output options.
 | `--sections auto\|none\|Z,...` | CS2: radar sections (the overview's) |
 | `--tga` | CS2: also write 32-bit TGAs |
 | `--official` | CS2: also write the official radar images |
+| `--compile ADDON` | CS2: write the radar into an existing `csgo_addons` addon and compile it |
 
-### timing
+### timing, kills
 
 | Option | Effect |
 |---|---|

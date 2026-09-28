@@ -305,6 +305,8 @@ pub struct KillsArgs {
     pub presence_every: f64,
     #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
     pub size: u32,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image set per section)")]
+    pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -418,6 +420,8 @@ pub struct OverviewArgs {
     pub tga: bool,
     #[arg(long, help = "CS2: also write the decoded official radar images as PNG")]
     pub official: bool,
+    #[arg(long, value_name = "ADDON", help = "CS2: write the radar TGA, .vtex and .txt into this existing csgo_addons addon and compile it with resourcecompiler")]
+    pub compile: Option<String>,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -631,6 +635,7 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
         presence: a.presence_every > 0.0,
         presence_every: a.presence_every,
         size: a.size,
+        base: crate::grid::Backdrop::from_key(&a.base).unwrap_or_default(),
     };
     let files = expand_demos(&a.demos);
     if files.is_empty() {
@@ -797,9 +802,16 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         split: a.sections.as_deref().map(crate::radar::Split::parse).transpose()?.unwrap_or_default(),
         tga: a.tga,
         official: a.official,
+        addon: a.compile.clone().unwrap_or_default(),
     };
     for m in &a.c.maps {
         let path = resolve_map(m, a.c.game.as_deref())?;
+        if !o.addon.trim().is_empty() {
+            if !crate::s2::is_vpk(&path) {
+                anyhow::bail!("--compile is for CS2 maps only: {}", path.display());
+            }
+            crate::addon::Addon::find(crate::s2::vpk::game_root(&path, a.c.game.as_deref()).as_deref(), &o.addon)?;
+        }
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
         let out = run_dir(&a.c.out, &name)?;
         println!("== {name}");

@@ -277,6 +277,13 @@ impl App {
             });
             ui.checkbox(&mut self.ov.tga, "Also write 32-bit TGA");
             ui.checkbox(&mut self.ov.official, "Also write the official radar images");
+            ui.horizontal(|ui| {
+                ui.label("Compile into addon");
+                ui.add(egui::TextEdit::singleline(&mut self.ov.addon).hint_text("off").desired_width(160.0));
+            });
+            if !self.ov.addon.trim().is_empty() {
+                ui.weak("Writes the TGA and .vtex to content/csgo_addons/<addon>, the .txt to game/csgo_addons/<addon>, then runs resourcecompiler. The addon must exist in both.");
+            }
             ui.weak("CS2: one <map>[_section]_radar.png per vertical section, and <map>.txt with sections and icon keys. Framing is shared with the Overview view.");
         }
         ui.horizontal(|ui| {
@@ -391,6 +398,13 @@ impl App {
             ui.add(egui::Slider::new(&mut self.kills.presence_every, 0.1..=5.0).text("sample every s"));
         }
         ui.add(egui::Slider::new(&mut self.kills.size, 512..=4096).text("size px"));
+        if self.is_cs2() {
+            ui.horizontal(|ui| {
+                ui.label("Backdrop");
+                ui.radio_value(&mut self.kills.base, crate::grid::Backdrop::Render, "render");
+                ui.radio_value(&mut self.kills.base, crate::grid::Backdrop::Radar, "official radar");
+            });
+        }
         ui.weak("Uses the roof, height and XY cuts on the Scene tab. Kills on floors under the visible one are left out.");
     }
 
