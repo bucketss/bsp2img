@@ -41,12 +41,9 @@ pub fn entity_marks(bsp: &Bsp) -> Vec<Marker> {
         let Some((color, label)) = marker_style(e.class()) else { continue };
         if let Some(mi) = e.model() {
             let Some(m) = bsp.models.get(mi) else { continue };
-            out.push(Marker {
-                pos: (m.mins + m.maxs) / 2.0,
-                bbox: Some([m.mins.x, m.mins.y, m.maxs.x, m.maxs.y]),
-                color,
-                label,
-            });
+            let o = e.origin().unwrap_or(DVec3::ZERO);
+            let (lo, hi) = (m.mins + o, m.maxs + o);
+            out.push(Marker { pos: (lo + hi) / 2.0, bbox: Some([lo.x, lo.y, hi.x, hi.y]), color, label });
         } else if let Some(p) = e.origin() {
             out.push(Marker { pos: p, bbox: None, color, label });
         }
