@@ -231,7 +231,7 @@ pub fn radar_frame(f: &crate::overview::Radar, size: u32) -> GridFrame {
 }
 
 pub fn radar_bases(bsp: &Bsp, cuts: &Cuts, size: u32, log: &mut dyn FnMut(String)) -> Result<Vec<Base>> {
-    let Some(x) = &bsp.cs2 else { return Ok(Vec::new()) };
+    let Some(x) = &bsp.extra else { return Ok(Vec::new()) };
     let Some(o) = &x.radar else { return Ok(Vec::new()) };
     let map = bsp.name().to_lowercase();
     let mut out = Vec::new();
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn comp_spawns() {
-        let mut bsp = Bsp::empty(Path::new("x.bsp"));
+        let mut bsp = Bsp::empty(Path::new("x.bsp"), crate::bsp::Engine::GoldSrc);
         bsp.entities = vec![
             spawn("info_player_start", None),
             spawn("info_player_start", Some("1")),

@@ -183,7 +183,7 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
                 && col_reach[ci as usize * nav.ny + cj as usize]
         })
         .collect();
-    let inset = if bsp.is_cs2() && o.wall > 0.0 { NAV_INSET } else { 0.0 };
+    let inset = if bsp.modern() && o.wall > 0.0 { NAV_INSET } else { 0.0 };
     let r = ((o.wall + inset) / v).max(0.0);
     let ri = r.floor() as i64;
     let offs: Vec<(i64, i64)> = (-ri..=ri)
@@ -720,7 +720,7 @@ pub fn export_stl(
     let mut tm = crate::prof::Timer::new("stl");
     let mut reg = region(bsp, cuts, o, rep)?;
     tm.lap("region");
-    let solid = match &bsp.cs2 {
+    let solid = match &bsp.extra {
         Some(x) => {
             let p = x.phys()?;
             let s = p.stats();

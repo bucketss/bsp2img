@@ -896,7 +896,7 @@ pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
         println!("== {name}");
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
-        let lighting = chosen.unwrap_or(match (scene.bsp.is_cs2(), obj) {
+        let lighting = chosen.unwrap_or(match (scene.bsp.modern(), obj) {
             (false, _) => Lighting::Baked,
             (true, false) => Lighting::Separate,
             (true, true) => Lighting::None,

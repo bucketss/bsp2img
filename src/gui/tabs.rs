@@ -534,7 +534,7 @@ fn free_camera(app: &mut App, ui: &mut egui::Ui) {
 fn overview_camera(app: &mut App) {
     let cuts = app.cuts();
     let Some(r) = &app.renderer else { return };
-    if let Some(s) = app.scene.as_ref().filter(|s| s.bsp.is_cs2()) {
+    if let Some(s) = app.scene.as_ref().filter(|s| s.bsp.modern()) {
         let Ok((f, _, _)) = crate::export::radar_params(r, &s.bsp, &cuts, &app.ov) else { return };
         let ((x, y), (z0, z1)) = (f.center(), r.z_range(&cuts));
         let c = &mut app.cam;

@@ -18,7 +18,7 @@ use crate::phys::{Mask, Phys, PhysStats};
 use crate::radar::DEFAULT;
 use crate::render::{Cuts, NO_CLIP, Renderer, View};
 use crate::s2::radar as s2radar;
-use crate::s2::{Extra, LoadStats};
+use crate::extra::{Extra, LoadStats};
 use crate::scene::{Report, Scene, num};
 use crate::sky::find_sky;
 use crate::wad::TextureSource;
@@ -437,7 +437,7 @@ fn walk(bsp: &Bsp, o: &HealthOpts, t: &[DVec3], ct: &[DVec3]) -> Result<Walk> {
 }
 
 pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
-    if let Some(x) = &scene.bsp.cs2 {
+    if let Some(x) = &scene.bsp.extra {
         return gather_cs2(scene, x, name, o);
     }
     let bsp = &scene.bsp;

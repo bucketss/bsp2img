@@ -318,8 +318,8 @@ impl Fs {
 
 pub const PAKS: [&str; 4] = ["csgo", "csgo_imported", "csgo_core", "core"];
 
-fn is_root(p: &Path) -> bool {
-    p.join("csgo").join("pak01_dir.vpk").is_file()
+pub fn is_root(p: &Path) -> bool {
+    p.join("csgo").join("pak01_dir.vpk").is_file() && p.join("csgo").join("gameinfo.gi").is_file()
 }
 
 pub fn find_root(game: &Path) -> Option<PathBuf> {
