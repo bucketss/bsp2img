@@ -48,7 +48,7 @@ pub enum Cmd {
     Slice(SliceArgs),
     #[command(about = "Map how fast each team reaches every spot from its spawns")]
     Timing(TimingArgs),
-    #[command(about = "Heatmaps of kills and player positions from HLTV demos")]
+    #[command(about = "Heatmaps of kills and player positions from HLTV and CS2 demos")]
     Kills(KillsArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
