@@ -27,7 +27,6 @@ pub struct Mask {
 
 impl Mask {
     pub const SOLID: Mask = Mask { solid: true, clip: false, decor: false };
-    #[allow(dead_code)]
     pub const PLAYER: Mask = Mask { solid: true, clip: true, decor: false };
     #[allow(dead_code)]
     pub const ALL: Mask = Mask { solid: true, clip: true, decor: true };
