@@ -138,7 +138,7 @@ pub fn export_overview(
     }
     if bsp.is_cs2() {
         let rd = match &o.from_txt {
-            Some(t) => overview::read_radar(t)?,
+            Some(t) => crate::radar::Official::read(t)?.frame,
             None => overview::fit_radar(&r.points_in(cuts), o.margin),
         };
         let n = overview::RADAR;

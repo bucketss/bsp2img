@@ -179,18 +179,27 @@ pub struct Radar {
     pub scale: f64,
 }
 
-pub fn read_radar(path: &Path) -> Result<Radar> {
-    let text = String::from_utf8_lossy(&std::fs::read(path).with_context(|| format!("reading {}", path.display()))?).into_owned();
-    let toks: Vec<&str> = text.split('"').collect();
-    let get = |key: &str| -> Option<f64> {
-        let i = toks.iter().position(|t| t.eq_ignore_ascii_case(key))?;
-        toks.get(i + 2)?.trim().parse().ok()
-    };
-    Ok(Radar {
-        pos_x: get("pos_x").context("pos_x missing")?,
-        pos_y: get("pos_y").context("pos_y missing")?,
-        scale: get("scale").context("scale missing")?,
-    })
+impl Radar {
+    pub fn size(&self) -> f64 {
+        self.scale * RADAR as f64
+    }
+
+    pub fn center(&self) -> (f64, f64) {
+        (self.pos_x + self.size() / 2.0, self.pos_y - self.size() / 2.0)
+    }
+
+    pub fn to_px(&self, x: f64, y: f64, size: f64) -> (f64, f64) {
+        let k = size / RADAR as f64;
+        ((x - self.pos_x) / self.scale * k, (self.pos_y - y) / self.scale * k)
+    }
+
+    pub fn to_norm(&self, x: f64, y: f64) -> (f64, f64) {
+        ((x - self.pos_x) / self.size(), (self.pos_y - y) / self.size())
+    }
+
+    pub fn from_norm(&self, u: f64, v: f64) -> (f64, f64) {
+        (self.pos_x + u * self.size(), self.pos_y - v * self.size())
+    }
 }
 
 pub fn fit_radar(points: &[DVec3], margin: f64) -> Radar {
@@ -204,8 +213,8 @@ pub fn fit_radar(points: &[DVec3], margin: f64) -> Radar {
 }
 
 pub fn radar_view(r: &Radar) -> View {
-    let s = r.scale * RADAR as f64;
-    View { basis: top_down(DVec3::X, DVec3::Y), cx: r.pos_x + s / 2.0, cy: r.pos_y - s / 2.0, w: s, h: s, sky_yaw: None, persp: None }
+    let (s, (cx, cy)) = (r.size(), r.center());
+    View { basis: top_down(DVec3::X, DVec3::Y), cx, cy, w: s, h: s, sky_yaw: None, persp: None }
 }
 
 pub fn radar_txt(name: &str, r: &Radar) -> String {

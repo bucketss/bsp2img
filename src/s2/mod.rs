@@ -7,6 +7,7 @@ pub mod mesh;
 pub mod model;
 pub mod nav;
 pub mod probe;
+pub mod radar;
 pub mod resource;
 pub mod sky;
 pub mod texture;
@@ -34,6 +35,8 @@ pub struct Extra {
     pub nav: Option<nav::NavMesh>,
     pub fs: vpk::Fs,
     pub sky: Option<String>,
+    pub radar: Option<crate::radar::Official>,
+    pub radar_err: Option<String>,
 }
 
 impl Extra {
@@ -152,7 +155,30 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         .iter()
         .filter(|e| e.kv.get("classname").is_some_and(|c| c == "env_sky"))
         .find_map(|e| e.kv.get("skyname").and_then(|n| sky::resolve(&fs, n)));
-    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky }));
+    let (radar, radar_err) = match radar::load(&fs, &map) {
+        Ok(Some(o)) => {
+            let secs: Vec<&str> = o.sections.iter().map(|s| s.name.as_str()).collect();
+            let (f, num) = (o.frame, crate::scene::num);
+            log(format!(
+                "overview {}: pos_x {} pos_y {} scale {}, sections {}",
+                radar::txt_name(&map),
+                num(f.pos_x),
+                num(f.pos_y),
+                num(f.scale),
+                secs.join(" ")
+            ));
+            (Some(o), None)
+        }
+        Ok(None) => {
+            log(format!("no {}", radar::txt_name(&map)));
+            (None, None)
+        }
+        Err(e) => {
+            log(format!("overview: {e:#}"));
+            (None, Some(format!("{e:#}")))
+        }
+    };
+    bsp.cs2 = Some(Box::new(Extra { nav: navmesh, fs, sky, radar, radar_err }));
     let fs = &bsp.cs2.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");
