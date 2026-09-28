@@ -4,7 +4,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 
 ## CS2
 
-`--game` is the CS2 `game` folder or the install folder above it. `health` is GoldSrc only. `--sky` draws the map's `env_sky`; NAME may be another sky material.
+`--game` is the CS2 `game` folder or the install folder above it. `--sky` draws the map's `env_sky`; NAME may be another sky material.
 
 ## GUI
 
@@ -24,7 +24,7 @@ Renders GoldSrc (Half-Life / CS 1.6) maps from the `.bsp` and CS2 maps from the 
 | `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2 radar `.png` per vertical section and `.txt`, on the official framing |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV and CS2 demos |
-| `health` | Asset, compile, engine limit and spawn report; `health_summary.csv` for several maps |
+| `health` | Asset, compile, engine limit, spawn, collision and overview report; `health_summary.csv` for several maps |
 | `svg` | Vector callout map of reachable floors, walls, objectives and spawns |
 | `stl` | Watertight 3D-printable diorama |
 | `gltf` | `.glb` with textures and lighting, Y up, metres |
