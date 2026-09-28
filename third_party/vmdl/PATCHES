@@ -6,6 +6,10 @@ Patches:
   (`.ok_or(StringError::NotNullTerminated)?` -> `.unwrap_or(LEN)`); CS:GO autocombine models need it
 - src/mdl/raw/mod.rs: body part models are read with the 148-byte mstudiomodel_t stride
   (was 144, so every model after the first in a body part was misread)
+- src/vtx/mod.rs, src/vtx/raw.rs: when a VTX fails to read with 25-byte strip group headers it is read
+  again with 33-byte ones (topology fields; CS:GO de_boyard models/lostcoast/fisherman)
+- src/mdl/raw/animation.rs: animations kept in an animation block are skipped instead of todo!()
+  (CS:GO models/pigeon.mdl)
 - src/lib.rs: #![allow(warnings, clippy::all)] added as the first line
 - Cargo.toml: dev-dependencies, examples, benches, tests and profile deleted
 

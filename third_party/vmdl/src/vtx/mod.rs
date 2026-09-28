@@ -20,10 +20,16 @@ pub struct Vtx {
 impl Vtx {
     pub fn read(data: &[u8]) -> Result<Self> {
         let header = <VtxHeader as Readable>::read(data)?;
-        Ok(Vtx {
-            body_parts: read_relative(data, header.body_indexes())?,
-            header,
-        })
+        let body_parts = match read_relative(data, header.body_indexes()) {
+            Ok(b) => b,
+            Err(e) => {
+                STRIP_GROUP_STRIDE.with(|s| s.set(STRIP_GROUP_TOPOLOGY_SIZE));
+                let r = read_relative(data, header.body_indexes());
+                STRIP_GROUP_STRIDE.with(|s| s.set(std::mem::size_of::<StripGroupHeader>()));
+                r.map_err(|_| e)?
+            }
+        };
+        Ok(Vtx { body_parts, header })
     }
 }
 

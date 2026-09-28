@@ -97,7 +97,7 @@ impl MeshHeader {
         index_range(
             self.strip_group_offset,
             self.strip_group_count,
-            size_of::<StripGroupHeader>(),
+            STRIP_GROUP_STRIDE.with(|s| s.get()),
         )
     }
 }
@@ -127,6 +127,12 @@ pub struct StripGroupHeader {
 }
 
 static_assertions::const_assert_eq!(size_of::<StripGroupHeader>(), 25);
+
+pub const STRIP_GROUP_TOPOLOGY_SIZE: usize = 33;
+
+thread_local! {
+    pub static STRIP_GROUP_STRIDE: std::cell::Cell<usize> = const { std::cell::Cell::new(size_of::<StripGroupHeader>()) };
+}
 
 impl StripGroupHeader {
     /// Index into the VVD file vertexes
