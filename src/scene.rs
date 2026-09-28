@@ -281,6 +281,9 @@ impl Scene {
         };
         r.set_mask(self.mask.clone());
         r.sun_env = sun_env(&self.bsp);
+        if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
+            r.tex_gamma = (self.opts.light.texgamma / self.opts.light.gamma.min(3.0)) as f32;
+        }
         Ok(r)
     }
 

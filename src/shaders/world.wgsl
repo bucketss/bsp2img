@@ -260,6 +260,9 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     }
     t = vec4<f32>(t.rgb * i.paint.rgb, t.a * i.paint.a);
     var l = textureSampleLevel(lmap, lsamp, i.lm, 0.0);
+    if (i.vlight.w > 0.5 && lu.hdr.w < 0.5) {
+        l = vec4<f32>(i.vlight.rgb, 1.0);
+    }
     let p = i.world;
     let unlit = bu.e.y > 0.5;
     if (unlit) {
@@ -297,6 +300,9 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     }
     if (lu.dir.w > 0.0 && !unlit && mode != 3) {
         lr = relight(lr, i.lpos, n);
+    }
+    if (lu.shadow0.w > 0.0 && lu.dir.w > 0.0 && !unlit) {
+        t = vec4<f32>(mix(t.rgb, pow(max(t.rgb, vec3<f32>(0.0)), vec3<f32>(lu.shadow0.w)), clamp(lu.dir.w, 0.0, 1.0)), t.a);
     }
     let c = t.rgb * tint * lr;
     var a = 1.0;
