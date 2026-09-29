@@ -216,6 +216,31 @@ pub struct HdrLight {
     pub curve: [f32; 3],
 }
 
+pub fn sample_points(batches: &[Batch], cell: f64) -> Vec<DVec3> {
+    let key = |v: &Vertex| {
+        let q = |x: f32| (x as f64 / cell).floor() as i32;
+        (q(v.pos[0]), q(v.pos[1]), q(v.pos[2]))
+    };
+    let sets: Vec<HashMap<(i32, i32, i32), [f32; 3]>> = batches
+        .par_iter()
+        .flat_map(|b| b.verts.par_chunks(1 << 18))
+        .map(|chunk| {
+            let mut s = HashMap::new();
+            for v in chunk {
+                s.entry(key(v)).or_insert(v.pos);
+            }
+            s
+        })
+        .collect();
+    let mut all: std::collections::BTreeMap<(i32, i32, i32), [f32; 3]> = std::collections::BTreeMap::new();
+    for s in sets {
+        for (k, v) in s {
+            all.entry(k).or_insert(v);
+        }
+    }
+    all.into_values().map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)).collect()
+}
+
 pub fn skip_class(cls: &str) -> bool {
     cls.starts_with("trigger_") || SKIP_CLASSES.contains(&cls)
 }

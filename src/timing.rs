@@ -42,8 +42,8 @@ fn fmt_t(t: f32) -> String {
     if t.is_finite() { format!("{t:.1}") } else { "-".into() }
 }
 
-fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t)
+pub fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t.clamp(0.0, 1.0))
 }
 
 fn viridis(t: f64) -> [f64; 3] {

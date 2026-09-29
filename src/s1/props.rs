@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 use glam::{DMat3, DVec3};
 use rayon::prelude::*;
@@ -533,7 +533,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
     out.skipped = skipped;
     out.tris = batches.iter().map(|b| b.idx.len() / 3).sum();
     mesh.faces += out.tris;
-    mesh.points = mesh.points.iter().copied().chain(sample_points(&batches)).collect();
+    mesh.points = mesh.points.iter().copied().chain(crate::mesh::sample_points(&batches, POINT_CELL)).collect();
     mesh.missing.extend(out.missing.iter().cloned());
     mesh.missing.sort();
     mesh.missing.dedup();
@@ -573,30 +573,6 @@ fn gather(part: &[usize], entries: &[Entry], f: impl Fn(usize, &mut [Vertex], &m
     (verts, idx)
 }
 
-fn sample_points(batches: &[Batch]) -> Vec<DVec3> {
-    let key = |v: &Vertex| {
-        let q = |x: f32| (x as f64 / POINT_CELL).floor() as i32;
-        (q(v.pos[0]), q(v.pos[1]), q(v.pos[2]))
-    };
-    let mut all: BTreeMap<(i32, i32, i32), [f32; 3]> = BTreeMap::new();
-    let sets: Vec<HashMap<(i32, i32, i32), [f32; 3]>> = batches
-        .par_iter()
-        .flat_map(|b| b.verts.par_chunks(1 << 18))
-        .map(|chunk| {
-            let mut s = HashMap::new();
-            for v in chunk {
-                s.entry(key(v)).or_insert(v.pos);
-            }
-            s
-        })
-        .collect();
-    for s in sets {
-        for (k, v) in s {
-            all.entry(k).or_insert(v);
-        }
-    }
-    all.into_values().map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)).collect()
-}
 
 impl Built {
     pub fn summary(&self) -> String {
