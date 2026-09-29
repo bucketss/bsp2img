@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::bsp::Bsp;
+use crate::timing::lerp3;
 use crate::demo::{self, Death, Event, Kind, Team};
 use crate::grid::{Backdrop, CT, GridFrame, T, Text, line, outline, paint, rect, spawn_dots};
 use crate::health::csv_quote;
@@ -266,7 +267,7 @@ fn is_kill(d: &Death) -> bool {
 }
 
 struct Floor {
-    nav: Nav,
+    nav: std::sync::Arc<Nav>,
     reach: Vec<f32>,
     zmax: f64,
     top: Vec<u32>,
@@ -450,10 +451,6 @@ impl Heat {
         nz.sort_by(f32::total_cmp);
         nz[((nz.len() - 1) as f64 * 0.995) as usize].max(max * 0.05)
     }
-}
-
-fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t.clamp(0.0, 1.0))
 }
 
 fn seq(team: Team, t: f64) -> [f64; 3] {

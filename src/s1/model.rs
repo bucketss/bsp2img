@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -31,6 +30,7 @@ impl Mesh {
     }
 }
 
+#[allow(dead_code)]
 pub struct Model {
     pub version: i32,
     pub checksum: u32,
@@ -101,10 +101,12 @@ impl Model {
         }
     }
 
+    #[cfg(test)]
     pub fn tris(&self) -> usize {
         self.meshes.iter().map(Mesh::tris).sum()
     }
 
+    #[cfg(test)]
     pub fn verts(&self) -> usize {
         self.meshes.iter().map(|m| m.pos.len()).sum()
     }

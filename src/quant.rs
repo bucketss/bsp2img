@@ -56,7 +56,9 @@ pub fn nearest(pal: &[[i32; 3]], c: [i32; 3]) -> usize {
 }
 
 pub fn median_cut(hist: HashMap<[u8; 3], u32>, n: usize) -> Vec<[u8; 3]> {
-    let mut boxes = vec![Bx::new(hist.into_iter().collect())];
+    let mut colors: Vec<([u8; 3], u32)> = hist.into_iter().collect();
+    colors.sort_unstable();
+    let mut boxes = vec![Bx::new(colors)];
     while boxes.len() < n {
         let (bi, pr) = boxes.iter().enumerate().map(|(i, b)| (i, b.priority())).max_by_key(|x| x.1).unwrap();
         if pr == 0 {
@@ -93,7 +95,8 @@ pub fn quantize(img: &image::RgbaImage, n: usize) -> (Vec<[u8; 3]>, Vec<u8>) {
     }
     let mut idx = vec![0u8; w * h];
     if hist.len() <= n {
-        let pal: Vec<[u8; 3]> = hist.keys().copied().collect();
+        let mut pal: Vec<[u8; 3]> = hist.keys().copied().collect();
+        pal.sort_unstable();
         let lookup: HashMap<[u8; 3], u8> = pal.iter().enumerate().map(|(i, c)| (*c, i as u8)).collect();
         for (i, p) in img.pixels().enumerate() {
             idx[i] = lookup.get(&[p[0], p[1], p[2]]).copied().unwrap_or(0);
@@ -133,4 +136,38 @@ pub fn quantize(img: &image::RgbaImage, n: usize) -> (Vec<[u8; 3]>, Vec<u8>) {
         }
     }
     (pal, idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gradient(n: u32) -> image::RgbaImage {
+        image::RgbaImage::from_fn(n, n, |x, y| image::Rgba([(x * 255 / n) as u8, (y * 255 / n) as u8, ((x + y) % 7 * 30) as u8, 255]))
+    }
+
+    #[test]
+    fn many_colours_are_stable() {
+        let img = gradient(64);
+        let (p1, i1) = quantize(&img, 254);
+        let (p2, i2) = quantize(&img, 254);
+        assert_eq!(p1, p2);
+        assert_eq!(i1, i2);
+        assert!(p1.len() <= 254);
+        assert!(i1.iter().all(|&k| (k as usize) < p1.len()));
+    }
+
+    #[test]
+    fn few_colours_are_exact_and_sorted() {
+        let cols = [[9u8, 0, 0], [1, 2, 3], [9, 0, 0], [0, 5, 0]];
+        let img = image::RgbaImage::from_fn(4, 4, |x, _| {
+            let c = cols[x as usize];
+            image::Rgba([c[0], c[1], c[2], 255])
+        });
+        let (pal, idx) = quantize(&img, 254);
+        assert_eq!(pal, vec![[0, 5, 0], [1, 2, 3], [9, 0, 0]]);
+        for (i, p) in img.pixels().enumerate() {
+            assert_eq!(pal[idx[i] as usize], [p[0], p[1], p[2]]);
+        }
+    }
 }

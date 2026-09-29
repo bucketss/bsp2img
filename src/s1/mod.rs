@@ -43,6 +43,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         log(n.clone());
     }
     let w = bsp::World::read(&map).with_context(|| format!("reading {}", path.display()))?;
+    opts.cancel.check()?;
     let ents = entities::parse(&map.entities()?);
     if !ents.disabled.is_empty() {
         log(format!("{} disabled spawn points dropped", ents.disabled.len()));
@@ -96,6 +97,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let region = if opts.auto_crop { crate::extra::crop_region(&b, log) } else { None };
     let crop = region.map(|r| r.0);
     let band = region.and_then(|(xy, z)| crate::extra::skybox_band(&b.entities, xy, z, log));
+    opts.cancel.check()?;
     let x = b.extra.as_ref().unwrap();
     let mut built = world::build(&x.fs, &w, &b.entities, world::Opts { tex_max: opts.tex_max, crop, band, map: &map, light: &opts.light, lm_cap: light::LIGHTMAP_MAX.min(max_dim as usize) });
     log(built.materials.summary());
@@ -105,6 +107,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     for n in &built.notes {
         log(n.clone());
     }
+    opts.cancel.check()?;
     let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, band, light: &opts.light });
     log(pr.summary());
     if !pr.bad_models.is_empty() {

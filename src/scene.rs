@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::bsp::Bsp;
 use crate::light::LightParams;
@@ -27,6 +27,29 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl PartialEq for Cancel {
+    fn eq(&self, _: &Cancel) -> bool {
+        true
+    }
+}
+
+impl Cancel {
+    pub fn set(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        if self.is_set() { Err(Cancelled.into()) } else { Ok(()) }
+    }
+}
+
 pub struct Report<'a> {
     pub log: &'a mut dyn FnMut(String),
     pub progress: &'a mut dyn FnMut(f32) -> bool,
@@ -51,6 +74,7 @@ pub struct LoadOpts {
     pub hull: Option<usize>,
     pub hull_pad: f64,
     pub tex_max: usize,
+    pub cancel: Cancel,
 }
 
 impl Default for LoadOpts {
@@ -63,6 +87,7 @@ impl Default for LoadOpts {
             hull: None,
             hull_pad: 64.0,
             tex_max: 512,
+            cancel: Cancel::default(),
         }
     }
 }
@@ -189,9 +214,14 @@ impl Scene {
         } else {
             None
         };
+        opts.cancel.check()?;
         let mut tm = crate::prof::Timer::new("goldsrc");
-        let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim);
+        let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim)?;
+        opts.cancel.check()?;
         tm.lap("mesh");
+        for e in tex.errors() {
+            log(format!("wad unreadable: {e}"));
+        }
         if !mesh.missing.is_empty() {
             log(format!("missing textures ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -230,6 +260,7 @@ impl Scene {
     }
 
     fn load_extra(bsp: Bsp, mesh: Mesh, opts: &LoadOpts, log: Log) -> Result<Scene> {
+        opts.cancel.check()?;
         if !mesh.missing.is_empty() {
             log(format!("missing ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -299,14 +330,14 @@ impl Scene {
         let Some((name, fov, pitch)) = sky else { return Ok((r, String::new())) };
         let sname = self.sky_name(Some(&name));
         match self.load_sky(&sname) {
-            Some(f) => {
+            Ok(f) => {
                 r.set_sky(Some(f), fov, pitch);
                 log(format!("sky: {sname}"));
                 let tag = if name.is_empty() { String::new() } else { format!("_{name}") };
                 Ok((r, tag))
             }
-            None => {
-                log(format!("sky: {sname} not found in gfx/env, using background"));
+            Err(e) => {
+                log(format!("sky: {sname}: {e:#}; using background"));
                 Ok((r, String::new()))
             }
         }
@@ -340,14 +371,14 @@ impl Scene {
         }
     }
 
-    pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
+    pub fn load_sky(&self, name: &str) -> Result<(u32, Vec<u8>)> {
         if let Some(x) = &self.bsp.extra {
             if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
-                return crate::s1::sky::load(&x.fs, name).ok();
+                return crate::s1::sky::load(&x.fs, name);
             }
-            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
+            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE);
         }
-        let faces = find_sky(name, &self.dirs)?;
-        load_sky(&faces, &self.opts.light.tex_lut()).ok()
+        let faces = find_sky(name, &self.dirs).context("not found in gfx/env")?;
+        load_sky(&faces, &self.opts.light.tex_lut())
     }
 }

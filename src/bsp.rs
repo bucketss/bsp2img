@@ -237,6 +237,7 @@ pub struct Bsp {
     pub miptex: Vec<MipTex>,
     pub lump_len: [usize; 15],
     pub extra: Option<Box<crate::extra::Extra>>,
+    pub nav_cache: crate::nav::NavCache,
 }
 
 fn lump<'a, T>(r: &Rd<'a>, l: (usize, usize), size: usize, f: impl Fn(&Rd<'a>, usize) -> T) -> Result<Vec<T>> {
@@ -259,7 +260,7 @@ impl Bsp {
         }
         let r = Rd { data };
         if data.starts_with(b"VBSP") {
-            bail!("Source engine map (VBSP version {}); only GoldSrc and CS2 maps are supported", r.i32(4));
+            bail!("Source engine map (VBSP version {}) passed to the GoldSrc reader", r.i32(4));
         }
         let version = r.i32(0);
         if version != 30 {
@@ -363,6 +364,7 @@ impl Bsp {
             miptex,
             lump_len: std::array::from_fn(|i| lumps[i].1),
             extra: None,
+            nav_cache: Default::default(),
         };
         bsp.validate()?;
         Ok(bsp)
@@ -449,6 +451,7 @@ impl Bsp {
             miptex: Vec::new(),
             lump_len: [0; 15],
             extra: None,
+            nav_cache: Default::default(),
         }
     }
 
@@ -537,7 +540,7 @@ impl Bsp {
         }
         let mut steps = 0;
         loop {
-            let node = &self.clipnodes[n as usize];
+            let Some(node) = self.clipnodes.get(n as usize) else { return CONTENTS_SOLID };
             let pl = &self.planes[node.plane as usize];
             let c = node.children[if p.dot(pl.normal) - pl.dist >= 0.0 { 0 } else { 1 }] as i32;
             if c < 0 {

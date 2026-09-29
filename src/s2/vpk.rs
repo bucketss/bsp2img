@@ -75,8 +75,9 @@ impl Vpk {
             v => bail!("VPK version {v}"),
         };
         let tree = u32_(&h, 8)? as usize;
-        if limit.is_some_and(|n| (hdr + tree) as u64 > n) {
-            bail!("tree larger than the nested VPK");
+        let room = limit.unwrap_or(f.metadata()?.len().saturating_sub(base));
+        if (hdr + tree) as u64 > room {
+            bail!("tree larger than the VPK");
         }
         let mut t = vec![0u8; tree];
         read_at(&f, &mut t, base + hdr as u64)?;

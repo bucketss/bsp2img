@@ -272,3 +272,29 @@ pub fn save(dir: &Path, name: &str, ov: &Overview, img: &image::RgbaImage, png: 
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bmp_keeps_index_255_free() {
+        let img = image::RgbaImage::from_fn(70, 40, |x, y| {
+            if x < 5 { image::Rgba([0, 0, 0, 0]) } else { image::Rgba([(x * 3) as u8, (y * 6) as u8, ((x * y) % 251) as u8, 255]) }
+        });
+        let b = bmp_bytes(&img);
+        assert_eq!(b, bmp_bytes(&img));
+        assert_eq!(&b[..2], b"BM");
+        let off = u32::from_le_bytes(b[10..14].try_into().unwrap()) as usize;
+        let pal = |i: usize| [b[54 + i * 4 + 2], b[54 + i * 4 + 1], b[54 + i * 4]];
+        assert_eq!(pal(254), KEY);
+        assert_eq!(pal(255), [0, 0, 0]);
+        let row = 72;
+        for y in 0..40 {
+            let r = &b[off + y * row..off + y * row + 70];
+            assert!(r.iter().all(|&i| i != 255));
+            assert!(r[..5].iter().all(|&i| i == 254));
+            assert!(r[5..].iter().all(|&i| i < 254));
+        }
+    }
+}

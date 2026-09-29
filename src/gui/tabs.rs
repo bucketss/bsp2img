@@ -113,7 +113,9 @@ pub fn tab_map(app: &mut App, ui: &mut egui::Ui) {
                 r.scroll_to_me(None);
             }
         }
-        if app.maps.is_empty() {
+        if app.maps_rx.is_some() {
+            ui.weak("listing maps...");
+        } else if app.maps.is_empty() {
             ui.weak("set the game folder to list maps");
         }
     });

@@ -459,7 +459,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     });
 
     tm.lap("casters");
-    let points = sample_points(&batches);
+    let points = crate::mesh::sample_points(&batches, POINT_CELL);
     tm.lap("points");
     crate::prof::note(|| format!("{} sample points", points.len()));
     let anim = vec![None; images.len()];
@@ -471,7 +471,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             atlas,
             faces,
             missing: missing.into_iter().collect(),
-            points,
+            points: points.into(),
             nudged: 0,
             names: tex_label,
             hdr: o.hdr,
@@ -687,27 +687,3 @@ pub fn clip_rect(v: &[Vertex], [x0, y0, x1, y1]: [f64; 4]) -> Vec<Vertex> {
     out
 }
 
-fn sample_points(batches: &[Batch]) -> Vec<DVec3> {
-    let key = |v: &Vertex| {
-        let q = |x: f32| (x as f64 / POINT_CELL).floor() as i32;
-        (q(v.pos[0]), q(v.pos[1]), q(v.pos[2]))
-    };
-    let sets: Vec<HashMap<(i32, i32, i32), [f32; 3]>> = batches
-        .par_iter()
-        .flat_map(|b| b.verts.par_chunks(1 << 18))
-        .map(|chunk| {
-            let mut s = HashMap::new();
-            for v in chunk {
-                s.entry(key(v)).or_insert(v.pos);
-            }
-            s
-        })
-        .collect();
-    let mut all: HashMap<(i32, i32, i32), [f32; 3]> = HashMap::new();
-    for s in sets {
-        for (k, v) in s {
-            all.entry(k).or_insert(v);
-        }
-    }
-    all.into_values().map(|p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)).collect()
-}

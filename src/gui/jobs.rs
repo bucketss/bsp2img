@@ -129,7 +129,7 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
         };
         let name = spec.scene.bsp.name();
         send(Msg::Log(format!("== export {name}")));
-        let res = run_dir(&spec.out, &format!("{}-{name}", crate::paths::mod_tag(spec.scene.bsp.engine))).and_then(|out| {
+        let res = run_dir(&spec.out, &crate::paths::run_name(&spec.scene.bsp)).and_then(|out| {
             let mut log = |s: String| send(Msg::Log(s));
             let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.shared.as_ref(), spec.nearest, spec.sky.clone(), &mut log)?;
             if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {

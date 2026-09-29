@@ -65,7 +65,7 @@ struct Part<'a> {
     alpha: f32,
     tint: [f32; 3],
     verts: Vec<Vertex>,
-    image: Option<std::borrow::Cow<'a, Image>>,
+    image: Option<&'a Image>,
 }
 
 struct Chart {
@@ -93,42 +93,111 @@ fn tri_area(t: &[Vertex]) -> f64 {
     (dv(t[1].pos) - dv(t[0].pos)).cross(dv(t[2].pos) - dv(t[0].pos)).length() / 2.0
 }
 
-fn make_charts(parts: &[Part], texel: f64, skip: &[bool]) -> Vec<Chart> {
-    let mut charts: Vec<Chart> = Vec::new();
-    for (pi, p) in parts.iter().enumerate().filter(|(pi, _)| !skip[*pi]) {
-        let mut key = None;
-        let mut area = 0.0;
-        for (ti, t) in p.verts.chunks_exact(3).enumerate() {
-            let n = dv(t[0].normal);
-            let k = (t[0].normal.map(f32::to_bits), (n.dot(dv(t[0].pos)) * 4.0).round() as i64);
-            let same = key == Some(k);
-            let (u, w) = charts.last().filter(|_| same).map(|c| (c.u, c.w)).unwrap_or_else(|| plane_basis(n));
-            let (tlo, thi) = t.iter().fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(lo, hi), v| {
-                let q = DVec2::new(dv(v.pos).dot(u), dv(v.pos).dot(w));
-                (lo.min(q), hi.max(q))
-            });
-            let a = tri_area(t);
-            let fits = same
-                && charts.last().is_some_and(|c| {
-                    let d = c.hi.max(thi) - c.lo.min(tlo);
-                    let limit = ((MAX_ATLAS - 2 * PAD) as f64 - 1.0) * texel;
-                    d.x <= limit
-                        && d.y <= limit
-                        && d.x * d.y <= CHART_WASTE * (area + a) + (CHART_SLACK * texel) * (CHART_SLACK * texel)
-                });
-            if fits {
-                let c = charts.last_mut().unwrap();
-                c.tris.push(ti);
-                c.lo = c.lo.min(tlo);
-                c.hi = c.hi.max(thi);
-                area += a;
-            } else {
-                charts.push(Chart { part: pi, tris: vec![ti], u, w, lo: tlo, hi: thi, size: (0, 0), at: (0, 0) });
-                key = Some(k);
-                area = a;
+fn plane_groups(p: &Part) -> Vec<Vec<usize>> {
+    let tris: Vec<&[Vertex]> = p.verts.chunks_exact(3).collect();
+    let mut slot: HashMap<([u32; 3], i64), usize> = HashMap::new();
+    let mut buckets: Vec<Vec<usize>> = Vec::new();
+    for (ti, t) in tris.iter().enumerate() {
+        let n = dv(t[0].normal);
+        let k = (t[0].normal.map(f32::to_bits), (n.dot(dv(t[0].pos)) * 4.0).round() as i64);
+        let b = *slot.entry(k).or_insert_with(|| {
+            buckets.push(Vec::new());
+            buckets.len() - 1
+        });
+        buckets[b].push(ti);
+    }
+    let mut out = Vec::new();
+    for ids in buckets {
+        if ids.len() == 1 {
+            out.push(ids);
+            continue;
+        }
+        let mut parent: Vec<usize> = (0..ids.len()).collect();
+        let find = |parent: &mut Vec<usize>, mut i: usize| {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        };
+        let mut edges: HashMap<([u32; 3], [u32; 3]), usize> = HashMap::new();
+        for (k, &ti) in ids.iter().enumerate() {
+            let key = |v: &Vertex| v.pos.map(f32::to_bits);
+            let t = tris[ti];
+            for e in 0..3 {
+                let (a, b) = (key(&t[e]), key(&t[(e + 1) % 3]));
+                let ek = if a <= b { (a, b) } else { (b, a) };
+                match edges.get(&ek) {
+                    Some(&o) => {
+                        let (x, y) = (find(&mut parent, o), find(&mut parent, k));
+                        if x != y {
+                            parent[x.max(y)] = x.min(y);
+                        }
+                    }
+                    None => {
+                        edges.insert(ek, k);
+                    }
+                }
             }
         }
+        let mut comp: HashMap<usize, usize> = HashMap::new();
+        let first = out.len();
+        for (k, &ti) in ids.iter().enumerate() {
+            let r = find(&mut parent, k);
+            let c = *comp.entry(r).or_insert_with(|| {
+                out.push(Vec::new());
+                out.len() - 1
+            });
+            out[c].push(ti);
+        }
+        out[first..].sort_by_key(|g| g[0]);
     }
+    out.sort_by_key(|g| g[0]);
+    out
+}
+
+fn make_charts(parts: &[Part], texel: f64, skip: &[bool]) -> Vec<Chart> {
+    let limit = ((MAX_ATLAS - 2 * PAD) as f64 - 1.0) * texel;
+    let per_part: Vec<Vec<Chart>> = parts
+        .par_iter()
+        .enumerate()
+        .filter(|(pi, _)| !skip[*pi])
+        .map(|(pi, p)| {
+            let mut charts: Vec<Chart> = Vec::new();
+            for group in plane_groups(p) {
+                let n = dv(p.verts[group[0] * 3].normal);
+                let (u, w) = plane_basis(n);
+                let mut area = 0.0;
+                let mut open = false;
+                for ti in group {
+                    let t = &p.verts[ti * 3..ti * 3 + 3];
+                    let (tlo, thi) = t.iter().fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(lo, hi), v| {
+                        let q = DVec2::new(dv(v.pos).dot(u), dv(v.pos).dot(w));
+                        (lo.min(q), hi.max(q))
+                    });
+                    let a = tri_area(t);
+                    let fits = open
+                        && charts.last().is_some_and(|c| {
+                            let d = c.hi.max(thi) - c.lo.min(tlo);
+                            d.x <= limit && d.y <= limit && d.x * d.y <= CHART_WASTE * (area + a) + (CHART_SLACK * texel) * (CHART_SLACK * texel)
+                        });
+                    if fits {
+                        let c = charts.last_mut().unwrap();
+                        c.tris.push(ti);
+                        c.lo = c.lo.min(tlo);
+                        c.hi = c.hi.max(thi);
+                        area += a;
+                    } else {
+                        charts.push(Chart { part: pi, tris: vec![ti], u, w, lo: tlo, hi: thi, size: (0, 0), at: (0, 0) });
+                        open = true;
+                        area = a;
+                    }
+                }
+            }
+            charts
+        })
+        .collect();
+    let mut charts: Vec<Chart> = per_part.into_iter().flatten().collect();
     for c in &mut charts {
         let d = (c.hi - c.lo) / texel;
         c.size = ((d.x.ceil() as u32).max(1) + 2 * PAD, (d.y.ceil() as u32).max(1) + 2 * PAD);
@@ -359,7 +428,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, v
                         (0..3).map(|i| w[i] * f(&v[i])[1] as f64).sum(),
                     )
                 };
-                let t = match part.image.as_deref() {
+                let t = match part.image {
                     Some(img) => sample(img, mix(|v| v.uv), true, nearest),
                     None => [255.0; 4],
                 };
@@ -822,6 +891,7 @@ pub fn export_gltf(
     let t0 = Instant::now();
     rep.step(0.0)?;
     let mesh = &scene.mesh;
+    let decoded: Vec<std::sync::OnceLock<Option<std::borrow::Cow<Image>>>> = mesh.textures.iter().map(|_| std::sync::OnceLock::new()).collect();
     let parts: Vec<Part> = mesh
         .batches
         .par_iter()
@@ -832,7 +902,7 @@ pub fn export_gltf(
             alpha: b.alpha,
             tint: b.tint,
             verts: clip_tris_cuts(b.tris(), cuts, scene.mask.as_ref()),
-            image: mesh.texture(b.tex),
+            image: decoded.get(b.tex).and_then(|d| d.get_or_init(|| mesh.texture(b.tex)).as_deref()),
         })
         .filter(|p| !p.verts.is_empty())
         .collect();
@@ -888,7 +958,7 @@ pub fn export_gltf(
             let mut own: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
             for ((p, uv), d) in parts.iter().zip(uvs).zip(&direct) {
                 if *d {
-                    let t = p.image.as_deref().map(|img| {
+                    let t = p.image.map(|img| {
                         *texs.entry(p.tex).or_insert_with(|| {
                             model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                             model.texs.len() - 1
@@ -918,7 +988,7 @@ pub fn export_gltf(
             let mut mats: HashMap<(usize, Mode, u32, [u32; 3], bool), usize> = HashMap::new();
             for p in &parts {
                 let color = vl.filter(|_| lm.is_some() && p.verts.iter().all(|v| v.light != 0));
-                let t = p.image.as_deref().map(|img| {
+                let t = p.image.map(|img| {
                     *texs.entry(p.tex).or_insert_with(|| {
                         model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                         model.texs.len() - 1

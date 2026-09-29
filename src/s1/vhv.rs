@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
 
@@ -10,6 +9,7 @@ pub struct VhvMesh {
     pub ofs: usize,
 }
 
+#[allow(dead_code)]
 pub struct Vhv<'a> {
     pub version: i32,
     pub checksum: u32,

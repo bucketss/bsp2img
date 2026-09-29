@@ -127,6 +127,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let fs = &bsp.extra.as_ref().unwrap().fs;
     let t1 = t0.elapsed().as_secs_f64();
     tm.lap("world");
+    opts.cancel.check()?;
 
     let lightmap = match light::bake(fs, &world, &lumps.ents, &opts.light, LIGHTMAP_MAX.min(max_dim as usize)) {
         Ok(Some(b)) => {
@@ -143,6 +144,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         }
     };
     tm.lap("lightmap");
+    opts.cancel.check()?;
     let crop = if opts.auto_crop { crate::extra::crop_box(&bsp, log) } else { None };
     tm.lap("crop");
     let lm_size = lightmap.as_ref().map(|l| l.2);
@@ -160,6 +162,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     };
     let nprobe = probes.as_ref().map_or(0, |p| p.count());
     tm.lap("probes");
+    opts.cancel.check()?;
     let built = mesh::build(fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, crop, lightmap, hdr, probes });
     tm.lap("mesh");
     if nprobe > 0 {

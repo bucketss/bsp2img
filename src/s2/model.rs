@@ -179,6 +179,12 @@ pub fn unpack(raw: &[u8], n: usize, sz: usize, index: bool, seq: bool, zstd: boo
         ensure!(raw.len() >= want, "buffer holds {} bytes, needs {want}", raw.len());
         return Ok(raw[..want].to_vec());
     }
+    if index {
+        ensure!(sz == 2 || sz == 4, "meshopt index size {sz} is not 2 or 4");
+    } else {
+        ensure!(sz > 0 && sz <= 256 && sz.is_multiple_of(4), "meshopt vertex size {sz} is not a multiple of 4 up to 256");
+    }
+    ensure!(want <= raw.len().saturating_mul(256), "meshopt buffer of {want} bytes from {} compressed", raw.len());
     let mut out = vec![0u8; want];
     let rc = unsafe {
         if !index {

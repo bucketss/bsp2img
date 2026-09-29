@@ -153,6 +153,9 @@ pub struct Nav {
 
 const DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const BUCKET: f64 = 128.0;
+const NAV_CACHE: usize = 2;
+
+pub type NavCache = std::sync::Mutex<Vec<(u64, u64, bool, std::sync::Arc<Nav>)>>;
 const LADDER_PAD: DVec3 = DVec3::new(24.0, 24.0, 40.0);
 
 struct NavTri {
@@ -177,11 +180,27 @@ impl NavTri {
 }
 
 impl Nav {
-    pub fn build(bsp: &Bsp, cell: f64, speed: f64) -> Result<Nav> {
+    pub fn build(bsp: &Bsp, cell: f64, speed: f64) -> Result<std::sync::Arc<Nav>> {
         Nav::build_with(bsp, cell, speed, true)
     }
 
-    pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<Nav> {
+    pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<std::sync::Arc<Nav>> {
+        let key = (cell.to_bits(), speed.to_bits(), collide);
+        let found = bsp.nav_cache.lock().unwrap().iter().find(|e| (e.0, e.1, e.2) == key).map(|e| e.3.clone());
+        if let Some(n) = found {
+            return Ok(n);
+        }
+        let nav = std::sync::Arc::new(Nav::make(bsp, cell, speed, collide)?);
+        let mut cache = bsp.nav_cache.lock().unwrap();
+        cache.retain(|e| (e.0, e.1, e.2) != key);
+        cache.push((key.0, key.1, key.2, nav.clone()));
+        if cache.len() > NAV_CACHE {
+            cache.remove(0);
+        }
+        Ok(nav)
+    }
+
+    fn make(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<Nav> {
         if let Some(x) = &bsp.extra {
             let Some(m) = &x.nav else {
                 if let crate::extra::PhysSrc::Source(map) = &x.phys_src {

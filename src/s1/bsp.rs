@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -38,18 +37,15 @@ pub const LUMP_CUBEMAPS: usize = 42;
 pub const LUMP_TEXDATA_STRING_DATA: usize = 43;
 pub const LUMP_TEXDATA_STRING_TABLE: usize = 44;
 pub const LUMP_OVERLAYS: usize = 45;
-pub const LUMP_DISP_TRIS: usize = 48;
 pub const LUMP_LIGHTING_HDR: usize = 53;
 pub const LUMP_LEAF_AMBIENT_HDR: usize = 55;
 pub const LUMP_LEAF_AMBIENT: usize = 56;
 pub const LUMP_FACES_HDR: usize = 58;
 pub const LUMP_DISP_MULTIBLEND: usize = 63;
 
-pub const SURF_LIGHT: i32 = 0x1;
 pub const SURF_SKY2D: i32 = 0x2;
 pub const SURF_SKY: i32 = 0x4;
 pub const SURF_WARP: i32 = 0x8;
-pub const SURF_TRANS: i32 = 0x10;
 pub const SURF_TRIGGER: i32 = 0x40;
 pub const SURF_NODRAW: i32 = 0x80;
 pub const SURF_HINT: i32 = 0x100;
@@ -73,6 +69,7 @@ pub struct Plane {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Face {
     pub plane: u16,
     pub side: u8,
@@ -104,6 +101,7 @@ pub struct TexInfo {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct TexData {
     pub reflectivity: [f32; 3],
     pub name: String,
@@ -112,6 +110,7 @@ pub struct TexData {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Model {
     pub mins: DVec3,
     pub maxs: DVec3,
@@ -119,14 +118,6 @@ pub struct Model {
     pub headnode: i32,
     pub first_face: i32,
     pub num_faces: i32,
-}
-
-#[derive(Clone, Debug)]
-pub struct GameLump<'a> {
-    pub id: [u8; 4],
-    pub flags: u16,
-    pub version: u16,
-    pub data: Cow<'a, [u8]>,
 }
 
 pub struct Map {
@@ -150,7 +141,7 @@ pub fn lzma(data: &[u8]) -> Result<Vec<u8>> {
     let r = Rd { data };
     let (actual, packed) = (r.u32(4) as usize, r.u32(8) as usize);
     let body = data.get(12..17 + packed).context("LZMA block truncated")?;
-    let mut out = Vec::with_capacity(actual);
+    let mut out = Vec::with_capacity(actual.min(packed.saturating_mul(64)));
     let o = lzma_rs::decompress::Options {
         unpacked_size: lzma_rs::decompress::UnpackedSize::UseProvided(Some(actual as u64)),
         ..Default::default()
@@ -317,36 +308,6 @@ impl Map {
             first_face: r.i32(o + 40),
             num_faces: r.i32(o + 44),
         })
-    }
-
-    pub fn game_lumps(&self) -> Result<Vec<GameLump<'_>>> {
-        let d = self.lump(LUMP_GAME_LUMP)?;
-        if d.len() < 4 {
-            return Ok(Vec::new());
-        }
-        let r = Rd { data: &d };
-        let n = r.i32(0).max(0) as usize;
-        ensure!(d.len() >= 4 + n * 16, "game lump directory truncated");
-        let dir: Vec<([u8; 4], u16, u16, usize, usize)> = (0..n)
-            .map(|k| {
-                let o = 4 + k * 16;
-                let mut id: [u8; 4] = d[o..o + 4].try_into().unwrap();
-                id.reverse();
-                (id, r.u16(o + 4), r.u16(o + 6), r.i32(o + 8) as usize, r.i32(o + 12) as usize)
-            })
-            .collect();
-        let mut out = Vec::with_capacity(n);
-        for (k, &(id, flags, version, ofs, len)) in dir.iter().enumerate() {
-            let len = if flags & 1 != 0 { dir.get(k + 1).map_or(len, |nx| nx.3.saturating_sub(ofs)) } else { len };
-            let raw = self.data.get(ofs..ofs.saturating_add(len)).with_context(|| format!("game lump {} out of range", String::from_utf8_lossy(&id)))?;
-            let data = if flags & 1 != 0 && raw.starts_with(b"LZMA") { Cow::Owned(lzma(raw)?) } else { Cow::Borrowed(raw) };
-            out.push(GameLump { id, flags, version, data });
-        }
-        Ok(out)
-    }
-
-    pub fn game_lump(&self, id: &[u8; 4]) -> Result<Option<GameLump<'_>>> {
-        Ok(self.game_lumps()?.into_iter().find(|g| &g.id == id))
     }
 
     pub fn pakfile(&self) -> Option<(usize, usize)> {

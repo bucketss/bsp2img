@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -56,10 +55,6 @@ impl Zip {
         self.entries.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     pub fn bytes(&self) -> usize {
         self.len
     }
@@ -70,10 +65,6 @@ impl Zip {
 
     pub fn has(&self, k: &str) -> bool {
         self.entries.contains_key(k)
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.entries.keys().map(String::as_str)
     }
 
     pub fn names_with(&self, p: &str, out: &mut Vec<String>) {

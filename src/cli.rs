@@ -15,7 +15,7 @@ use crate::demo;
 use crate::health::{HealthOpts, csv_quote, export_health};
 use crate::kills::{DemoData, KillOpts, KillStats, TeamSel, export_kills, load_demos, parse_rounds};
 use crate::look::{FaceArgs, LookArgs};
-use crate::paths::{expand_demos, expand_maps, free_name, resolve_map, run_dir};
+use crate::paths::{expand_demos, expand_maps, free_name, resolve_map, run_dir, run_name};
 use crate::poster::{Orient, PosterOpts, export_poster};
 use crate::render::Gpu;
 use crate::scene::{CutOpts, LoadOpts, Report, Scene};
@@ -26,7 +26,7 @@ use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
-#[command(name = "bsp2img", version, about = "Render GoldSrc and Source BSP and CS2 maps: isometric views and CS overviews. Run without arguments for the GUI.")]
+#[command(name = "bsp2img", version, about = "Render GoldSrc, Source and CS2 maps: isometric views, animations, overviews, heatmaps, reports and 3D exports. Run without arguments for the GUI.")]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -68,7 +68,7 @@ pub enum Cmd {
 
 #[derive(Args, Clone)]
 pub struct Common {
-    #[arg(required = true, help = "path to .bsp or CS2 .vpk, or map name with --game")]
+    #[arg(required = true, help = "path to .bsp or CS2 .vpk, or map name with --game; * and ? globs allowed")]
     pub maps: Vec<String>,
     #[arg(long, help = "game install root or mod directory")]
     pub game: Option<PathBuf>,
@@ -96,23 +96,23 @@ pub struct Common {
     #[arg(long, num_args = 0..=1, default_missing_value = "3", value_parser = ["1", "3"],
           help = "mask out areas players cannot walk to, using collision hull 1 (standing) or 3 (crouch, default)")]
     pub hull: Option<String>,
-    #[arg(long = "hull-pad", default_value_t = 64.0, help = "units kept around the walkable area")]
+    #[arg(long = "hull-pad", default_value_t = 64.0, value_parser = non_negative, help = "units kept around the walkable area")]
     pub hull_pad: f64,
     #[arg(long, help = "iso and overview: also write a top-down <map>_grid.png with world coordinates")]
     pub grid: bool,
     #[arg(long = "no-auto-crop", help = "keep sealed rooms that can't be reached from spawns")]
     pub no_auto_crop: bool,
-    #[arg(long, default_value_t = 3, help = "supersampling factor")]
+    #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=8), help = "supersampling factor")]
     pub ss: u32,
-    #[arg(long, default_value_t = 2.5)]
+    #[arg(long, default_value_t = 2.5, value_parser = positive)]
     pub gamma: f64,
-    #[arg(long, default_value_t = 2.0)]
+    #[arg(long, default_value_t = 2.0, value_parser = positive)]
     pub texgamma: f64,
-    #[arg(long, default_value_t = 2.5)]
+    #[arg(long, default_value_t = 2.5, value_parser = positive)]
     pub lightgamma: f64,
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 1.0, value_parser = non_negative)]
     pub brightness: f64,
-    #[arg(long = "light-scale", default_value_t = 1.0)]
+    #[arg(long = "light-scale", default_value_t = 1.0, value_parser = non_negative)]
     pub light_scale: f64,
     #[arg(long = "all-styles", help = "include switchable light styles")]
     pub all_styles: bool,
@@ -134,7 +134,7 @@ pub struct GuiArgs {
 pub struct IsoArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 2048, help = "longest image side in pixels")]
+    #[arg(long, default_value_t = 2048, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
     pub pitch: f64,
@@ -174,13 +174,13 @@ pub struct SpinArgs {
     pub cam: CamArgs,
     #[command(flatten)]
     pub ex: ExplodeArgs,
-    #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
+    #[arg(long, default_value_t = 720, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
     pub pitch: f64,
-    #[arg(long, default_value_t = 12.0, help = "seconds per full turn")]
+    #[arg(long, default_value_t = 12.0, value_parser = positive, help = "seconds per full turn")]
     pub seconds: f64,
-    #[arg(long, default_value_t = 60.0)]
+    #[arg(long, default_value_t = 60.0, value_parser = positive)]
     pub fps: f64,
     #[arg(long, default_value_t = 45.0, allow_negative_numbers = true, help = "yaw of the first frame")]
     pub start: f64,
@@ -204,17 +204,17 @@ pub struct SpinArgs {
 
 #[derive(Args)]
 pub struct AnimArgs {
-    #[arg(long, default_value_t = 720, help = "longest image side in pixels")]
+    #[arg(long, default_value_t = 720, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
     pub pitch: f64,
-    #[arg(long, default_value_t = 60.0)]
+    #[arg(long, default_value_t = 60.0, value_parser = positive)]
     pub fps: f64,
     #[arg(long, default_value_t = 45.0, allow_negative_numbers = true, help = "yaw of the view")]
     pub start: f64,
     #[arg(long = "then-spin", help = "follow with a full turn in the same file")]
     pub then_spin: bool,
-    #[arg(long = "spin-seconds", default_value_t = 12.0, help = "seconds per full turn with --then-spin")]
+    #[arg(long = "spin-seconds", default_value_t = 12.0, value_parser = positive, help = "seconds per full turn with --then-spin")]
     pub spin_seconds: f64,
     #[arg(long, help = "turn the other way with --then-spin")]
     pub ccw: bool,
@@ -240,9 +240,9 @@ pub struct PeelArgs {
     pub a: AnimArgs,
     #[arg(long, default_value_t = 0, help = "roof levels to lift off (0 = all but the lowest)")]
     pub count: usize,
-    #[arg(long = "seconds-per", default_value_t = 1.5, help = "seconds to lift each level")]
+    #[arg(long = "seconds-per", default_value_t = 1.5, value_parser = positive, help = "seconds to lift each level")]
     pub seconds_per: f64,
-    #[arg(long, default_value_t = 0.5, help = "seconds to pause before and after each level")]
+    #[arg(long, default_value_t = 0.5, value_parser = non_negative, help = "seconds to pause before and after each level")]
     pub hold: f64,
     #[arg(long, help = "play backwards: roofs drop into place")]
     pub reverse: bool,
@@ -258,9 +258,9 @@ pub struct SliceArgs {
     pub a: AnimArgs,
     #[arg(long, default_value_t = 0, help = "number of steps (0 = continuous sweep)")]
     pub count: u32,
-    #[arg(long, default_value_t = 6.0, help = "sweep duration with --count 0")]
+    #[arg(long, default_value_t = 6.0, value_parser = positive, help = "sweep duration with --count 0")]
     pub seconds: f64,
-    #[arg(long, default_value_t = 0.4, help = "seconds to pause at each step and at the end")]
+    #[arg(long, default_value_t = 0.4, value_parser = non_negative, help = "seconds to pause at each step and at the end")]
     pub hold: f64,
 }
 
@@ -268,15 +268,15 @@ pub struct SliceArgs {
 pub struct TimingArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 250.0, help = "running speed in units/s (250 knife, 221 AK, 230 M4)")]
+    #[arg(long, default_value_t = 250.0, value_parser = positive, help = "running speed in units/s (250 knife, 221 AK, 230 M4)")]
     pub speed: f64,
-    #[arg(long, default_value_t = 8.0, help = "walk grid spacing in units")]
+    #[arg(long, default_value_t = 8.0, value_parser = at_least_one, help = "walk grid spacing in units")]
     pub cell: f64,
-    #[arg(long, default_value_t = 5.0, help = "seconds between contour lines")]
+    #[arg(long, default_value_t = 5.0, value_parser = positive, help = "seconds between contour lines")]
     pub interval: f64,
-    #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
+    #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
-    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image per section)")]
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2/Source radar (one image per section)")]
     pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -299,13 +299,13 @@ pub struct KillsArgs {
     pub lines: bool,
     #[arg(long, value_name = "A-B", value_parser = parse_rounds, help = "only these rounds, counted from the start of each demo")]
     pub rounds: Option<(u32, u32)>,
-    #[arg(long, default_value_t = 96.0, help = "heatmap kernel radius in units")]
+    #[arg(long, default_value_t = 96.0, value_parser = at_least_one, help = "heatmap kernel radius in units")]
     pub radius: f64,
-    #[arg(long = "presence-every", default_value_t = 0.5, value_name = "S", help = "seconds between presence samples; 0 = no presence map")]
+    #[arg(long = "presence-every", default_value_t = 0.5, value_parser = non_negative, value_name = "S", help = "seconds between presence samples; 0 = no presence map")]
     pub presence_every: f64,
-    #[arg(long, default_value_t = 1600, help = "longest image side in pixels")]
+    #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
-    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image set per section)")]
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2/Source radar (one image set per section)")]
     pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -315,9 +315,9 @@ pub struct KillsArgs {
 pub struct HealthArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 8.0, help = "walk grid spacing in units")]
+    #[arg(long, default_value_t = 8.0, value_parser = at_least_one, help = "walk grid spacing in units")]
     pub cell: f64,
-    #[arg(long, default_value_t = 600, help = "longest side of the map thumbnail in pixels")]
+    #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u32).range(64..), help = "longest side of the map thumbnail in pixels")]
     pub size: u32,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -327,13 +327,13 @@ pub struct HealthArgs {
 pub struct SvgArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 8.0, help = "walk grid spacing in units")]
+    #[arg(long, default_value_t = 8.0, value_parser = at_least_one, help = "walk grid spacing in units")]
     pub cell: f64,
-    #[arg(long, default_value_t = 6.0, help = "outline simplification tolerance in units")]
+    #[arg(long, default_value_t = 6.0, value_parser = non_negative, help = "outline simplification tolerance in units")]
     pub simplify: f64,
     #[arg(long, default_value = "1:100", help = "print scale; 1 unit = 1 inch")]
     pub scale: String,
-    #[arg(long, default_value_t = 2, help = "most floor bands to split stacked areas into")]
+    #[arg(long, default_value_t = 2, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..), help = "most floor bands to split stacked areas into")]
     pub bands: usize,
     #[arg(long, value_delimiter = ',', allow_negative_numbers = true, help = "split floors at these heights instead")]
     pub planes: Option<Vec<f64>>,
@@ -345,13 +345,13 @@ pub struct SvgArgs {
 pub struct StlArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, help = "voxel size in units (default 8, raised automatically for large maps)")]
+    #[arg(long, value_parser = at_least_one, help = "voxel size in units (default 8, raised automatically for large maps)")]
     pub voxel: Option<f64>,
-    #[arg(long, default_value_t = 32.0, help = "units kept around the walkable area")]
+    #[arg(long, default_value_t = 32.0, value_parser = non_negative, help = "units kept around the walkable area")]
     pub wall: f64,
-    #[arg(long, default_value_t = 16.0, help = "base plate thickness below the lowest floor in units")]
+    #[arg(long, default_value_t = 16.0, value_parser = non_negative, help = "base plate thickness below the lowest floor in units")]
     pub base: f64,
-    #[arg(long = "print-width", default_value_t = 200.0, help = "longest side of the print in mm")]
+    #[arg(long = "print-width", default_value_t = 200.0, value_parser = positive, help = "longest side of the print in mm")]
     pub print_width: f64,
     #[arg(long, help = "smooth surface (surface nets) instead of blocky voxels")]
     pub smooth: bool,
@@ -364,7 +364,7 @@ pub struct GltfArgs {
     #[arg(long, value_parser = ["baked", "separate", "none"],
           help = "baked: lightmap baked into one atlas; separate: tiled textures plus lightmap on UV 2; none: textures only [default: baked, CS2: separate for glTF, none for OBJ]")]
     pub lighting: Option<String>,
-    #[arg(long, default_value_t = 2.0, help = "units per atlas texel with --lighting baked")]
+    #[arg(long, default_value_t = 2.0, value_parser = positive, help = "units per atlas texel with --lighting baked")]
     pub texel: f64,
     #[arg(long, help = "pixelated texture filtering")]
     pub nearest: bool,
@@ -376,7 +376,7 @@ pub struct PosterArgs {
     pub c: Common,
     #[arg(long, default_value = "a2", value_parser = ["a0", "a1", "a2", "a3", "a4", "letter", "tabloid"])]
     pub paper: String,
-    #[arg(long, default_value_t = 300.0)]
+    #[arg(long, default_value_t = 300.0, value_parser = positive)]
     pub dpi: f64,
     #[arg(long, conflicts_with = "portrait", help = "force landscape (default: follow the map's shape)")]
     pub landscape: bool,
@@ -406,19 +406,19 @@ pub struct PosterArgs {
 pub struct OverviewArgs {
     #[command(flatten)]
     pub c: Common,
-    #[arg(long, default_value_t = 0.04, help = "border around the map")]
+    #[arg(long, default_value_t = 0.04, value_parser = non_negative, help = "border around the map")]
     pub margin: f64,
-    #[arg(long = "from-txt", help = "reuse the framing from an existing overview .txt (GoldSrc ZOOM/ORIGIN/ROTATED, CS2 pos_x/pos_y/scale and sections)")]
+    #[arg(long = "from-txt", help = "reuse the framing from an existing overview .txt (GoldSrc ZOOM/ORIGIN/ROTATED, CS2/Source pos_x/pos_y/scale and sections)")]
     pub from_txt: Option<PathBuf>,
     #[arg(long, help = "also write a transparent PNG")]
     pub png: bool,
-    #[arg(long, help = "CS2: fit the radar to the geometry instead of the map's official overview")]
+    #[arg(long, help = "CS2 and Source: fit the radar to the geometry instead of the map's official overview")]
     pub fit: bool,
-    #[arg(long, allow_hyphen_values = true, value_name = "auto|none|Z,..", help = "CS2: one radar per vertical section: auto, none, or split heights (default: the overview's sections)")]
+    #[arg(long, allow_hyphen_values = true, value_name = "auto|none|Z,..", help = "CS2 and Source: one radar per vertical section: auto, none, or split heights (default: the overview's sections)")]
     pub sections: Option<String>,
     #[arg(long, help = "CS2: also write 32-bit <map>_radar.tga with alpha")]
     pub tga: bool,
-    #[arg(long, help = "CS2: also write the decoded official radar images as PNG")]
+    #[arg(long, help = "CS2 and Source: also write the decoded official radar images as PNG")]
     pub official: bool,
     #[arg(long, value_name = "ADDON", help = "CS2: write the radar TGA, .vtex and .txt into this existing csgo_addons addon and compile it with resourcecompiler")]
     pub compile: Option<String>,
@@ -443,6 +443,7 @@ impl Common {
             hull: self.hull.as_ref().and_then(|h| h.parse().ok()),
             hull_pad: self.hull_pad,
             tex_max: self.tex_max.max(16),
+            cancel: Default::default(),
         }
     }
 
@@ -458,6 +459,23 @@ impl Common {
             ymax: self.ymax,
         }
     }
+}
+
+fn number(s: &str, ok: impl Fn(f64) -> bool, want: &str) -> Result<f64, String> {
+    let v: f64 = s.trim().parse().map_err(|e| format!("{e}"))?;
+    if v.is_finite() && ok(v) { Ok(v) } else { Err(format!("must be {want}")) }
+}
+
+pub fn positive(s: &str) -> Result<f64, String> {
+    number(s, |v| v > 0.0, "above 0")
+}
+
+pub fn non_negative(s: &str) -> Result<f64, String> {
+    number(s, |v| v >= 0.0, "0 or more")
+}
+
+pub fn at_least_one(s: &str) -> Result<f64, String> {
+    number(s, |v| v >= 1.0, "at least 1")
 }
 
 fn say(s: String) {
@@ -545,33 +563,62 @@ pub fn run_slice(a: &SliceArgs) -> Result<()> {
     run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?, &a.a.ex)
 }
 
+fn each_map(c: &Common, mut job: impl FnMut(&std::path::Path, &str) -> Result<()>) -> Result<()> {
+    let maps = expand_maps(&c.maps, c.game.as_deref());
+    if maps.is_empty() {
+        anyhow::bail!("no maps match");
+    }
+    let mut failed = Vec::new();
+    for m in &maps {
+        let t0 = Instant::now();
+        let res = resolve_map(m, c.game.as_deref()).and_then(|path| {
+            let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            println!("== {name}");
+            job(&path, &name)
+        });
+        match res {
+            Ok(()) => println!("  {:.1}s", t0.elapsed().as_secs_f64()),
+            Err(e) if maps.len() == 1 => return Err(e),
+            Err(e) => {
+                println!("  error: {m}: {e:#}");
+                failed.push(m.as_str());
+            }
+        }
+    }
+    if !failed.is_empty() {
+        anyhow::bail!("{} of {} maps failed: {}", failed.len(), maps.len(), failed.join(", "));
+    }
+    Ok(())
+}
+
+fn in_run_dir<T>(c: &Common, bsp: &crate::bsp::Bsp, f: impl FnOnce(&std::path::Path) -> Result<T>) -> Result<T> {
+    let out = run_dir(&c.out, &run_name(bsp))?;
+    let res = f(&out);
+    if res.is_err() {
+        let _ = std::fs::remove_dir(&out);
+    }
+    res
+}
+
 fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = c.load_opts();
     let co = c.cut_opts();
     let ex = ex.opts();
-    for m in &c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
-        let mut tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
-        if !matches!(o.kind, Anim::Day(_)) {
-            scene.log_light(&o.look, &mut say);
-            tag += &o.look.light_tag();
-        }
-        let res = reported(|rep| export_anim(&mut r, &scene.levels, &name, &sky_tag, &tag, &cuts, o, &out, rep));
-        if res.is_err() {
-            let _ = std::fs::remove_dir(&out);
-        }
-        res?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
+            let mut tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say);
+            if !matches!(o.kind, Anim::Day(_)) {
+                scene.log_light(&o.look, &mut say);
+                tag += &o.look.light_tag();
+            }
+            reported(|rep| export_anim(&mut r, &scene.levels, name, &sky_tag, &tag, &cuts, o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_timing(a: &TimingArgs) -> Result<()> {
@@ -580,19 +627,15 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
     let co = a.c.cut_opts();
     let base = crate::grid::Backdrop::from_key(&a.base).unwrap_or_default();
     let o = TimingOpts { speed: a.speed, cell: a.cell, interval: a.interval, size: a.size, base };
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
-        reported(|rep| export_timing(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep))?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
+            reported(|rep| export_timing(&mut r, &scene.bsp, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 fn kill_map(
@@ -607,20 +650,13 @@ fn kill_map(
     let lo = c.load_opts();
     let co = c.cut_opts();
     let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-    let out = run_dir(&c.out, &crate::paths::run_name(path))?;
-    let res = (|| {
-        let scene = Scene::load(path, &lo, gpu.max_dim, rep.log)?;
+    let scene = Scene::load(path, &lo, gpu.max_dim, rep.log)?;
+    in_run_dir(c, &scene.bsp, |out| {
         let cuts = scene.cuts(&co, rep.log);
         let (mut r, _) = scene.job_renderer(gpu, None, nearest, None, rep.log)?;
-        export_kills(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, o, data, &out, rep, 0.0)
-    })();
-    match res {
-        Ok((_, s)) => Ok((out, s)),
-        Err(e) => {
-            let _ = std::fs::remove_dir(&out);
-            Err(e)
-        }
-    }
+        let (_, s) = export_kills(&mut r, &scene.bsp, &name, &co.tag(lo.hull), &cuts, o, data, out, rep, 0.0)?;
+        Ok((out.to_path_buf(), s))
+    })
 }
 
 pub fn run_kills(a: &KillsArgs) -> Result<()> {
@@ -658,11 +694,8 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
     let game = a.c.game.as_deref();
 
     if !a.c.maps.is_empty() {
-        for m in &a.c.maps {
-            let path = resolve_map(m, game)?;
-            let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            let (mine, other): (Vec<_>, Vec<_>) = heads.iter().partition(|(_, map)| map.eq_ignore_ascii_case(&name));
-            println!("== {name}");
+        each_map(&a.c, |path, name| {
+            let (mine, other): (Vec<_>, Vec<_>) = heads.iter().partition(|(_, map)| map.eq_ignore_ascii_case(name));
             if !other.is_empty() {
                 println!("  skipped {} demos of other maps", other.len());
                 if other.len() <= 10 {
@@ -673,17 +706,17 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
             }
             if mine.is_empty() {
                 println!("  no demos of {name}");
-                continue;
+                return Ok(());
             }
             let paths: Vec<PathBuf> = mine.iter().map(|(f, _)| f.clone()).collect();
             reported(|rep| {
                 let data = load_demos(&paths, &o, rep, (0.0, 1.0))?;
                 println!("  {} demos parsed", data.len());
-                let (out, s) = kill_map(&gpu, &a.c, a.f.nearest, &path, &o, &data, rep)?;
+                let (out, s) = kill_map(&gpu, &a.c, a.f.nearest, path, &o, &data, rep)?;
                 println!("  {} deaths, {} drawn: {}", s.deaths, s.drawn, out.display());
                 Ok(())
-            })?;
-        }
+            })
+        })?;
         println!("{:.1}s", t0.elapsed().as_secs_f64());
         return Ok(());
     }
@@ -770,21 +803,17 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         framing: a.cam.framing()?,
     };
     let ex = a.ex.opts();
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
-        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
-        scene.log_light(&o.look, &mut say);
-        reported(|rep| export_iso(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep))?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
+            let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
+            scene.log_light(&o.look, &mut say);
+            reported(|rep| export_iso(&mut r, &scene.bsp, name, &sky_tag, &tag, &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_overview(a: &OverviewArgs) -> Result<()> {
@@ -804,24 +833,22 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
         official: a.official,
         addon: a.compile.clone().unwrap_or_default(),
     };
-    for m in &a.c.maps {
-        let path = resolve_map(m, a.c.game.as_deref())?;
+    each_map(&a.c, |path, name| {
         if !o.addon.trim().is_empty() {
-            if !crate::s2::is_vpk(&path) {
+            if !crate::s2::is_vpk(path) {
                 anyhow::bail!("--compile is for CS2 maps only: {}", path.display());
             }
-            crate::addon::Addon::find(crate::s2::vpk::game_root(&path, a.c.game.as_deref()).as_deref(), &o.addon)?;
+            crate::addon::Addon::find(crate::s2::vpk::game_root(path, a.c.game.as_deref()).as_deref(), &o.addon)?;
         }
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
         let mut log = |s: String| println!("  {s}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut log)?;
-        let cuts = scene.cuts(&co, &mut log);
-        let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut log)?;
-        reported(|rep| export_overview(&mut r, &scene.bsp, &name, &cuts, &o, &out, rep))?;
-    }
-    Ok(())
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut log)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut log);
+            let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut log)?;
+            reported(|rep| export_overview(&mut r, &scene.bsp, name, &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn parse_scale(s: &str) -> Result<f64> {
@@ -838,78 +865,54 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
     let co = a.c.cut_opts();
     let base = SvgOpts { cell: a.cell, simplify: a.simplify, scale: parse_scale(&a.scale)?, bands: a.bands, planes: a.planes.clone() };
     let ex = a.ex.opts();
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let (mut r, _) = scene.job_renderer(&gpu, None, false, None, &mut say)?;
-        let mut o = base.clone();
-        if let Some(e) = ex.resolve(&scene.levels, &cuts) {
-            say(format!("explode: split at z {}", e.planes.iter().map(|p| crate::scene::num(*p)).collect::<Vec<_>>().join(", ")));
-            o.planes = Some(e.planes);
-        }
-        let res = reported(|rep| export_svg(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
-        if res.is_err() {
-            let _ = std::fs::remove_dir(&out);
-        }
-        res?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, None, false, None, &mut say)?;
+            let mut o = base.clone();
+            if let Some(e) = ex.resolve(&scene.levels, &cuts) {
+                say(format!("explode: split at z {}", e.planes.iter().map(|p| crate::scene::num(*p)).collect::<Vec<_>>().join(", ")));
+                o.planes = Some(e.planes);
+            }
+            reported(|rep| export_svg(&mut r, &scene, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_stl(a: &StlArgs) -> Result<()> {
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
     let o = StlOpts { voxel: a.voxel.unwrap_or(8.0), auto: a.voxel.is_none(), wall: a.wall, base: a.base, print_width: a.print_width, smooth: a.smooth };
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, 8192, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let res = reported(|rep| export_stl(&scene.bsp, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
-        if res.is_err() {
-            let _ = std::fs::remove_dir(&out);
-        }
-        res?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, 8192, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            reported(|rep| export_stl(&scene.bsp, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
     let chosen = a.lighting.as_deref().and_then(Lighting::parse);
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, 8192, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let lighting = chosen.unwrap_or(match (scene.bsp.modern(), obj) {
-            (false, _) => Lighting::Baked,
-            (true, false) => Lighting::Separate,
-            (true, true) => Lighting::None,
-        });
-        let o = GltfOpts { lighting, texel: a.texel, nearest: a.nearest, obj };
-        let res = reported(|rep| export_gltf(&scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
-        if res.is_err() {
-            let _ = std::fs::remove_dir(&out);
-        }
-        res?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, 8192, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let lighting = chosen.unwrap_or(match (scene.bsp.modern(), obj) {
+                (false, _) => Lighting::Baked,
+                (true, false) => Lighting::Separate,
+                (true, true) => Lighting::None,
+            });
+            let o = GltfOpts { lighting, texel: a.texel, nearest: a.nearest, obj };
+            reported(|rep| export_gltf(&scene, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_poster(a: &PosterArgs) -> Result<()> {
@@ -931,25 +934,17 @@ pub fn run_poster(a: &PosterArgs) -> Result<()> {
         tile: a.tile,
     };
     let ex = a.ex.opts();
-    for m in &a.c.maps {
-        let t0 = Instant::now();
-        let path = resolve_map(m, a.c.game.as_deref())?;
-        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
-        println!("== {name}");
-        let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-        let cuts = scene.cuts(&co, &mut say);
-        let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
-        let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
-        scene.log_light(&o.look, &mut say);
-        let res = reported(|rep| export_poster(&mut r, &scene.bsp, &name, &sky_tag, &tag, &cuts, &o, &out, rep));
-        if res.is_err() {
-            let _ = std::fs::remove_dir(&out);
-        }
-        res?;
-        println!("  {:.1}s", t0.elapsed().as_secs_f64());
-    }
-    Ok(())
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, sky_tag) = scene.job_renderer(&gpu, None, o.look.nearest, o.look.sky_spec(), &mut say)?;
+            let tag = co.tag(lo.hull) + &scene.apply_explode(&mut r, &ex, &cuts, &mut say) + &o.look.light_tag();
+            scene.log_light(&o.look, &mut say);
+            reported(|rep| export_poster(&mut r, &scene.bsp, name, &sky_tag, &tag, &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
 }
 
 pub fn run_health(a: &HealthArgs) -> Result<()> {
@@ -974,22 +969,19 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
         let res = (|| -> Result<crate::health::Health> {
             let path = resolve_map(m, a.c.game.as_deref())?;
             let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
             let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
-            let cuts = scene.cuts(&co, &mut say);
-            let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
-            let res = reported(|rep| export_health(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, &out, rep));
-            if res.is_err() {
-                let _ = std::fs::remove_dir(&out);
-            }
-            Ok(res?.1)
+            in_run_dir(&a.c, &scene.bsp, |out| {
+                let cuts = scene.cuts(&co, &mut say);
+                let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
+                Ok(reported(|rep| export_health(&mut r, &scene, &name, &co.tag(lo.hull), &cuts, &o, out, rep))?.1)
+            })
         })();
         match res {
             Ok(h) => rows.push(h.csv_row()),
             Err(e) if summary.is_some() => {
                 failed += 1;
                 println!("  error: {e:#}");
-                rows.push(format!("{m},,{}", csv_quote(&format!("{e:#}"))));
+                rows.push(format!("{},,{}", csv_quote(m), csv_quote(&format!("{e:#}"))));
             }
             Err(e) => return Err(e),
         }

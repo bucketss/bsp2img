@@ -68,7 +68,7 @@ fn brushes(bsp: &Bsp) -> Vec<Brush> {
 
 enum Solid<'a> {
     Gold(&'a Bsp, Vec<Brush>),
-    Cs2(&'a Phys),
+    Phys(&'a Phys),
 }
 
 fn solid_at(bsp: &Bsp, br: &[Brush], p: DVec3) -> bool {
@@ -240,7 +240,7 @@ fn classify(solid: &Solid, reg: &mut Region, base: f64) {
     let foot = &reg.foot;
     let runs: Vec<Vec<(usize, usize)>> = match solid {
         Solid::Gold(..) => Vec::new(),
-        Solid::Cs2(p) => (0..nx * ny)
+        Solid::Phys(p) => (0..nx * ny)
             .into_par_iter()
             .map_init(Vec::new, |iv, k| {
                 if !foot[k] {
@@ -273,7 +273,7 @@ fn classify(solid: &Solid, reg: &mut Region, base: f64) {
             let hit = zc < floor
                 || match solid {
                     Solid::Gold(bsp, br) => solid_at(bsp, br, DVec3::new(lo.x + (i as f64 + 0.5) * v, y, zc)),
-                    Solid::Cs2(_) => runs[i + nx * j].iter().any(|&(a, b)| a <= z && z <= b),
+                    Solid::Phys(_) => runs[i + nx * j].iter().any(|&(a, b)| a <= z && z <= b),
                 };
             *c = hit as u8;
         }
@@ -741,7 +741,7 @@ pub fn export_stl(
                 s.ents,
                 s.secs
             ));
-            Solid::Cs2(p)
+            Solid::Phys(p)
         }
         None => Solid::Gold(bsp, brushes(bsp)),
     };

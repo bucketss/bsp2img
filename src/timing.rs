@@ -42,8 +42,8 @@ fn fmt_t(t: f32) -> String {
     if t.is_finite() { format!("{t:.1}") } else { "-".into() }
 }
 
-fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t)
+pub fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * t.clamp(0.0, 1.0))
 }
 
 fn viridis(t: f64) -> [f64; 3] {
@@ -255,7 +255,7 @@ pub fn export_timing(
     let (st, sct) = (spawn("info_player_deathmatch"), spawn("info_player_start"));
     if st.is_empty() && sct.is_empty() {
         if count("info_player_deathmatch") + count("info_player_start") == 0 {
-            bail!("no T or CT spawn points in the map");
+            bail!("no T or CT spawn points in the map; timing needs a Counter-Strike map");
         }
         let n = bsp.entities.iter().filter(|e| e.class().starts_with("info_player_")).count();
         bail!("none of the {n} spawn points is on walkable ground");

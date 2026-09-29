@@ -1,4 +1,5 @@
-#![allow(dead_code)]
+
+use std::borrow::Cow;
 
 use anyhow::{Context, Result, bail};
 use glam::{DMat3, DVec3};
@@ -6,6 +7,7 @@ use glam::{DMat3, DVec3};
 use super::model::norm_name;
 use crate::s2::world::Xf;
 
+#[cfg(test)]
 pub const GAME_LUMP: usize = 35;
 pub const SPRP: [u8; 4] = *b"sprp";
 pub const COMPRESSED: u16 = 1;
@@ -33,6 +35,7 @@ pub enum Layout {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct StaticProp {
     pub origin: [f32; 3],
     pub angles: [f32; 3],
@@ -50,6 +53,7 @@ pub struct StaticProp {
     pub color: [u8; 4],
 }
 
+#[allow(dead_code)]
 pub struct StaticProps {
     pub version: u16,
     pub record: usize,
@@ -103,11 +107,16 @@ impl GameLump {
         String::from_utf8_lossy(&self.id).into_owned()
     }
 
-    pub fn data<'a>(&self, file: &'a [u8]) -> Result<&'a [u8]> {
+    pub fn data<'a>(&self, file: &'a [u8]) -> Result<Cow<'a, [u8]>> {
         if self.flags & COMPRESSED != 0 {
-            bail!("game lump {} v{} is LZMA-compressed; not supported", self.name(), self.version);
+            let head = file.get(self.ofs..self.ofs + 12).filter(|h| h.starts_with(b"LZMA"));
+            let head = head.with_context(|| format!("game lump {} v{} is flagged compressed but has no LZMA header", self.name(), self.version))?;
+            let end = self.ofs + 17 + u32_at(head, 8) as usize;
+            let raw = file.get(self.ofs..end).with_context(|| format!("game lump {} ({}..{end}) runs past the end of the file", self.name(), self.ofs))?;
+            return Ok(Cow::Owned(super::bsp::lzma(raw).with_context(|| format!("game lump {}", self.name()))?));
         }
-        file.get(self.ofs..self.ofs + self.len).with_context(|| format!("game lump {} ({}+{}) runs past the end of the file", self.name(), self.ofs, self.len))
+        let raw = file.get(self.ofs..self.ofs + self.len);
+        Ok(Cow::Borrowed(raw.with_context(|| format!("game lump {} ({}+{}) runs past the end of the file", self.name(), self.ofs, self.len))?))
     }
 }
 
@@ -147,7 +156,7 @@ fn record(r: &[u8], lay: Layout) -> StaticProp {
         p.forced_fade = f32_at(r, 56);
     }
     match lay {
-        Layout::Tf2 => p.flags |= u32_at(r, 64),
+        Layout::Tf2 => p.flags = u32_at(r, 64),
         Layout::Csgo10 => {
             p.flags_ex = u32_at(r, 72);
             p.color = r[64..68].try_into().unwrap();
@@ -203,7 +212,7 @@ impl StaticProps {
 
     pub fn from_bsp(file: &[u8], game_lump: &[u8]) -> Result<Option<StaticProps>> {
         let Some(g) = game_lumps(game_lump)?.into_iter().find(|g| g.id == SPRP) else { return Ok(None) };
-        StaticProps::parse(g.data(file)?, g.version).map(Some)
+        StaticProps::parse(&g.data(file)?, g.version).map(Some)
     }
 
     pub fn name(&self, p: &StaticProp) -> Option<&str> {

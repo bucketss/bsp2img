@@ -308,22 +308,8 @@ pub fn mod_tag(engine: crate::bsp::Engine) -> &'static str {
     }
 }
 
-pub fn path_mod_tag(path: &Path) -> &'static str {
-    use std::io::Read;
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vpk")) {
-        return "cs2";
-    }
-    let mut head = [0u8; 8];
-    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
-    match read {
-        Ok(()) if &head[..4] == b"VBSP" => mod_tag(crate::bsp::Engine::Source(u32::from_le_bytes([head[4], head[5], head[6], head[7]]))),
-        _ => "cs",
-    }
-}
-
-pub fn run_name(path: &Path) -> String {
-    let map = path.file_stem().unwrap_or_default().to_string_lossy();
-    format!("{}-{map}", path_mod_tag(path))
+pub fn run_name(bsp: &crate::bsp::Bsp) -> String {
+    format!("{}-{}", mod_tag(bsp.engine), bsp.name())
 }
 
 pub fn run_dir(base: &Path, name: &str) -> Result<PathBuf> {

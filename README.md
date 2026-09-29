@@ -15,7 +15,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 
 ## CS:S and CS:GO
 
-`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Four-way blends show their first layer. `--sky` draws the map's `skyname`, HDR skies included. Timing, svg, stl, auto crop and `--hull` use the map's `.nav`, or walk the collision (brushes, displacements, static props) when there is none or it misses every spawn. Overviews read the official `.txt` and radar `.vtf`/`.dds`. Health checks the SDK 2013 (CS:S) or CS:GO `bspfile.h` limits, LDR/HDR lighting, VIS, the `.nav`, the pakfile and the radar. glTF and OBJ lighting includes prop vertex lighting: glTF keeps vertex-lit props on their own textures with vertex colours, OBJ `baked` bakes them into the atlas (too many for CS:GO maps).
+`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Blends render all layers (two-way and four-way); glTF and OBJ use the first. `--sky` draws the map's `skyname`, HDR skies included. Timing, svg, stl, auto crop and `--hull` use the map's `.nav`, or walk the collision (brushes, displacements, static props) when there is none or it misses every spawn. Overviews read the official `.txt` and radar `.vtf`/`.dds`. Health checks the SDK 2013 (CS:S) or CS:GO `bspfile.h` limits, LDR/HDR lighting, VIS, the `.nav`, the pakfile and the radar. glTF and OBJ lighting includes prop vertex lighting: glTF keeps vertex-lit props on their own textures with vertex colours, OBJ `baked` bakes them into the atlas (too many for CS:GO maps).
 
 ## GUI
 
@@ -23,7 +23,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 
 ## Commands
 
-`bsp2img <command> <map...> [options]`
+`bsp2img <command> <map...> [options]`. Maps may be `*`/`?` globs; with several maps a failed map is reported and the rest continue.
 
 | Command | Output |
 |---|---|
@@ -184,4 +184,4 @@ Also the spin output options.
 
 ## Build
 
-Rust 1.85+, MSVC Build Tools on Windows. `cargo build --release`
+Rust 1.88+, MSVC Build Tools on Windows. `cargo build --release`

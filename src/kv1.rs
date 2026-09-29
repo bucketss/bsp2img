@@ -44,57 +44,58 @@ enum Tok {
 }
 
 fn tokens(text: &str) -> Result<Vec<(Tok, usize)>> {
-    let c: Vec<char> = text.chars().collect();
+    let b = text.as_bytes();
+    let ch = |i: usize| text[i..].chars().next().unwrap_or(' ');
     let mut out = Vec::new();
     let (mut i, mut line) = (0, 1);
-    while i < c.len() {
-        match c[i] {
-            '\n' => {
+    while i < b.len() {
+        match b[i] {
+            b'\n' => {
                 line += 1;
                 i += 1;
             }
-            ch if ch.is_whitespace() => i += 1,
-            '/' if c.get(i + 1) == Some(&'/') => {
-                while i < c.len() && c[i] != '\n' {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
             }
-            '{' => {
+            b'{' => {
                 out.push((Tok::Open, line));
                 i += 1;
             }
-            '}' => {
+            b'}' => {
                 out.push((Tok::Close, line));
                 i += 1;
             }
-            '"' => {
+            b'"' => {
                 let start = line;
-                let mut s = String::new();
                 i += 1;
-                while i < c.len() && c[i] != '"' {
-                    if c[i] == '\n' {
+                let s0 = i;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\n' {
                         line += 1;
                     }
-                    s.push(c[i]);
                     i += 1;
                 }
-                if i >= c.len() {
+                if i >= b.len() {
                     bail!("line {start}: unterminated string");
                 }
+                out.push((Tok::Str(text[s0..i].to_string()), start));
                 i += 1;
-                out.push((Tok::Str(s), start));
             }
+            _ if ch(i).is_whitespace() => i += ch(i).len_utf8(),
             _ => {
-                let mut s = String::new();
-                while i < c.len() && !c[i].is_whitespace() && !matches!(c[i], '{' | '}' | '"') {
-                    if c[i] == '/' && c.get(i + 1) == Some(&'/') {
+                let s0 = i;
+                while i < b.len() {
+                    let c = ch(i);
+                    if c.is_whitespace() || matches!(c, '{' | '}' | '"') || (c == '/' && b.get(i + 1) == Some(&b'/')) {
                         break;
                     }
-                    s.push(c[i]);
-                    i += 1;
+                    i += c.len_utf8();
                 }
+                let s = &text[s0..i];
                 if !(s.starts_with('[') && s.ends_with(']')) {
-                    out.push((Tok::Str(s), line));
+                    out.push((Tok::Str(s.to_string()), line));
                 }
             }
         }

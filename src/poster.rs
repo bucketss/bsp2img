@@ -345,14 +345,28 @@ fn local_now() -> Option<[i64; 6]> {
 
 #[cfg(unix)]
 fn local_now() -> Option<[i64; 6]> {
-    unsafe extern "C" {
-        fn time(t: *mut i64) -> i64;
-        fn localtime_r(t: *const i64, tm: *mut i32) -> *mut i32;
+    use std::ffi::{c_int, c_long};
+    #[repr(C)]
+    struct Tm {
+        sec: c_int,
+        min: c_int,
+        hour: c_int,
+        mday: c_int,
+        mon: c_int,
+        year: c_int,
+        wday: c_int,
+        yday: c_int,
+        isdst: c_int,
+        tail: [usize; 8],
     }
-    let mut tm = [0i32; 32];
+    unsafe extern "C" {
+        fn time(t: *mut c_long) -> c_long;
+        fn localtime_r(t: *const c_long, tm: *mut Tm) -> *mut Tm;
+    }
+    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, tail: [0; 8] };
     let now = unsafe { time(std::ptr::null_mut()) };
-    let r = unsafe { localtime_r(&now, tm.as_mut_ptr()) };
-    (!r.is_null()).then_some([tm[5] as i64 + 1900, tm[4] as i64 + 1, tm[3] as i64, tm[2] as i64, tm[1] as i64, tm[0] as i64])
+    let r = unsafe { localtime_r(&now, &mut tm) };
+    (!r.is_null()).then_some([tm.year as i64 + 1900, tm.mon as i64 + 1, tm.mday as i64, tm.hour as i64, tm.min as i64, tm.sec as i64])
 }
 
 #[cfg(not(any(windows, unix)))]
