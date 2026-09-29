@@ -309,6 +309,7 @@ struct Record {
     block: usize,
     lm: Option<(Vec<f64>, Vec<f64>)>,
     lmap: Option<LmMap>,
+    lstyles: [u8; 4],
     normal: DVec3,
     model: usize,
     warp: Option<[f32; 4]>,
@@ -518,6 +519,7 @@ pub fn build_mesh(
                 block,
                 lm,
                 lmap,
+                lstyles: f.styles,
                 normal,
                 model: mi,
                 warp: mt.name.starts_with('!').then(|| [ti.s[3], ti.t[3], tw as f32, th as f32]),
@@ -526,6 +528,7 @@ pub fn build_mesh(
     }
 
     merge_lightmaps(&mut records, &mut atlas);
+    equalize_edges(&records, &mut atlas);
     let levels = overlap_levels(&records);
     let atlas_img = atlas.pack(max_dim);
     let (aw, ah) = (atlas_img.w as f64, atlas_img.h as f64);
@@ -848,6 +851,181 @@ fn merge_lightmaps(records: &mut [Record], atlas: &mut Atlas) {
             r.lm = Some((a, b));
             r.lmap = None;
         }
+    }
+}
+
+const EDGE_MAX_DIHEDRAL: f64 = 60.0;
+const EDGE_FALL: f64 = 1.5;
+const EDGE_STEP: f64 = 4.0;
+const EDGE_ITERS: usize = 4;
+const EDGE_GAIN: f64 = 0.7;
+
+struct Affine {
+    gu: DVec3,
+    gv: DVec3,
+    c: [f64; 2],
+}
+
+impl Affine {
+    fn uv(&self, p: DVec3) -> [f64; 2] {
+        [p.dot(self.gu) + self.c[0], p.dot(self.gv) + self.c[1]]
+    }
+}
+
+fn record_affine(r: &Record) -> Option<Affine> {
+    let (a, b) = r.lm.as_ref()?;
+    let n = r.p.len();
+    let mut best = (1e-6, 0, 0, 0);
+    for i in 1..n - 1 {
+        let ar = (r.p[i] - r.p[0]).cross(r.p[i + 1] - r.p[0]).length();
+        if ar > best.0 {
+            best = (ar, 0, i, i + 1);
+        }
+    }
+    if best.0 <= 1e-6 {
+        return None;
+    }
+    let (p0, p1, p2) = (r.p[best.1], r.p[best.2], r.p[best.3]);
+    let (e1, e2) = (p1 - p0, p2 - p0);
+    let nn = e1.cross(e2).normalize();
+    let t = e1.dot(e2.cross(nn));
+    let solve = |d1: f64, d2: f64| (e2.cross(nn) * d1 + nn.cross(e1) * d2) / t;
+    let (u0, u1, u2) = (a[best.1], a[best.2], a[best.3]);
+    let (v0, v1, v2) = (b[best.1], b[best.2], b[best.3]);
+    let gu = solve(u1 - u0, u2 - u0);
+    let gv = solve(v1 - v0, v2 - v0);
+    Some(Affine { gu, gv, c: [u0 - p0.dot(gu), v0 - p0.dot(gv)] })
+}
+
+fn shared_segment(a: &[DVec3], b: &[DVec3]) -> Vec<(DVec3, DVec3)> {
+    let mut out = Vec::new();
+    for i in 0..a.len() {
+        let (a0, a1) = (a[i], a[(i + 1) % a.len()]);
+        let d = a1 - a0;
+        let l = d.length();
+        if l < 1.0 {
+            continue;
+        }
+        let d = d / l;
+        for j in 0..b.len() {
+            let (b0, b1) = (b[j], b[(j + 1) % b.len()]);
+            let off = |p: DVec3| (p - a0 - d * (p - a0).dot(d)).length();
+            if off(b0) > 0.5 || off(b1) > 0.5 {
+                continue;
+            }
+            let (s0, s1) = ((b0 - a0).dot(d), (b1 - a0).dot(d));
+            let (lo, hi) = (s0.min(s1).max(0.0), s0.max(s1).min(l));
+            if hi - lo > 1.0 {
+                out.push((a0 + d * lo, a0 + d * hi));
+            }
+        }
+    }
+    out
+}
+
+fn equalize_edges(records: &[Record], atlas: &mut Atlas) {
+    let cos_max = EDGE_MAX_DIHEDRAL.to_radians().cos();
+    let aff: Vec<Option<Affine>> = records.iter().map(|r| if r.model == 0 && r.mode == Mode::Opaque { record_affine(r) } else { None }).collect();
+    let bbox: Vec<(DVec3, DVec3)> = records
+        .iter()
+        .map(|r| {
+            r.p.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(lo, hi), p| (lo.min(*p), hi.max(*p)))
+        })
+        .collect();
+    let cell = 256.0;
+    let mut grid: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    for (i, (lo, hi)) in bbox.iter().enumerate() {
+        if aff[i].is_none() {
+            continue;
+        }
+        let (l, h) = ((*lo - 1.0) / cell, (*hi + 1.0) / cell);
+        for x in l.x.floor() as i64..=h.x.floor() as i64 {
+            for y in l.y.floor() as i64..=h.y.floor() as i64 {
+                for z in l.z.floor() as i64..=h.z.floor() as i64 {
+                    grid.entry([x, y, z]).or_default().push(i);
+                }
+            }
+        }
+    }
+    let mut pairs: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for v in grid.values() {
+        for (k, &i) in v.iter().enumerate() {
+            for &j in &v[k + 1..] {
+                let (a, b) = (i.min(j), i.max(j));
+                let (ba, bb) = (&bbox[a], &bbox[b]);
+                if ba.0.cmpgt(bb.1 + 1.0).any() || bb.0.cmpgt(ba.1 + 1.0).any() {
+                    continue;
+                }
+                pairs.insert((a, b));
+            }
+        }
+    }
+    let mut work: Vec<(usize, usize, Vec<(DVec3, DVec3)>)> = Vec::new();
+    for (a, b) in pairs {
+        let (ra, rb) = (&records[a], &records[b]);
+        if ra.block == rb.block || ra.lstyles != rb.lstyles {
+            continue;
+        }
+        let dot = ra.normal.dot(rb.normal);
+        if dot > 0.9999 || dot < cos_max {
+            continue;
+        }
+        let segs = shared_segment(&ra.p, &rb.p);
+        if !segs.is_empty() {
+            work.push((a, b, segs));
+        }
+    }
+    for _ in 0..EDGE_ITERS {
+    let mut deltas: HashMap<usize, Vec<f32>> = HashMap::new();
+    for (a, b, segs) in &work {
+        let (ra, rb) = (&records[*a], &records[*b]);
+        let (fa, fb) = (aff[*a].as_ref().unwrap(), aff[*b].as_ref().unwrap());
+        for &(p0, p1) in segs {
+            let len = (p1 - p0).length();
+            let steps = ((len / EDGE_STEP).ceil() as usize).max(1);
+            let diffs: Vec<[f64; 3]> = (0..=steps)
+                .map(|k| {
+                    let p = p0.lerp(p1, k as f64 / steps as f64);
+                    let (ua, ub) = (fa.uv(p), fb.uv(p));
+                    let ca = sample_block(&atlas.blocks[ra.block], ua[0], ua[1]);
+                    let cb = sample_block(&atlas.blocks[rb.block], ub[0], ub[1]);
+                    [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]]
+                })
+                .collect();
+            for (rec, f, sign) in [(ra, fa, 0.5), (rb, fb, -0.5)] {
+                let (q0, q1) = (f.uv(p0), f.uv(p1));
+                let (w, h) = (atlas.blocks[rec.block].0 as usize, atlas.blocks[rec.block].1 as usize);
+                let (x0, x1) = (((q0[0].min(q1[0]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[0].max(q1[0]) + EDGE_FALL + 1.0).ceil().min(w as f64)) as usize);
+                let (y0, y1) = (((q0[1].min(q1[1]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[1].max(q1[1]) + EDGE_FALL + 1.0).ceil().min(h as f64)) as usize);
+                let seg = [q1[0] - q0[0], q1[1] - q0[1]];
+                let l2 = (seg[0] * seg[0] + seg[1] * seg[1]).max(1e-9);
+                let buf = deltas.entry(rec.block).or_insert_with(|| vec![0.0; w * h * 3]);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
+                        let t = (((cx - q0[0]) * seg[0] + (cy - q0[1]) * seg[1]) / l2).clamp(0.0, 1.0);
+                        let (dx, dy) = (cx - q0[0] - seg[0] * t, cy - q0[1] - seg[1] * t);
+                        let wt = 1.0 - (dx * dx + dy * dy).sqrt() / EDGE_FALL;
+                        if wt <= 0.0 {
+                            continue;
+                        }
+                        let fpos = t * steps as f64;
+                        let (i0, fr) = (fpos.floor() as usize, fpos.fract());
+                        let i1 = (i0 + 1).min(steps);
+                        for c in 0..3 {
+                            let d = diffs[i0][c] * (1.0 - fr) + diffs[i1][c] * fr;
+                            buf[(y * w + x) * 3 + c] += (d * sign * wt * EDGE_GAIN) as f32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (bi, buf) in deltas {
+        for (px, d) in atlas.blocks[bi].2.iter_mut().zip(buf) {
+            *px = (*px as f64 + d as f64).round().clamp(0.0, 255.0) as u8;
+        }
+    }
     }
 }
 
