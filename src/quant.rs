@@ -56,7 +56,9 @@ pub fn nearest(pal: &[[i32; 3]], c: [i32; 3]) -> usize {
 }
 
 pub fn median_cut(hist: HashMap<[u8; 3], u32>, n: usize) -> Vec<[u8; 3]> {
-    let mut boxes = vec![Bx::new(hist.into_iter().collect())];
+    let mut colors: Vec<([u8; 3], u32)> = hist.into_iter().collect();
+    colors.sort_unstable();
+    let mut boxes = vec![Bx::new(colors)];
     while boxes.len() < n {
         let (bi, pr) = boxes.iter().enumerate().map(|(i, b)| (i, b.priority())).max_by_key(|x| x.1).unwrap();
         if pr == 0 {
@@ -93,7 +95,8 @@ pub fn quantize(img: &image::RgbaImage, n: usize) -> (Vec<[u8; 3]>, Vec<u8>) {
     }
     let mut idx = vec![0u8; w * h];
     if hist.len() <= n {
-        let pal: Vec<[u8; 3]> = hist.keys().copied().collect();
+        let mut pal: Vec<[u8; 3]> = hist.keys().copied().collect();
+        pal.sort_unstable();
         let lookup: HashMap<[u8; 3], u8> = pal.iter().enumerate().map(|(i, c)| (*c, i as u8)).collect();
         for (i, p) in img.pixels().enumerate() {
             idx[i] = lookup.get(&[p[0], p[1], p[2]]).copied().unwrap_or(0);
