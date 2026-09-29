@@ -428,7 +428,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, v
                         (0..3).map(|i| w[i] * f(&v[i])[1] as f64).sum(),
                     )
                 };
-                let t = match part.image.as_deref() {
+                let t = match part.image {
                     Some(img) => sample(img, mix(|v| v.uv), true, nearest),
                     None => [255.0; 4],
                 };
@@ -958,7 +958,7 @@ pub fn export_gltf(
             let mut own: HashMap<(usize, Mode, u32, [u32; 3]), usize> = HashMap::new();
             for ((p, uv), d) in parts.iter().zip(uvs).zip(&direct) {
                 if *d {
-                    let t = p.image.as_deref().map(|img| {
+                    let t = p.image.map(|img| {
                         *texs.entry(p.tex).or_insert_with(|| {
                             model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                             model.texs.len() - 1
@@ -988,7 +988,7 @@ pub fn export_gltf(
             let mut mats: HashMap<(usize, Mode, u32, [u32; 3], bool), usize> = HashMap::new();
             for p in &parts {
                 let color = vl.filter(|_| lm.is_some() && p.verts.iter().all(|v| v.light != 0));
-                let t = p.image.as_deref().map(|img| {
+                let t = p.image.map(|img| {
                     *texs.entry(p.tex).or_insert_with(|| {
                         model.texs.push(Tex { name: tex_name(p.tex), img: Pixels::Shared(img), repeat: true });
                         model.texs.len() - 1

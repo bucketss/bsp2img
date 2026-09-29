@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use std::borrow::Cow;
 
@@ -8,6 +7,7 @@ use glam::{DMat3, DVec3};
 use super::model::norm_name;
 use crate::s2::world::Xf;
 
+#[cfg(test)]
 pub const GAME_LUMP: usize = 35;
 pub const SPRP: [u8; 4] = *b"sprp";
 pub const COMPRESSED: u16 = 1;
@@ -35,6 +35,7 @@ pub enum Layout {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct StaticProp {
     pub origin: [f32; 3],
     pub angles: [f32; 3],
@@ -52,6 +53,7 @@ pub struct StaticProp {
     pub color: [u8; 4],
 }
 
+#[allow(dead_code)]
 pub struct StaticProps {
     pub version: u16,
     pub record: usize,

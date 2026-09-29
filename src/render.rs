@@ -43,6 +43,8 @@ const CULL_PAD: f64 = 2.0;
 
 const TEX_CHUNK: usize = 64;
 
+type RangeKey = ([f64; 6], (f64, f64));
+
 #[derive(Clone)]
 pub struct Gpu {
     pub device: wgpu::Device,
@@ -413,7 +415,7 @@ pub struct Renderer {
     shadow_frame_bind: wgpu::BindGroup,
     shadow: Mutex<Vec<ShadowMap>>,
     pts_cache: Mutex<Option<(String, Arc<[DVec3]>)>>,
-    range_cache: Mutex<Option<([f64; 6], (f64, f64))>>,
+    range_cache: Mutex<Option<RangeKey>>,
     pick: std::sync::OnceLock<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     pub sun_env: SunEnv,
     pub tex_gamma: f32,

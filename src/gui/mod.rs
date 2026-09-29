@@ -95,7 +95,7 @@ const RECENT_MAX: usize = 10;
 
 enum Msg {
     Log(String),
-    Loaded(Box<Result<(Scene, Result<Renderer, String>), String>>),
+    Loaded(Box<Loaded>),
     Progress(f32, String),
     JobDone(Result<PathBuf, String>),
 }
@@ -122,13 +122,16 @@ impl Tab {
     }
 }
 
+type Loaded = Result<(Scene, Result<Renderer, String>), String>;
+type MapList = Vec<(String, PathBuf)>;
+
 struct App {
     gpu: Gpu,
     egui_rend: Arc<RwLock<egui_wgpu::Renderer>>,
     game: String,
     recent: Vec<String>,
     maps: Vec<(String, PathBuf)>,
-    maps_rx: Option<(String, Receiver<Vec<(String, PathBuf)>>)>,
+    maps_rx: Option<(String, Receiver<MapList>)>,
     ctx: egui::Context,
     filter: String,
     current: Option<PathBuf>,

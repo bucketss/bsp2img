@@ -154,6 +154,8 @@ pub struct Nav {
 const DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const BUCKET: f64 = 128.0;
 const NAV_CACHE: usize = 2;
+
+pub type NavCache = std::sync::Mutex<Vec<(u64, u64, bool, std::sync::Arc<Nav>)>>;
 const LADDER_PAD: DVec3 = DVec3::new(24.0, 24.0, 40.0);
 
 struct NavTri {

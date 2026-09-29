@@ -237,7 +237,7 @@ pub struct Bsp {
     pub miptex: Vec<MipTex>,
     pub lump_len: [usize; 15],
     pub extra: Option<Box<crate::extra::Extra>>,
-    pub nav_cache: std::sync::Mutex<Vec<(u64, u64, bool, std::sync::Arc<crate::nav::Nav>)>>,
+    pub nav_cache: crate::nav::NavCache,
 }
 
 fn lump<'a, T>(r: &Rd<'a>, l: (usize, usize), size: usize, f: impl Fn(&Rd<'a>, usize) -> T) -> Result<Vec<T>> {

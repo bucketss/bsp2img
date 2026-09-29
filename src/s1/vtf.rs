@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use anyhow::{Context, Result, bail, ensure};
 
@@ -36,6 +35,7 @@ pub const UVLX8888: i32 = 26;
 pub const FLAG_ENVMAP: u32 = 0x4000;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Info {
     pub version: (u32, u32),
     pub w: usize,
@@ -172,10 +172,6 @@ impl Info {
         m
     }
 
-    pub fn end(&self) -> Result<usize> {
-        Ok(self.offset(0)? + self.mip_size(0)?)
-    }
-
     pub fn face<'a>(&self, d: &'a [u8], m: usize, frame: usize, face: usize) -> Result<&'a [u8]> {
         let each = self.image_size(m)?;
         let o = self.offset(m)? + (frame.min(self.frames - 1) * self.faces + face.min(self.faces - 1)) * each;
@@ -280,10 +276,6 @@ pub fn image(d: &[u8], max_dim: usize) -> Result<Image> {
     let m = inf.pick(max_dim);
     let (w, h) = inf.dims(m);
     Ok(Image { w, h, rgba: decode(inf.format, w, h, inf.face(d, m, 0, 0)?)? })
-}
-
-pub fn load_tex(fs: &Fs, name: &str, max_dim: usize) -> Result<Tex> {
-    texture(&fs.read(name)?, max_dim).with_context(|| name.to_string())
 }
 
 pub fn load(fs: &Fs, name: &str, max_dim: usize) -> Result<Image> {

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
@@ -38,18 +37,15 @@ pub const LUMP_CUBEMAPS: usize = 42;
 pub const LUMP_TEXDATA_STRING_DATA: usize = 43;
 pub const LUMP_TEXDATA_STRING_TABLE: usize = 44;
 pub const LUMP_OVERLAYS: usize = 45;
-pub const LUMP_DISP_TRIS: usize = 48;
 pub const LUMP_LIGHTING_HDR: usize = 53;
 pub const LUMP_LEAF_AMBIENT_HDR: usize = 55;
 pub const LUMP_LEAF_AMBIENT: usize = 56;
 pub const LUMP_FACES_HDR: usize = 58;
 pub const LUMP_DISP_MULTIBLEND: usize = 63;
 
-pub const SURF_LIGHT: i32 = 0x1;
 pub const SURF_SKY2D: i32 = 0x2;
 pub const SURF_SKY: i32 = 0x4;
 pub const SURF_WARP: i32 = 0x8;
-pub const SURF_TRANS: i32 = 0x10;
 pub const SURF_TRIGGER: i32 = 0x40;
 pub const SURF_NODRAW: i32 = 0x80;
 pub const SURF_HINT: i32 = 0x100;
@@ -73,6 +69,7 @@ pub struct Plane {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Face {
     pub plane: u16,
     pub side: u8,
@@ -104,6 +101,7 @@ pub struct TexInfo {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct TexData {
     pub reflectivity: [f32; 3],
     pub name: String,
@@ -112,6 +110,7 @@ pub struct TexData {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct Model {
     pub mins: DVec3,
     pub maxs: DVec3,
