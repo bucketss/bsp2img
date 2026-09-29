@@ -91,6 +91,7 @@ pub struct Links<'a> {
     bx: usize,
     by: usize,
     buckets: Vec<Vec<u32>>,
+    polys: Vec<Vec<DVec2>>,
 }
 
 impl<'a> Links<'a> {
@@ -121,7 +122,8 @@ impl<'a> Links<'a> {
             }
         }
         let zr = bbs.iter().map(|b| [b[2], b[5]]).collect();
-        Links { mesh, zr, i0, j0, bx, by, buckets }
+        let polys = mesh.areas.iter().map(|a| a.poly.iter().map(|p| DVec2::new(p[0] as f64, p[1] as f64)).collect()).collect();
+        Links { mesh, zr, i0, j0, bx, by, buckets, polys }
     }
 
     fn bucket(&self, p: DVec2) -> &[u32] {
@@ -134,7 +136,7 @@ impl<'a> Links<'a> {
     }
 
     fn crosses(&self, k: usize, p0: DVec2, p1: DVec2) -> bool {
-        let q: Vec<DVec2> = self.mesh.areas[k].poly.iter().map(|p| DVec2::new(p[0] as f64, p[1] as f64)).collect();
+        let q = &self.polys[k];
         let d = p1 - p0;
         let edges = (0..q.len()).map(|i| (q[(i + 1) % q.len()] - q[i]).perp());
         std::iter::once(d.perp()).chain(edges).filter(|a| a.length_squared() > 1e-12).all(|a| {
