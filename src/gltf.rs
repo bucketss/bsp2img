@@ -65,7 +65,7 @@ struct Part<'a> {
     alpha: f32,
     tint: [f32; 3],
     verts: Vec<Vertex>,
-    image: Option<std::borrow::Cow<'a, Image>>,
+    image: Option<&'a Image>,
 }
 
 struct Chart {
@@ -822,6 +822,7 @@ pub fn export_gltf(
     let t0 = Instant::now();
     rep.step(0.0)?;
     let mesh = &scene.mesh;
+    let decoded: Vec<std::sync::OnceLock<Option<std::borrow::Cow<Image>>>> = mesh.textures.iter().map(|_| std::sync::OnceLock::new()).collect();
     let parts: Vec<Part> = mesh
         .batches
         .par_iter()
@@ -832,7 +833,7 @@ pub fn export_gltf(
             alpha: b.alpha,
             tint: b.tint,
             verts: clip_tris_cuts(b.tris(), cuts, scene.mask.as_ref()),
-            image: mesh.texture(b.tex),
+            image: decoded.get(b.tex).and_then(|d| d.get_or_init(|| mesh.texture(b.tex)).as_deref()),
         })
         .filter(|p| !p.verts.is_empty())
         .collect();
