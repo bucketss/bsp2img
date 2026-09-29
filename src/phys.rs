@@ -46,6 +46,11 @@ pub struct Hull {
     pub lo: Vec3,
     pub hi: Vec3,
     pub class: Class,
+    corners: std::sync::OnceLock<Box<[DVec3]>>,
+}
+
+thread_local! {
+    static HITS: std::cell::RefCell<Vec<Hit>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub struct Tri {
@@ -124,7 +129,7 @@ impl Builder {
             lo = lo.min(q);
             hi = hi.max(q);
         }
-        self.hulls.push(Hull { planes, lo, hi, class });
+        self.hulls.push(Hull { planes, lo, hi, class, corners: std::sync::OnceLock::new() });
     }
 
     pub fn aabb(&mut self, lo: DVec3, hi: DVec3, xf: &DAffine3, class: Class) {
@@ -227,7 +232,7 @@ fn corners(h: &Hull) -> Vec<DVec3> {
 }
 
 fn edges_overlap(h: &Hull, c: DVec3, e: DVec3) -> bool {
-    let v = corners(h);
+    let v = h.corners.get_or_init(|| corners(h).into_boxed_slice());
     if v.len() < 4 {
         return true;
     }
@@ -416,9 +421,11 @@ impl Phys {
             }
             out.extend(hull_z(h, x, y));
         }
-        let mut hits = Vec::new();
-        self.tri_hits(c, x, y, want, &mut hits);
-        scan(&mut hits, out);
+        HITS.with_borrow_mut(|hits| {
+            hits.clear();
+            self.tri_hits(c, x, y, want, hits);
+            scan(hits, out);
+        });
         merge(out);
     }
 
@@ -433,9 +440,11 @@ impl Phys {
             }
             out.extend(hull_z(h, x, y).map(|z| z.1).filter(|z| z.is_finite()));
         }
-        let mut hits = Vec::new();
-        self.tri_hits(c, x, y, want, &mut hits);
-        out.extend(hits.iter().filter(|h| h.up).map(|h| h.z));
+        HITS.with_borrow_mut(|hits| {
+            hits.clear();
+            self.tri_hits(c, x, y, want, hits);
+            out.extend(hits.iter().filter(|h| h.up).map(|h| h.z));
+        });
     }
 
     pub fn box_solid(&self, lo: DVec3, hi: DVec3, want: Mask) -> bool {
