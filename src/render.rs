@@ -41,6 +41,8 @@ const NO_BAND: f32 = -3.0e38;
 const BAND_SLOTS: usize = 16;
 const CULL_PAD: f64 = 2.0;
 
+const TEX_CHUNK: usize = 64;
+
 #[derive(Clone)]
 pub struct Gpu {
     pub device: wgpu::Device,
@@ -1048,21 +1050,20 @@ impl GpuScene {
         let mut st = Stager { gpu, pending: 0 };
         let bc = gpu.device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let comp = |i: usize| mesh.compressed.get(i).and_then(|c| c.as_ref()).filter(|_| bc);
-        let plain: Vec<Option<(std::borrow::Cow<crate::mesh::Image>, Vec<(u32, u32, Vec<u8>)>)>> = (0..mesh.textures.len())
-            .into_par_iter()
-            .map(|i| {
-                if comp(i).is_some() {
-                    return None;
-                }
-                let im = mesh.texture(i)?;
-                let mips = mip_chain(im.w, im.h, &im.rgba);
-                Some((im, mips))
-            })
-            .collect();
-        let tex_views: Vec<Option<wgpu::TextureView>> = plain
-            .iter()
-            .enumerate()
-            .map(|(i, p)| match (p, comp(i)) {
+        let mut tex_views: Vec<Option<wgpu::TextureView>> = Vec::with_capacity(mesh.textures.len());
+        for chunk in (0..mesh.textures.len()).collect::<Vec<_>>().chunks(TEX_CHUNK) {
+            let plain: Vec<Option<(std::borrow::Cow<crate::mesh::Image>, Vec<(u32, u32, Vec<u8>)>)>> = chunk
+                .par_iter()
+                .map(|&i| {
+                    if comp(i).is_some() {
+                        return None;
+                    }
+                    let im = mesh.texture(i)?;
+                    let mips = mip_chain(im.w, im.h, &im.rgba);
+                    Some((im, mips))
+                })
+                .collect();
+            tex_views.extend(plain.iter().zip(chunk).map(|(p, &i)| match (p, comp(i)) {
                 (Some((im, mips)), _) => {
                     let levels: Vec<(u32, u32, &[u8])> =
                         std::iter::once((im.w, im.h, &im.rgba[..])).chain(mips.iter().map(|(w, h, d)| (*w, *h, &d[..]))).collect();
@@ -1070,9 +1071,8 @@ impl GpuScene {
                 }
                 (None, Some(c)) => Some(st.compressed(c)),
                 (None, None) => None,
-            })
-            .collect();
-        drop(plain);
+            }));
+        }
         tm.lap("textures");
         let a = &mesh.atlas;
         let lmap_view = match &mesh.hdr {
