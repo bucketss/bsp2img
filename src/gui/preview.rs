@@ -170,6 +170,54 @@ impl App {
         Camera::from_view(&f.view, (e[2].0 + e[2].1) / 2.0, self.cam.fov)
     }
 
+    pub(super) fn camera_text(&self) -> String {
+        let mode = match self.mode {
+            Mode::Iso => "iso",
+            Mode::Top => "top",
+            Mode::Overview => "overview",
+            Mode::Free => "free",
+        };
+        let mut t = self.active_camera().text();
+        t += &format!("view={mode}
+view_yaw={}
+view_pitch={}
+view_zoom={}
+view_pan={} {} {}
+", self.yaw, self.iso.pitch, self.zoom, self.pan.x, self.pan.y, self.pan.z);
+        t
+    }
+
+    pub(super) fn apply_camera_text(&mut self, text: &str) {
+        self.cam = Camera::parse(text);
+        let mut mode = Mode::Free;
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let v = v.trim();
+            let num = v.parse::<f64>().ok().filter(|x| x.is_finite());
+            match (k.trim(), num) {
+                ("view", _) => {
+                    mode = match v {
+                        "iso" => Mode::Iso,
+                        "top" => Mode::Top,
+                        "overview" => Mode::Overview,
+                        _ => Mode::Free,
+                    }
+                }
+                ("view_yaw", Some(x)) => self.yaw = x,
+                ("view_pitch", Some(x)) => self.iso.pitch = x,
+                ("view_zoom", Some(x)) if x > 0.0 => self.zoom = x,
+                ("view_pan", _) => {
+                    let p: Vec<f64> = v.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+                    if let [x, y, z] = p[..] {
+                        self.pan = DVec3::new(x, y, z);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.mode = mode;
+    }
+
     fn pick(&mut self, p: Pick, ppp: f32) {
         let (Some(r), Some(pv), Some(f)) = (&self.renderer, &self.preview, &self.frame) else { return };
         let x = ((p.pos.x - f.rect.min.x) * ppp).max(0.0) as u32;

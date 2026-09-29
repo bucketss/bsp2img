@@ -500,7 +500,7 @@ fn free_camera(app: &mut App, ui: &mut egui::Ui) {
         ov_preset = ui.button("overview framing").clicked();
         if ui.button("Save camera...").clicked() {
             if let Some(f) = rfd::FileDialog::new().add_filter("camera", &["cam"]).set_file_name("view.cam").save_file() {
-                match app.active_camera().save(&f) {
+                match std::fs::write(&f, app.camera_text()) {
                     Ok(()) => app.log.push(format!("camera saved to {}", f.display())),
                     Err(e) => app.log.push(format!("error: {e:#}")),
                 }
@@ -508,11 +508,8 @@ fn free_camera(app: &mut App, ui: &mut egui::Ui) {
         }
         if ui.button("Load camera...").clicked() {
             if let Some(f) = rfd::FileDialog::new().add_filter("camera", &["cam"]).pick_file() {
-                match Camera::load(&f) {
-                    Ok(c) => {
-                        app.cam = c;
-                        app.mode = Mode::Free;
-                    }
+                match std::fs::read_to_string(&f) {
+                    Ok(t) => app.apply_camera_text(&t),
                     Err(e) => app.log.push(format!("error: {e:#}")),
                 }
             }
