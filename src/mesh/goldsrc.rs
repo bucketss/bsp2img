@@ -521,3 +521,31 @@ fn overlap_levels(records: &[Record]) -> Vec<u8> {
     levels
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atlas_blocks_do_not_overlap() {
+        let mut a = Atlas { blocks: Vec::new(), pos: Vec::new() };
+        let sizes = [(3000, 2), (16, 16), (1, 1), (200, 40), (40, 200), (2046, 3)];
+        for &(w, h) in &sizes {
+            a.add(w, h, vec![7; (w * h * 3) as usize]);
+        }
+        let img = a.pack(8192).unwrap();
+        let rects: Vec<(u32, u32, u32, u32)> = a.pos.iter().zip(&sizes).map(|(&(x, y), &(w, h))| (x - 1, y - 1, x + w + 1, y + h + 1)).collect();
+        for (i, r) in rects.iter().enumerate() {
+            assert!(r.2 <= img.w && r.3 <= img.h, "block {i} outside {}x{}", img.w, img.h);
+            for q in &rects[i + 1..] {
+                assert!(r.2 <= q.0 || q.2 <= r.0 || r.3 <= q.1 || q.3 <= r.1);
+            }
+        }
+    }
+
+    #[test]
+    fn atlas_over_the_limit_is_an_error() {
+        let mut a = Atlas { blocks: Vec::new(), pos: Vec::new() };
+        a.add(5000, 1, vec![0; 15000]);
+        assert!(a.pack(4096).is_err());
+    }
+}

@@ -332,56 +332,56 @@ pub(super) fn equalize_edges(records: &[Record], atlas: &mut Atlas) {
         }
     }
     for _ in 0..EDGE_ITERS {
-    let mut deltas: HashMap<usize, Vec<f32>> = HashMap::new();
-    for (a, b, segs) in &work {
-        let (ra, rb) = (&records[*a], &records[*b]);
-        let (fa, fb) = (aff[*a].as_ref().unwrap(), aff[*b].as_ref().unwrap());
-        for &(p0, p1) in segs {
-            let len = (p1 - p0).length();
-            let steps = ((len / EDGE_STEP).ceil() as usize).max(1);
-            let diffs: Vec<[f64; 3]> = (0..=steps)
-                .map(|k| {
-                    let p = p0.lerp(p1, k as f64 / steps as f64);
-                    let (ua, ub) = (fa.uv(p), fb.uv(p));
-                    let ca = sample_block(&atlas.blocks[ra.block], ua[0], ua[1]);
-                    let cb = sample_block(&atlas.blocks[rb.block], ub[0], ub[1]);
-                    [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]]
-                })
-                .collect();
-            for (rec, f, sign) in [(ra, fa, 0.5), (rb, fb, -0.5)] {
-                let (q0, q1) = (f.uv(p0), f.uv(p1));
-                let (w, h) = (atlas.blocks[rec.block].0 as usize, atlas.blocks[rec.block].1 as usize);
-                let (x0, x1) = (((q0[0].min(q1[0]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[0].max(q1[0]) + EDGE_FALL + 1.0).ceil().min(w as f64)) as usize);
-                let (y0, y1) = (((q0[1].min(q1[1]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[1].max(q1[1]) + EDGE_FALL + 1.0).ceil().min(h as f64)) as usize);
-                let seg = [q1[0] - q0[0], q1[1] - q0[1]];
-                let l2 = (seg[0] * seg[0] + seg[1] * seg[1]).max(1e-9);
-                let buf = deltas.entry(rec.block).or_insert_with(|| vec![0.0; w * h * 3]);
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
-                        let t = (((cx - q0[0]) * seg[0] + (cy - q0[1]) * seg[1]) / l2).clamp(0.0, 1.0);
-                        let (dx, dy) = (cx - q0[0] - seg[0] * t, cy - q0[1] - seg[1] * t);
-                        let wt = 1.0 - (dx * dx + dy * dy).sqrt() / EDGE_FALL;
-                        if wt <= 0.0 {
-                            continue;
-                        }
-                        let fpos = t * steps as f64;
-                        let (i0, fr) = (fpos.floor() as usize, fpos.fract());
-                        let i1 = (i0 + 1).min(steps);
-                        for c in 0..3 {
-                            let d = diffs[i0][c] * (1.0 - fr) + diffs[i1][c] * fr;
-                            buf[(y * w + x) * 3 + c] += (d * sign * wt * EDGE_GAIN) as f32;
+        let mut deltas: HashMap<usize, Vec<f32>> = HashMap::new();
+        for (a, b, segs) in &work {
+            let (ra, rb) = (&records[*a], &records[*b]);
+            let (fa, fb) = (aff[*a].as_ref().unwrap(), aff[*b].as_ref().unwrap());
+            for &(p0, p1) in segs {
+                let len = (p1 - p0).length();
+                let steps = ((len / EDGE_STEP).ceil() as usize).max(1);
+                let diffs: Vec<[f64; 3]> = (0..=steps)
+                    .map(|k| {
+                        let p = p0.lerp(p1, k as f64 / steps as f64);
+                        let (ua, ub) = (fa.uv(p), fb.uv(p));
+                        let ca = sample_block(&atlas.blocks[ra.block], ua[0], ua[1]);
+                        let cb = sample_block(&atlas.blocks[rb.block], ub[0], ub[1]);
+                        [cb[0] - ca[0], cb[1] - ca[1], cb[2] - ca[2]]
+                    })
+                    .collect();
+                for (rec, f, sign) in [(ra, fa, 0.5), (rb, fb, -0.5)] {
+                    let (q0, q1) = (f.uv(p0), f.uv(p1));
+                    let (w, h) = (atlas.blocks[rec.block].0 as usize, atlas.blocks[rec.block].1 as usize);
+                    let (x0, x1) = (((q0[0].min(q1[0]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[0].max(q1[0]) + EDGE_FALL + 1.0).ceil().min(w as f64)) as usize);
+                    let (y0, y1) = (((q0[1].min(q1[1]) - EDGE_FALL - 1.0).floor().max(0.0)) as usize, ((q0[1].max(q1[1]) + EDGE_FALL + 1.0).ceil().min(h as f64)) as usize);
+                    let seg = [q1[0] - q0[0], q1[1] - q0[1]];
+                    let l2 = (seg[0] * seg[0] + seg[1] * seg[1]).max(1e-9);
+                    let buf = deltas.entry(rec.block).or_insert_with(|| vec![0.0; w * h * 3]);
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let (cx, cy) = (x as f64 + 0.5, y as f64 + 0.5);
+                            let t = (((cx - q0[0]) * seg[0] + (cy - q0[1]) * seg[1]) / l2).clamp(0.0, 1.0);
+                            let (dx, dy) = (cx - q0[0] - seg[0] * t, cy - q0[1] - seg[1] * t);
+                            let wt = 1.0 - (dx * dx + dy * dy).sqrt() / EDGE_FALL;
+                            if wt <= 0.0 {
+                                continue;
+                            }
+                            let fpos = t * steps as f64;
+                            let (i0, fr) = (fpos.floor() as usize, fpos.fract());
+                            let i1 = (i0 + 1).min(steps);
+                            for c in 0..3 {
+                                let d = diffs[i0][c] * (1.0 - fr) + diffs[i1][c] * fr;
+                                buf[(y * w + x) * 3 + c] += (d * sign * wt * EDGE_GAIN) as f32;
+                            }
                         }
                     }
                 }
             }
         }
-    }
-    for (bi, buf) in deltas {
-        for (px, d) in atlas.blocks[bi].2.iter_mut().zip(buf) {
-            *px = (*px as f64 + d as f64).round().clamp(0.0, 255.0) as u8;
+        for (bi, buf) in deltas {
+            for (px, d) in atlas.blocks[bi].2.iter_mut().zip(buf) {
+                *px = (*px as f64 + d as f64).round().clamp(0.0, 255.0) as u8;
+            }
         }
-    }
     }
 }
 
