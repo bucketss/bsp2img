@@ -457,10 +457,13 @@ pub fn build_mesh(
             let mut lm = None;
             let mut lmap = None;
             if !special && f.lightofs >= 0 && mode != Mode::Additive && !lighting.is_empty() {
-                let smin = s.iter().cloned().fold(f64::INFINITY, f64::min);
-                let smax = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                let tmin = t.iter().cloned().fold(f64::INFINITY, f64::min);
-                let tmax = t.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let ext = |v: [f32; 4]| {
+                    pts.iter()
+                        .map(|p| (p.x as f32 * v[0] + p.y as f32 * v[1] + p.z as f32 * v[2] + v[3]) as f64)
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), x| (lo.min(x), hi.max(x)))
+                };
+                let (smin, smax) = ext(ti.s);
+                let (tmin, tmax) = ext(ti.t);
                 let bmin = [(smin / 16.0).floor(), (tmin / 16.0).floor()];
                 let bmax = [(smax / 16.0).ceil(), (tmax / 16.0).ceil()];
                 let lw = (bmax[0] - bmin[0] + 1.0) as usize;
