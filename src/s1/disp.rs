@@ -16,6 +16,7 @@ pub struct DispInfo {
     pub vert_start: usize,
     pub power: u32,
     pub flags: i32,
+    pub mb_start: Option<usize>,
 }
 
 impl DispInfo {
@@ -39,33 +40,42 @@ pub struct Disps {
     pub info: Vec<DispInfo>,
     pub verts: Vec<DispVert>,
     pub multiblend: usize,
+    pub weights: Vec<[f32; 4]>,
 }
 
 pub fn read(map: &Map) -> Result<Disps> {
-    let info = map.read(LUMP_DISPINFO, INFO_SIZE, |r, o| DispInfo {
+    let mut info = map.read(LUMP_DISPINFO, INFO_SIZE, |r, o| DispInfo {
         start: DVec3::from(r.vec3(o).map(|v| v as f64)),
         vert_start: r.i32(o + 12).max(0) as usize,
         power: r.i32(o + 20).clamp(0, 4) as u32,
         flags: r.i32(o + 24),
+        mb_start: None,
     })?;
     let verts = map.read(LUMP_DISP_VERTS, VERT_SIZE, |r, o| DispVert {
         vec: DVec3::from(r.vec3(o).map(|v| v as f64)),
         dist: r.f32(o + 12) as f64,
         alpha: r.f32(o + 16),
     })?;
-    let mb = info.iter().filter(|d| d.multiblend());
-    let (multiblend, multiblend_verts) = mb.fold((0, 0), |(n, v), d| (n + 1, v + d.side() * d.side()));
-    if map.has(LUMP_DISP_MULTIBLEND) {
-        let len = map.lump(LUMP_DISP_MULTIBLEND)?.len();
-        ensure!(len == multiblend_verts * MULTIBLEND_SIZE, "multiblend lump is {len} bytes, expected {} x {MULTIBLEND_SIZE}", multiblend_verts);
+    let mut multiblend = 0;
+    let mut multiblend_verts = 0;
+    for d in info.iter_mut().filter(|d| d.multiblend()) {
+        d.mb_start = Some(multiblend_verts);
+        multiblend += 1;
+        multiblend_verts += d.side() * d.side();
     }
-    Ok(Disps { info, verts, multiblend })
+    let mut weights = Vec::new();
+    if map.has(LUMP_DISP_MULTIBLEND) {
+        weights = map.read(LUMP_DISP_MULTIBLEND, MULTIBLEND_SIZE, |r, o| [r.f32(o), r.f32(o + 4), r.f32(o + 8), r.f32(o + 12)])?;
+        ensure!(weights.len() == multiblend_verts, "multiblend lump is {} bytes, expected {} x {MULTIBLEND_SIZE}", weights.len() * MULTIBLEND_SIZE, multiblend_verts);
+    }
+    Ok(Disps { info, verts, multiblend, weights })
 }
 
 pub struct Grid {
     pub pos: Vec<DVec3>,
     pub flat: Vec<DVec3>,
     pub alpha: Vec<f32>,
+    pub multi: Vec<[f32; 4]>,
     pub normal: Vec<DVec3>,
     pub frac: Vec<[f64; 2]>,
     pub idx: Vec<u32>,
@@ -81,8 +91,9 @@ pub fn grid(w: &World, d: &Disps, di: usize, fi: usize) -> Option<Grid> {
     let c: [DVec3; 4] = std::array::from_fn(|k| pts[(s + k) % 4]);
     let n = info.side();
     let src = d.verts.get(info.vert_start..info.vert_start + n * n)?;
+    let multi = info.mb_start.and_then(|s| d.weights.get(s..s + n * n));
     let step = 1.0 / (n - 1) as f64;
-    let mut g = Grid { pos: Vec::with_capacity(n * n), flat: Vec::with_capacity(n * n), alpha: Vec::with_capacity(n * n), normal: vec![DVec3::ZERO; n * n], frac: Vec::with_capacity(n * n), idx: Vec::with_capacity((n - 1) * (n - 1) * 6) };
+    let mut g = Grid { pos: Vec::with_capacity(n * n), flat: Vec::with_capacity(n * n), alpha: Vec::with_capacity(n * n), multi: Vec::new(), normal: vec![DVec3::ZERO; n * n], frac: Vec::with_capacity(n * n), idx: Vec::with_capacity((n - 1) * (n - 1) * 6) };
     for i in 0..n {
         let t = i as f64 * step;
         let (a, b) = (c[0].lerp(c[1], t), c[3].lerp(c[2], t));
@@ -95,6 +106,9 @@ pub fn grid(w: &World, d: &Disps, di: usize, fi: usize) -> Option<Grid> {
             g.alpha.push(v.alpha);
             g.frac.push([u, t]);
         }
+    }
+    if let Some(m) = multi {
+        g.multi = m.to_vec();
     }
     let flip = (c[1] - c[0]).cross(c[3] - c[0]).dot(w.face_normal(fi)) < 0.0;
     let mut tri = |a: usize, b: usize, cc: usize| {

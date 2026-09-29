@@ -520,6 +520,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
                 tint: tint.map(|v| v as f32 / TINT_LEVELS),
                 layer2: None,
                 layer3: None,
+                four: None,
                 tint_mask: None,
                 verts,
                 idx,

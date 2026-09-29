@@ -10,7 +10,7 @@ use super::vmt::{self, Material};
 use super::vtf;
 use crate::bsp::Entity;
 use crate::light::LightParams;
-use crate::mesh::{Batch, Image, Mesh, Mode, Vertex, unorm16};
+use crate::mesh::{Batch, FourWay, Image, Mesh, Mode, Vertex, unorm16};
 use crate::s2::texture::{Compressed, Tex};
 use crate::s2::vpk::Fs;
 
@@ -356,6 +356,7 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     for p in dpolys {
         let d = &draws[p.draw];
         let g = &p.grid;
+        let four = mats[p.key.0].as_ref().is_ok_and(|m| m.four_way().is_some());
         let verts: Vec<Vertex> = (0..g.pos.len())
             .map(|k| {
                 let fl = g.flat[k];
@@ -366,7 +367,11 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                     uv2: uv,
                     lm: [(g.frac[k][0] * p.size[0]) as f32, (g.frac[k][1] * p.size[1]) as f32],
                     normal: f3((d.rot * g.normal[k]).normalize_or_zero()),
-                    blend: [unorm16(g.alpha[k] / 255.0), 0],
+                    blend: match g.multi.get(k) {
+                        Some(m) if four => [unorm16(m[1]), unorm16(m[2]), unorm16(m[3]), 0],
+                        _ if four => [0; 4],
+                        _ => [unorm16(g.alpha[k] / 255.0), 0, 0, 0],
+                    },
                     ..Vertex::BLANK
                 }
             })
@@ -414,7 +419,15 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     let mut stats = MatStats::default();
     let mut missing: BTreeSet<String> = BTreeSet::new();
     let mut texs: Vec<String> = Vec::new();
-    let layer2 = |m: &Material| -> Option<String> { (m.shader == "worldvertextransition").then(|| m.texture("$basetexture2")).flatten() };
+    let layers = |m: &Material| -> Vec<Option<String>> {
+        if m.shader == "worldvertextransition" {
+            vec![m.texture("$basetexture2")]
+        } else if let Some(f) = m.four_way() {
+            f.tex.to_vec()
+        } else {
+            Vec::new()
+        }
+    };
     for (i, m) in mats.iter().enumerate() {
         let st = match m {
             Ok(m) if m.skip || m.water => Status::ToolWater,
@@ -422,10 +435,8 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
                 None => Status::NoBase,
                 Some(b) => {
                     texs.push(b.clone());
-                    if used.contains(&i)
-                        && let Some(t) = layer2(m)
-                    {
-                        texs.push(t);
+                    if used.contains(&i) {
+                        texs.extend(layers(m).into_iter().flatten());
                     }
                     Status::Ok
                 }
@@ -468,7 +479,7 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     let mut names: Vec<String> = Vec::new();
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut tex_of: HashMap<usize, usize> = HashMap::new();
-    let mut l2_of: HashMap<usize, usize> = HashMap::new();
+    let mut lx_of: HashMap<usize, Vec<Option<usize>>> = HashMap::new();
     let mut decoded = decoded;
     for &tdi in &used {
         let (key, label) = match &mats[tdi] {
@@ -494,24 +505,35 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
             compressed.push(bc);
             names.push(label);
         }
-        let Some(t2) = mats[tdi].as_ref().ok().filter(|m| !m.water).and_then(layer2) else { continue };
-        if let Some(&k) = ids.get(&t2) {
-            l2_of.insert(tdi, k);
-            continue;
-        }
-        let (im, bc) = match decoded.remove(&t2) {
-            Some(Ok(Tex::Plain(i))) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
-            Some(Ok(Tex::Bc(c))) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
-            _ => {
-                missing.insert(t2.clone());
+        let Some(m) = mats[tdi].as_ref().ok().filter(|m| !m.water) else { continue };
+        let mut slots = Vec::new();
+        for t in layers(m) {
+            let Some(t) = t else {
+                slots.push(None);
+                continue;
+            };
+            if let Some(&k) = ids.get(&t) {
+                slots.push(Some(k));
                 continue;
             }
-        };
-        ids.insert(t2.clone(), images.len());
-        l2_of.insert(tdi, images.len());
-        images.push(Some(im));
-        compressed.push(bc);
-        names.push(t2);
+            let (im, bc) = match decoded.remove(&t) {
+                Some(Ok(Tex::Plain(i))) => (Image { w: i.w as u32, h: i.h as u32, rgba: i.rgba }, None),
+                Some(Ok(Tex::Bc(c))) => (Image { w: c.w as u32, h: c.h as u32, rgba: Vec::new() }, Some(c)),
+                _ => {
+                    missing.insert(t.clone());
+                    slots.push(None);
+                    continue;
+                }
+            };
+            ids.insert(t.clone(), images.len());
+            slots.push(Some(images.len()));
+            images.push(Some(im));
+            compressed.push(bc);
+            names.push(t);
+        }
+        if !slots.is_empty() {
+            lx_of.insert(tdi, slots);
+        }
     }
 
     let mut index: HashMap<Key, usize> = HashMap::new();
@@ -522,14 +544,22 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         let bi = *index.entry(p.key).or_insert_with(|| {
             let t0 = mt.map_or([1.0; 3], |m| if m.water { [1.0; 3] } else { m.tint });
             let t1 = tint.map(f32::from_bits);
+            let slots = lx_of.get(&tdi);
+            let slot = |k: usize| slots.and_then(|s| s.get(k).copied().flatten());
+            let fp = mt.and_then(|m| m.four_way());
+            let uv = |k: usize| fp.as_ref().map_or([1.0, 1.0, 0.0, 0.0], |f| [f.uv[k][0], f.uv[k][1], 0.0, 0.0]);
+            let layer2 = slot(0).map(|t| (t, uv(0)));
+            let layer3 = fp.as_ref().and_then(|_| slot(1).map(|t| (t, uv(1), false)));
+            let four = fp.as_ref().map(|f| FourWay { tex4: slot(2).map(|t| (t, uv(2))), ..f.four });
             batches.push(Batch {
                 tex: tex_of[&tdi],
                 mode,
                 alpha: f32::from_bits(a),
                 warp: None,
                 tint: std::array::from_fn(|k| t0[k] * t1[k]),
-                layer2: l2_of.get(&tdi).map(|&t| (t, [1.0, 1.0, 0.0, 0.0])),
-                layer3: None,
+                layer2,
+                layer3,
+                four,
                 tint_mask: None,
                 verts: Vec::new(),
                 idx: Vec::new(),
@@ -574,7 +604,7 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
         notes.push(format!("{disp_bad} displacements skipped (bad base face)"));
     }
     if let Some(d) = disps.as_ref().filter(|d| d.multiblend > 0) {
-        notes.push(format!("{} four-way blend displacements, first layer only", d.multiblend));
+        notes.push(format!("{} multiblend displacements", d.multiblend));
     }
     Built {
         mesh: Mesh {

@@ -231,7 +231,7 @@ struct Packed {
     uv2: [f32; 2],
     lm: [f32; 2],
     nb: u32,
-    blend: [u16; 2],
+    blend: [u16; 4],
     paint: [u8; 4],
     light: u32,
     mask: [u8; 4],
@@ -590,13 +590,31 @@ fn make_batch(
         None => (None, [1.0, 1.0, 0.0, 0.0], 0.0, 0.0),
     };
     let tmask = b.tint_mask.and_then(|i| tex_views.get(i).and_then(|v| v.as_ref()));
-    let u = [
+    let four = b.four.as_ref();
+    let l4 = four.and_then(|f| f.tex4).and_then(|(i, uv)| tex_views.get(i).and_then(|v| v.as_ref()).map(|v| (v, uv)));
+    let uv4 = l4.map_or([1.0, 1.0, 0.0, 0.0], |(_, uv)| uv);
+    let fw = four.map_or([0.0; 20], |f| {
+        let mut a = [0.0; 20];
+        a[..8].copy_from_slice(&f.lum);
+        a[8..14].copy_from_slice(&f.blend);
+        a[14] = if f.mul3 { 1.0 } else { 0.0 };
+        a[15] = if f.mul4 { 1.0 } else { 0.0 };
+        a[16] = 1.0;
+        a[17..20].copy_from_slice(&f.lumblend);
+        a
+    });
+    let mut u = vec![
         b.mode as u32 as f32, b.alpha, water, 0.0, warp[0], warp[1], warp[2], warp[3], 1.0, 0.0, has2, 0.0, t[0], t[1], t[2], 1.0,
         uv2[0], uv2[1], uv2[2], uv2[3], uv3[0], uv3[1], uv3[2], uv3[3], on3, second3, if tmask.is_some() { 1.0 } else { 0.0 }, 0.0,
     ];
+    u.extend_from_slice(&uv4);
+    u.extend_from_slice(&fw[..8]);
+    u.extend_from_slice(&fw[8..12]);
+    u.extend_from_slice(&[fw[12], fw[13], fw[14], fw[15]]);
+    u.extend_from_slice(&[fw[16], fw[17], fw[18], fw[19]]);
     let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&u));
     let dev = &st.gpu.device;
-    let make = |v: &wgpu::TextureView| batch_bind(dev, layout, [v, l2.unwrap_or(v), l3.unwrap_or(v), tmask.unwrap_or(v)], &ub);
+    let make = |v: &wgpu::TextureView| batch_bind(dev, layout, [v, l2.unwrap_or(v), l3.unwrap_or(v), tmask.unwrap_or(v), l4.map_or(v, |l| l.0)], &ub);
     let frames = match mesh.anim.get(b.tex) {
         Some(Some(seq)) => seq.iter().filter_map(|&i| tex_views.get(i).and_then(|v| v.as_ref())).map(make).collect(),
         _ => Vec::new(),
@@ -609,7 +627,7 @@ fn make_batch(
     Some(GpuBatch { mode: b.mode, chunks, pbuf, abuf, ibuf, zr, bind: make(view), frames })
 }
 
-fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 4], ub: &wgpu::Buffer) -> wgpu::BindGroup {
+fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 5], ub: &wgpu::Buffer) -> wgpu::BindGroup {
     dev.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout,
@@ -619,6 +637,7 @@ fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::Tex
             wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(v[1]) },
             wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(v[2]) },
             wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(v[3]) },
+            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(v[4]) },
         ],
     })
 }
@@ -777,6 +796,7 @@ impl GpuScene {
                 tex_entry(3, wgpu::TextureViewDimension::D2),
                 tex_entry(4, wgpu::TextureViewDimension::D2),
                 tex_entry(5, wgpu::TextureViewDimension::D2),
+                tex_entry(6, wgpu::TextureViewDimension::D2),
             ],
         });
         let light_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -825,7 +845,7 @@ impl GpuScene {
             array_stride: std::mem::size_of::<Packed>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![
-                1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Unorm16x2, 6 => Unorm8x4, 7 => Uint32, 8 => Unorm8x4
+                1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Unorm16x4, 6 => Unorm8x4, 7 => Uint32, 8 => Unorm8x4
             ],
         };
 
@@ -1037,8 +1057,8 @@ impl GpuScene {
         let casters = (!mesh.caster_idx.is_empty()).then(|| {
             let vbuf = st.packed(wgpu::BufferUsages::VERTEX, &mesh.casters, |v| v.pos);
             let ibuf = st.buffer(wgpu::BufferUsages::INDEX, bytemuck::cast_slice(&mesh.caster_idx));
-            let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&[0.0f32; 28]));
-            (vbuf, ibuf, mesh.caster_idx.len() as u32, batch_bind(dev, &batch_layout, [&dummy_view; 4], &ub))
+            let ub = st.buffer(wgpu::BufferUsages::UNIFORM, bytemuck::cast_slice(&[0.0f32; 52]));
+            (vbuf, ibuf, mesh.caster_idx.len() as u32, batch_bind(dev, &batch_layout, [&dummy_view; 5], &ub))
         });
         st.flush();
         tm.lap("geometry");
@@ -1416,13 +1436,15 @@ impl Renderer {
             .create_view(&Default::default());
         let ub = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
-            contents: bytemuck::cast_slice(&[
-                0.0f32, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
-            ]),
+            contents: bytemuck::cast_slice(&{
+                let mut u = [0.0f32; 52];
+                u[..25].copy_from_slice(&[0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
+                u[28..30].copy_from_slice(&[1.0, 1.0]);
+                u
+            }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let bind = batch_bind(dev, &self.sc.batch_layout, [&tex; 4], &ub);
+        let bind = batch_bind(dev, &self.sc.batch_layout, [&tex; 5], &ub);
         Guides { vbuf, bind, feet: Mutex::new(None) }
     }
 

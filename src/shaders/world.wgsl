@@ -17,6 +17,12 @@ struct BatchU {
     uv2: vec4<f32>,
     uv3: vec4<f32>,
     f: vec4<f32>,
+    uv4: vec4<f32>,
+    fl12: vec4<f32>,
+    fl34: vec4<f32>,
+    fb23: vec4<f32>,
+    fb4: vec4<f32>,
+    fm: vec4<f32>,
 };
 
 struct Light {
@@ -56,6 +62,7 @@ const LAMP_REF: f32 = 32.0;
 @group(1) @binding(3) var tex2: texture_2d<f32>;
 @group(1) @binding(4) var tex3: texture_2d<f32>;
 @group(1) @binding(5) var tmask: texture_2d<f32>;
+@group(1) @binding(6) var tex4: texture_2d<f32>;
 @group(2) @binding(0) var<uniform> lu: Light;
 @group(2) @binding(1) var smap: texture_depth_2d;
 @group(2) @binding(2) var csamp: sampler_comparison;
@@ -68,7 +75,7 @@ struct VOut {
     @location(2) world: vec3<f32>,
     @location(3) normal: vec3<f32>,
     @location(4) lpos: vec3<f32>,
-    @location(5) blend: vec2<f32>,
+    @location(5) blend: vec4<f32>,
     @location(6) uv2: vec2<f32>,
     @location(7) paint: vec4<f32>,
     @location(8) vlight: vec4<f32>,
@@ -104,7 +111,7 @@ fn vs_pos(@location(0) pos: vec3<f32>) -> POut {
 
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) uv2: vec2<f32>, @location(3) lm: vec2<f32>, @location(4) nb: u32,
-      @location(5) blend: vec2<f32>, @location(6) paint: vec4<f32>, @location(7) vlight: u32, @location(8) mask: vec4<f32>) -> VOut {
+      @location(5) blend: vec4<f32>, @location(6) paint: vec4<f32>, @location(7) vlight: u32, @location(8) mask: vec4<f32>) -> VOut {
     var o: VOut;
     let nbv = unpack_nb(nb);
     let normal = nbv.xyz;
@@ -238,6 +245,41 @@ fn lamp_light(p: vec3<f32>, n: vec3<f32>, sm: vec4<f32>) -> vec3<f32> {
     return e;
 }
 
+fn lum4(c: vec3<f32>) -> f32 {
+    return dot(pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), vec3<f32>(0.2125, 0.7154, 0.0721));
+}
+
+fn ramp(a: f32, b: f32, x: f32) -> f32 {
+    return select(step(a, x), smoothstep(a, b, x), b > a);
+}
+
+fn four_way(t: vec4<f32>, t2: vec4<f32>, t3: vec4<f32>, t4: vec4<f32>, w: vec3<f32>) -> vec4<f32> {
+    let lum1 = ramp(bu.fl12.x, bu.fl12.y, lum4(t.rgb));
+    let lum2 = ramp(bu.fl12.z, bu.fl12.w, lum4(t2.rgb));
+    let lum3 = ramp(bu.fl34.x, bu.fl34.y, lum4(t3.rgb));
+    let lum4v = ramp(bu.fl34.z, bu.fl34.w, lum4(t4.rgb));
+    var lum = mix(1.0 - lum1, lum2, bu.fm.y);
+    let b1 = ramp(bu.fb23.x, bu.fb23.y, w.x * lum + w.x);
+    let lums1 = mix(lum1, lum2, b1);
+    lum = mix(1.0 - lums1, lum3, bu.fm.z);
+    let b2 = ramp(bu.fb23.z, bu.fb23.w, w.y * lum + w.y);
+    let lums2 = mix(lums1, lum3, b2);
+    lum = mix(1.0 - lums2, lum4v, bu.fm.w);
+    let b3 = ramp(bu.fb4.x, bu.fb4.y, w.z * lum + w.z);
+    var c = mix(t.rgb, t2.rgb, b1);
+    if (bu.fb4.z > 0.5) {
+        c = c * mix(vec3<f32>(1.0), t3.rgb + t3.rgb, b2);
+    } else {
+        c = mix(c, t3.rgb, b2);
+    }
+    if (bu.fb4.w > 0.5) {
+        c = c * mix(vec3<f32>(1.0), t4.rgb + t4.rgb, b3);
+    } else {
+        c = mix(c, t4.rgb, b3);
+    }
+    return vec4<f32>(c, t.a);
+}
+
 fn shade(i: VOut, front: bool) -> vec4<f32> {
     let uv1 = tex_uv(i.uv);
     var t = textureSample(tex, tsamp, uv1);
@@ -248,10 +290,13 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     }
     let t3 = textureSample(tex3, tsamp, q3 * bu.uv3.xy + bu.uv3.zw);
     let tm = textureSample(tmask, tsamp, uv1).r;
-    if (bu.e.z > 0.5) {
+    let t4 = textureSample(tex4, tsamp, i.uv * bu.uv4.xy + bu.uv4.zw);
+    if (bu.fm.x > 0.5) {
+        t = four_way(t, t2, t3, t4, i.blend.xyz);
+    } else if (bu.e.z > 0.5) {
         t = vec4<f32>(mix(t.rgb, t2.rgb, clamp(i.blend.x, 0.0, 1.0)), t.a);
     }
-    if (bu.f.x > 0.5) {
+    if (bu.fm.x < 0.5 && bu.f.x > 0.5) {
         t = vec4<f32>(mix(t.rgb, t3.rgb, clamp(i.blend.y, 0.0, 1.0)), t.a);
     }
     var tint = bu.tint.rgb;

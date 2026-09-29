@@ -500,7 +500,7 @@ fn free_camera(app: &mut App, ui: &mut egui::Ui) {
         ov_preset = ui.button("overview framing").clicked();
         if ui.button("Save camera...").clicked() {
             if let Some(f) = rfd::FileDialog::new().add_filter("camera", &["cam"]).set_file_name("view.cam").save_file() {
-                match app.cam.save(&f) {
+                match app.active_camera().save(&f) {
                     Ok(()) => app.log.push(format!("camera saved to {}", f.display())),
                     Err(e) => app.log.push(format!("error: {e:#}")),
                 }

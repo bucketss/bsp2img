@@ -131,6 +131,24 @@ impl Camera {
         }
     }
 
+    pub fn from_view(v: &View, depth: f64, fov: f64) -> Camera {
+        let b = v.basis;
+        let pitch = (-b.f.z).clamp(-1.0, 1.0).asin().to_degrees();
+        let yaw = if b.f.x.hypot(b.f.y) > 1e-9 { b.f.y.atan2(b.f.x) } else { b.r.x.atan2(-b.r.y) }.to_degrees().rem_euclid(360.0);
+        let b0 = camera_basis(yaw, pitch);
+        let roll = b.r.dot(b0.u).atan2(b.r.dot(b0.r)).to_degrees();
+        let aspect = (v.w / v.h.max(1e-9)).clamp(0.05, 20.0);
+        match v.persp {
+            Some(p) => Camera { target: p.eye + b.f * p.focus, yaw, pitch, roll, dist: p.focus, fov: p.fov_y, ortho: false, aspect },
+            None => {
+                let mut c = Camera { target: DVec3::ZERO, yaw, pitch, roll, dist: 1.0, fov, ortho: true, aspect };
+                c.set_height(v.h);
+                c.target = b.r * v.cx + b.u * v.cy + b.f * depth;
+                c
+            }
+        }
+    }
+
     pub fn size(&self, longest: u32) -> (u32, u32) {
         let a = self.aspect.clamp(0.05, 20.0);
         let (w, h) = if a >= 1.0 { (longest as f64, longest as f64 / a) } else { (longest as f64 * a, longest as f64) };

@@ -160,6 +160,16 @@ impl App {
         self.cam.frame_points(&r.points_in(&cuts), aspect, FRAME_FILL);
     }
 
+    pub(super) fn active_camera(&self) -> Camera {
+        let (Some(f), Some(r)) = (&self.frame, &self.renderer) else { return self.cam };
+        if self.mode == Mode::Free {
+            return self.cam;
+        }
+        let b = f.view.basis;
+        let e = extents(&r.points_in(&self.cuts()), &b);
+        Camera::from_view(&f.view, (e[2].0 + e[2].1) / 2.0, self.cam.fov)
+    }
+
     fn pick(&mut self, p: Pick, ppp: f32) {
         let (Some(r), Some(pv), Some(f)) = (&self.renderer, &self.preview, &self.frame) else { return };
         let x = ((p.pos.x - f.rect.min.x) * ppp).max(0.0) as u32;

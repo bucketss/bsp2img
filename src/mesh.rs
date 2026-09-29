@@ -38,7 +38,7 @@ pub struct Vertex {
     pub bias: f32,
     pub normal: [f32; 3],
     pub uv2: [f32; 2],
-    pub blend: [u16; 2],
+    pub blend: [u16; 4],
     pub paint: [u8; 4],
     pub light: u32,
     pub mask: [u8; 4],
@@ -52,7 +52,7 @@ impl Vertex {
         bias: 0.0,
         normal: [0.0; 3],
         uv2: [0.0; 2],
-        blend: [0; 2],
+        blend: [0; 4],
         paint: [255; 4],
         light: 0,
         mask: [0; 4],
@@ -109,6 +109,16 @@ pub fn unpack_rgb9e5(v: u32) -> [f32; 3] {
     [(v & 511) as f32 * d, ((v >> 9) & 511) as f32 * d, ((v >> 18) & 511) as f32 * d]
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct FourWay {
+    pub tex4: Option<(usize, [f32; 4])>,
+    pub lum: [f32; 8],
+    pub blend: [f32; 6],
+    pub lumblend: [f32; 3],
+    pub mul3: bool,
+    pub mul4: bool,
+}
+
 pub struct Batch {
     pub tex: usize,
     pub mode: Mode,
@@ -117,6 +127,7 @@ pub struct Batch {
     pub tint: [f32; 3],
     pub layer2: Option<(usize, [f32; 4])>,
     pub layer3: Option<(usize, [f32; 4], bool)>,
+    pub four: Option<FourWay>,
     pub tint_mask: Option<usize>,
     pub verts: Vec<Vertex>,
     pub idx: Vec<u32>,
@@ -529,6 +540,7 @@ pub fn build_mesh(
                 tint: [1.0; 3],
                 layer2: None,
                 layer3: None,
+                four: None,
                 tint_mask: None,
                 verts: Vec::new(),
                 idx: Vec::new(),

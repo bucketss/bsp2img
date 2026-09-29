@@ -439,6 +439,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 tint: tq.map(|v| v as f32 / TINT_LEVELS),
                 layer2: group_l2[gi],
                 layer3: group_l3[gi],
+                four: None,
                 tint_mask: group_tm[gi],
                 verts,
                 idx,
@@ -642,7 +643,7 @@ fn fill(m: &Model, dc: usize, it: &Inst, mat: &Material, ctx: &Ctx, out: &mut [V
                 let q = s.get(i);
                 [q[0], q[1]]
             }),
-            blend: [if blend.is_some() { weight(b[0]) } else { 0 }, if mat.layer3.is_some() { weight(b[1]) } else { 0 }],
+            blend: [if blend.is_some() { weight(b[0]) } else { 0 }, if mat.layer3.is_some() { weight(b[1]) } else { 0 }, 0, 0],
             ..Vertex::BLANK
         };
         if let Some(cv) = col {

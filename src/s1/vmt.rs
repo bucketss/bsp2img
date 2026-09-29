@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::mesh::Mode;
+use crate::mesh::{FourWay, Mode};
 use crate::s2::vpk::Fs;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -172,6 +172,12 @@ pub struct Material {
     pub water: bool,
 }
 
+pub struct FourWayParams {
+    pub tex: [Option<String>; 3],
+    pub uv: [[f32; 2]; 3],
+    pub four: FourWay,
+}
+
 pub fn truthy(v: &str) -> bool {
     let v = v.trim();
     v.eq_ignore_ascii_case("true") || v.parse::<f64>().is_ok_and(|x| x != 0.0)
@@ -199,6 +205,55 @@ impl Material {
 
     pub fn texture(&self, k: &str) -> Option<String> {
         self.get(k).filter(|v| !v.trim().is_empty()).map(super::vtf::path)
+    }
+
+    fn num(&self, k: &str, d: f32) -> f32 {
+        self.get(k).and_then(|v| v.trim().parse::<f32>().ok()).map_or(d, |v| v.clamp(0.0, 1.0))
+    }
+
+    fn scale(&self, k: &str) -> [f32; 2] {
+        let n: Vec<f32> = self.get(k).unwrap_or("").trim_matches(['[', ']', '{', '}', ' ']).split_whitespace().filter_map(|x| x.parse().ok()).collect();
+        match n[..] {
+            [a] => [a, a],
+            [a, b, ..] => [a, b],
+            _ => [1.0, 1.0],
+        }
+    }
+
+    pub fn four_way(&self) -> Option<FourWayParams> {
+        if self.shader != "lightmapped_4wayblend" {
+            return None;
+        }
+        let n = |k: &str, d: f32| self.num(k, d);
+        let four = FourWay {
+            tex4: None,
+            lum: [
+                n("$texture1_lumstart", 0.0),
+                n("$texture1_lumend", 1.0),
+                n("$texture2_lumstart", 0.0),
+                n("$texture2_lumend", 1.0),
+                n("$texture3_lumstart", 0.0),
+                n("$texture3_lumend", 1.0),
+                n("$texture4_lumstart", 0.0),
+                n("$texture4_lumend", 1.0),
+            ],
+            blend: [
+                n("$texture2_blendstart", 0.0),
+                n("$texture2_blendend", 1.0),
+                n("$texture3_blendstart", 0.0),
+                n("$texture3_blendend", 1.0),
+                n("$texture4_blendstart", 0.0),
+                n("$texture4_blendend", 1.0),
+            ],
+            lumblend: [n("$lumblendfactor2", 1.0), n("$lumblendfactor3", 1.0), n("$lumblendfactor4", 1.0)],
+            mul3: self.get("$texture3_blendmode").is_some_and(|v| v.trim() == "1"),
+            mul4: self.get("$texture4_blendmode").is_some_and(|v| v.trim() == "1"),
+        };
+        Some(FourWayParams {
+            tex: [self.texture("$basetexture2"), self.texture("$basetexture3"), self.texture("$basetexture4")],
+            uv: [self.scale("$texture2_uvscale"), self.scale("$texture3_uvscale"), self.scale("$texture4_uvscale")],
+            four,
+        })
     }
 
     pub fn fog(&self) -> Option<[f32; 3]> {
