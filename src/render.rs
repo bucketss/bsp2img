@@ -23,6 +23,8 @@ pub const ANIM_FPS: f64 = 10.0;
 const PERSP_NEAR: f64 = 4.0;
 const BACK_BIAS_CONST: i32 = -2;
 const BACK_BIAS_SLOPE: f32 = -1.0;
+const GLASS_BACK_BIAS_CONST: i32 = 4;
+const GLASS_BACK_BIAS_SLOPE: f32 = 2.0;
 const PERSP_MARGIN: f64 = 32.0;
 const GUIDE_PX: f64 = 1.5;
 const GUIDE_COLOR: [u8; 4] = [0xe8, 0xe8, 0xe8, 0xff];
@@ -957,6 +959,48 @@ impl GpuScene {
             }
         }
 
+        for normals in [false, true] {
+            for back in [false, true] {
+                let targets = color_targets(Some(wgpu::BlendState { color: premul, alpha: premul }), normals, false);
+                pipelines.push(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(pos_layout.clone()), Some(attr_layout.clone())],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: wgpu::PrimitiveTopology::TriangleList,
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: Some(if back { wgpu::Face::Front } else { wgpu::Face::Back }),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Less),
+                        stencil: Default::default(),
+                        bias: if back {
+                            wgpu::DepthBiasState { constant: GLASS_BACK_BIAS_CONST, slope_scale: GLASS_BACK_BIAS_SLOPE, clamp: 0.0 }
+                        } else {
+                            Default::default()
+                        },
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(if normals { "fs_n" } else { "fs" }),
+                        compilation_options: Default::default(),
+                        targets: &targets,
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                }));
+            }
+        }
+
         let shadow_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
@@ -1715,7 +1759,11 @@ impl Renderer {
         for (pi, modes) in
             [(0, &[Mode::Opaque, Mode::AlphaTest][..]), (3, &[Mode::Mod2x][..]), (1, &[Mode::Blend][..]), (2, &[Mode::Additive][..])]
         {
-            let sets: &[usize] = if pi == 0 && !cull { &[16 + ni * 2, 17 + ni * 2] } else { &[base + pi] };
+            let sets: &[usize] = match (pi, cull) {
+                (0, false) => &[16 + ni * 2, 17 + ni * 2],
+                (1, false) => &[20 + ni * 2, 21 + ni * 2],
+                _ => &[base + pi],
+            };
             for &pipe in sets {
                 pass.set_pipeline(&self.sc.pipelines[pipe]);
                 for b in self.sc.batches.iter().filter(|b| modes.contains(&b.mode)) {
