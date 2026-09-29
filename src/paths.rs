@@ -299,12 +299,45 @@ pub fn search_dirs(bsp_path: &Path, game: Option<&Path>, extra: &[PathBuf]) -> V
     dirs
 }
 
-pub fn run_dir(base: &Path, name: &str) -> Result<PathBuf> {
-    let mut i = 0;
-    while base.join(format!("{name}{i:02}")).exists() {
-        i += 1;
+pub fn mod_tag(engine: crate::bsp::Engine) -> &'static str {
+    match engine {
+        crate::bsp::Engine::GoldSrc => "cs",
+        crate::bsp::Engine::Source(v) if v >= 21 => "csgo",
+        crate::bsp::Engine::Source(_) => "css",
+        crate::bsp::Engine::Cs2 => "cs2",
     }
-    let p = base.join(format!("{name}{i:02}"));
+}
+
+pub fn path_mod_tag(path: &Path) -> &'static str {
+    use std::io::Read;
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vpk")) {
+        return "cs2";
+    }
+    let mut head = [0u8; 8];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
+    match read {
+        Ok(()) if &head[..4] == b"VBSP" => mod_tag(crate::bsp::Engine::Source(u32::from_le_bytes([head[4], head[5], head[6], head[7]]))),
+        _ => "cs",
+    }
+}
+
+pub fn run_name(path: &Path) -> String {
+    let map = path.file_stem().unwrap_or_default().to_string_lossy();
+    format!("{}-{map}", path_mod_tag(path))
+}
+
+pub fn run_dir(base: &Path, name: &str) -> Result<PathBuf> {
+    let [y, mo, d, h, mi, s] = crate::poster::now_parts();
+    let stem = format!("{name}-{y:04}-{mo:02}{d:02}-{h:02}{mi:02}");
+    let mut p = base.join(&stem);
+    if p.exists() {
+        p = base.join(format!("{stem}-{s:02}"));
+        let mut i = 2;
+        while p.exists() {
+            p = base.join(format!("{stem}-{s:02}-{i}"));
+            i += 1;
+        }
+    }
     std::fs::create_dir_all(&p)?;
     Ok(p)
 }

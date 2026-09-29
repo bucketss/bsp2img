@@ -554,7 +554,7 @@ fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&c.out, &name)?;
+        let out = run_dir(&c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -584,7 +584,7 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -607,7 +607,7 @@ fn kill_map(
     let lo = c.load_opts();
     let co = c.cut_opts();
     let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-    let out = run_dir(&c.out, &name)?;
+    let out = run_dir(&c.out, &crate::paths::run_name(path))?;
     let res = (|| {
         let scene = Scene::load(path, &lo, gpu.max_dim, rep.log)?;
         let cuts = scene.cuts(&co, rep.log);
@@ -774,7 +774,7 @@ pub fn run_iso(a: &IsoArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -813,7 +813,7 @@ pub fn run_overview(a: &OverviewArgs) -> Result<()> {
             crate::addon::Addon::find(crate::s2::vpk::game_root(&path, a.c.game.as_deref()).as_deref(), &o.addon)?;
         }
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let mut log = |s: String| println!("  {s}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut log)?;
@@ -842,7 +842,7 @@ pub fn run_svg(a: &SvgArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -870,7 +870,7 @@ pub fn run_stl(a: &StlArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -892,7 +892,7 @@ pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, 8192, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -935,7 +935,7 @@ pub fn run_poster(a: &PosterArgs) -> Result<()> {
         let t0 = Instant::now();
         let path = resolve_map(m, a.c.game.as_deref())?;
         let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-        let out = run_dir(&a.c.out, &name)?;
+        let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
         println!("== {name}");
         let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
         let cuts = scene.cuts(&co, &mut say);
@@ -974,7 +974,7 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
         let res = (|| -> Result<crate::health::Health> {
             let path = resolve_map(m, a.c.game.as_deref())?;
             let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            let out = run_dir(&a.c.out, &name)?;
+            let out = run_dir(&a.c.out, &crate::paths::run_name(&path))?;
             let scene = Scene::load(&path, &lo, gpu.max_dim, &mut say)?;
             let cuts = scene.cuts(&co, &mut say);
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;

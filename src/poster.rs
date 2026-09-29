@@ -326,7 +326,7 @@ fn fmt_len(m: f64) -> String {
 }
 
 #[cfg(windows)]
-fn local_ymd() -> Option<(i64, i64, i64)> {
+fn local_now() -> Option<[i64; 6]> {
     #[repr(C)]
     struct SystemTime {
         year: u16,
@@ -340,11 +340,11 @@ fn local_ymd() -> Option<(i64, i64, i64)> {
     }
     let mut t = SystemTime { year: 0, month: 0, dow: 0, day: 0, rest: [0; 4] };
     unsafe { GetLocalTime(&mut t) };
-    (t.year > 0).then_some((t.year as i64, t.month as i64, t.day as i64))
+    (t.year > 0).then_some([t.year as i64, t.month as i64, t.day as i64, t.rest[0] as i64, t.rest[1] as i64, t.rest[2] as i64])
 }
 
 #[cfg(unix)]
-fn local_ymd() -> Option<(i64, i64, i64)> {
+fn local_now() -> Option<[i64; 6]> {
     unsafe extern "C" {
         fn time(t: *mut i64) -> i64;
         fn localtime_r(t: *const i64, tm: *mut i32) -> *mut i32;
@@ -352,11 +352,11 @@ fn local_ymd() -> Option<(i64, i64, i64)> {
     let mut tm = [0i32; 32];
     let now = unsafe { time(std::ptr::null_mut()) };
     let r = unsafe { localtime_r(&now, tm.as_mut_ptr()) };
-    (!r.is_null()).then_some((tm[5] as i64 + 1900, tm[4] as i64 + 1, tm[3] as i64))
+    (!r.is_null()).then_some([tm[5] as i64 + 1900, tm[4] as i64 + 1, tm[3] as i64, tm[2] as i64, tm[1] as i64, tm[0] as i64])
 }
 
 #[cfg(not(any(windows, unix)))]
-fn local_ymd() -> Option<(i64, i64, i64)> {
+fn local_now() -> Option<[i64; 6]> {
     None
 }
 
@@ -373,8 +373,16 @@ fn utc_ymd() -> (i64, i64, i64) {
     (yoe + era * 400 + (m <= 2) as i64, m, d)
 }
 
+pub fn now_parts() -> [i64; 6] {
+    local_now().unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+        let (y, m, d) = utc_ymd();
+        [y, m, d, secs / 3600 % 24, secs / 60 % 60, secs % 60]
+    })
+}
+
 pub fn today() -> String {
-    let (y, m, d) = local_ymd().unwrap_or_else(utc_ymd);
+    let [y, m, d, ..] = now_parts();
     format!("{y:04}-{m:02}-{d:02}")
 }
 
