@@ -9,13 +9,14 @@ use crate::bsp::{Rd, cstr, read_miptex};
 pub struct Wad {
     pub path: PathBuf,
     entries: HashMap<String, usize>,
-    data: OnceCell<Vec<u8>>,
+    data: OnceCell<Result<Vec<u8>, String>>,
 }
 
 impl Wad {
     pub fn open(path: &Path) -> Result<Wad> {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = std::fs::File::open(path)?;
+        let len = f.metadata()?.len();
         let mut head = [0u8; 12];
         f.read_exact(&mut head)?;
         if &head[..4] != b"WAD3" && &head[..4] != b"WAD2" {
@@ -24,6 +25,9 @@ impl Wad {
         let r = Rd { data: &head };
         let n = r.i32(4).max(0) as usize;
         let dirofs = r.i32(8).max(0) as u64;
+        if dirofs + n as u64 * 32 > len {
+            bail!("wad directory of {n} entries runs past the end of {}", path.display());
+        }
         f.seek(SeekFrom::Start(dirofs))?;
         let mut d = vec![0u8; n * 32];
         f.read_exact(&mut d)?;
@@ -43,9 +47,13 @@ impl Wad {
 
     pub fn get(&self, name: &str) -> Option<(u32, u32, Vec<u8>)> {
         let ofs = *self.entries.get(&name.to_lowercase())?;
-        let data = self.data.get_or_init(|| std::fs::read(&self.path).unwrap_or_default());
-        let mt = read_miptex(data, ofs)?;
+        let data = self.data.get_or_init(|| std::fs::read(&self.path).map_err(|e| format!("{}: {e}", self.path.display())));
+        let mt = read_miptex(data.as_ref().ok()?, ofs)?;
         Some((mt.width, mt.height, mt.rgba?))
+    }
+
+    pub fn read_error(&self) -> Option<&str> {
+        self.data.get()?.as_ref().err().map(String::as_str)
     }
 }
 
@@ -55,6 +63,7 @@ pub struct TextureSource {
     wads: Vec<Wad>,
     primary: Vec<usize>,
     fallback: Option<Vec<usize>>,
+    open_errors: Vec<String>,
 }
 
 impl TextureSource {
@@ -76,7 +85,7 @@ impl TextureSource {
                 }
             }
         }
-        TextureSource { listing, cache: HashMap::new(), wads: Vec::new(), primary: Vec::new(), fallback: None }
+        TextureSource { listing, cache: HashMap::new(), wads: Vec::new(), primary: Vec::new(), fallback: None, open_errors: Vec::new() }
     }
 
     fn open(&mut self, fname: &str) -> Option<usize> {
@@ -85,12 +94,22 @@ impl TextureSource {
         if let Some(&i) = self.cache.get(&path) {
             return i;
         }
-        let i = Wad::open(&path).ok().map(|w| {
-            self.wads.push(w);
-            self.wads.len() - 1
-        });
+        let i = match Wad::open(&path) {
+            Ok(w) => {
+                self.wads.push(w);
+                Some(self.wads.len() - 1)
+            }
+            Err(e) => {
+                self.open_errors.push(format!("{}: {e:#}", path.display()));
+                None
+            }
+        };
         self.cache.insert(path, i);
         i
+    }
+
+    pub fn errors(&self) -> Vec<String> {
+        self.open_errors.iter().cloned().chain(self.wads.iter().filter_map(|w| w.read_error().map(str::to_string))).collect()
     }
 
     pub fn use_worldspawn(&mut self, wadkey: &str) -> Vec<String> {

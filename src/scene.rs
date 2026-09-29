@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::bsp::Bsp;
 use crate::light::LightParams;
@@ -192,6 +192,9 @@ impl Scene {
         let mut tm = crate::prof::Timer::new("goldsrc");
         let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim);
         tm.lap("mesh");
+        for e in tex.errors() {
+            log(format!("wad unreadable: {e}"));
+        }
         if !mesh.missing.is_empty() {
             log(format!("missing textures ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }
@@ -299,14 +302,14 @@ impl Scene {
         let Some((name, fov, pitch)) = sky else { return Ok((r, String::new())) };
         let sname = self.sky_name(Some(&name));
         match self.load_sky(&sname) {
-            Some(f) => {
+            Ok(f) => {
                 r.set_sky(Some(f), fov, pitch);
                 log(format!("sky: {sname}"));
                 let tag = if name.is_empty() { String::new() } else { format!("_{name}") };
                 Ok((r, tag))
             }
-            None => {
-                log(format!("sky: {sname} not found in gfx/env, using background"));
+            Err(e) => {
+                log(format!("sky: {sname}: {e:#}; using background"));
                 Ok((r, String::new()))
             }
         }
@@ -340,14 +343,14 @@ impl Scene {
         }
     }
 
-    pub fn load_sky(&self, name: &str) -> Option<(u32, Vec<u8>)> {
+    pub fn load_sky(&self, name: &str) -> Result<(u32, Vec<u8>)> {
         if let Some(x) = &self.bsp.extra {
             if let crate::bsp::Engine::Source(_) = self.bsp.engine() {
-                return crate::s1::sky::load(&x.fs, name).ok();
+                return crate::s1::sky::load(&x.fs, name);
             }
-            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE).ok();
+            return crate::s2::sky::load(&x.fs, name, &self.opts.light, crate::s2::light::EXPOSURE);
         }
-        let faces = find_sky(name, &self.dirs)?;
-        load_sky(&faces, &self.opts.light.tex_lut()).ok()
+        let faces = find_sky(name, &self.dirs).context("not found in gfx/env")?;
+        load_sky(&faces, &self.opts.light.tex_lut())
     }
 }

@@ -254,13 +254,13 @@ view_pan={} {} {}
         let (Some(scene), Some(r)) = (&self.scene, &mut self.renderer) else { return };
         match &want {
             Some(n) => match scene.load_sky(n) {
-                Some(f) => {
+                Ok(f) => {
                     r.set_sky(Some(f), self.look.sky_fov, self.look.sky_pitch);
                     self.log.push(format!("sky: {n}"));
                 }
-                None => {
+                Err(e) => {
                     r.set_sky(None, 0.0, 0.0);
-                    self.log.push(format!("sky: {n} not found in gfx/env"));
+                    self.log.push(format!("sky: {n}: {e:#}"));
                 }
             },
             None => r.set_sky(None, 0.0, 0.0),
