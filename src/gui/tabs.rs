@@ -2,7 +2,7 @@ use eframe::egui;
 
 use super::preview::Mode;
 use super::{App, Tab};
-use crate::camera::{Camera, ISO_PITCH};
+use crate::camera::ISO_PITCH;
 use crate::export::overview_params;
 use crate::look::{BLUEPRINT_BG, Look, Style, Tilt};
 use crate::overview;

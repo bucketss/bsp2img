@@ -299,10 +299,6 @@ impl Camera {
         let t = std::fs::read_to_string(path).with_context(|| format!("reading camera {}", path.display()))?;
         Ok(Camera::parse(&t))
     }
-
-    pub fn save(&self, path: &Path) -> Result<()> {
-        std::fs::write(path, self.text()).with_context(|| format!("writing camera {}", path.display()))
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
