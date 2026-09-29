@@ -290,6 +290,15 @@ fn checker(w: u32, h: u32) -> Image {
     Image { w, h, rgba }
 }
 
+#[derive(Clone, Copy)]
+struct LmMap {
+    ax: DVec3,
+    ay: DVec3,
+    c: [f64; 2],
+    sv: DVec3,
+    tv: DVec3,
+}
+
 struct Record {
     tex: usize,
     mode: Mode,
@@ -299,6 +308,7 @@ struct Record {
     v: Vec<f64>,
     block: usize,
     lm: Option<(Vec<f64>, Vec<f64>)>,
+    lmap: Option<LmMap>,
     normal: DVec3,
     model: usize,
     warp: Option<[f32; 4]>,
@@ -444,6 +454,7 @@ pub fn build_mesh(
             let special = ti.flags & TEX_SPECIAL != 0 || mt.name.starts_with('!');
             let mut block = white;
             let mut lm = None;
+            let mut lmap = None;
             if !special && f.lightofs >= 0 && mode != Mode::Additive && !lighting.is_empty() {
                 let smin = s.iter().cloned().fold(f64::INFINITY, f64::min);
                 let smax = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -469,6 +480,13 @@ pub fn build_mesh(
                     }
                     let rgb: Vec<u8> = acc.iter().map(|&v| light.light_to_screen(v)).collect();
                     block = atlas.add(lw as u32, lh as u32, rgb);
+                    lmap = Some(LmMap {
+                        ax: sv / 16.0,
+                        ay: tv / 16.0,
+                        c: [ti.s[3] as f64 / 16.0 - bmin[0] + 0.5, ti.t[3] as f64 / 16.0 - bmin[1] + 0.5],
+                        sv,
+                        tv,
+                    });
                     lm = Some((
                         s.iter().map(|v| v / 16.0 - bmin[0] + 0.5).collect::<Vec<_>>(),
                         t.iter().map(|v| v / 16.0 - bmin[1] + 0.5).collect::<Vec<_>>(),
@@ -499,6 +517,7 @@ pub fn build_mesh(
                 v: t.iter().map(|v| v / th).collect(),
                 block,
                 lm,
+                lmap,
                 normal,
                 model: mi,
                 warp: mt.name.starts_with('!').then(|| [ti.s[3], ti.t[3], tw as f32, th as f32]),
@@ -506,6 +525,7 @@ pub fn build_mesh(
         }
     }
 
+    merge_lightmaps(&mut records, &mut atlas);
     let levels = overlap_levels(&records);
     let atlas_img = atlas.pack(max_dim);
     let (aw, ah) = (atlas_img.w as f64, atlas_img.h as f64);
@@ -652,6 +672,183 @@ fn bucket_levels(faces: &[Flat]) -> Vec<(usize, u8)> {
         }
     }
     faces.iter().zip(lv).map(|(f, l)| (f.idx, l)).collect()
+}
+
+fn sample_block(b: &(u32, u32, Vec<u8>), x: f64, y: f64) -> [f64; 3] {
+    let (w, h) = (b.0 as usize, b.1 as usize);
+    let x = (x - 0.5).clamp(0.0, (w - 1) as f64);
+    let y = (y - 0.5).clamp(0.0, (h - 1) as f64);
+    let (x0, y0) = (x.floor() as usize, y.floor() as usize);
+    let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+    let (fx, fy) = (x - x0 as f64, y - y0 as f64);
+    let mut out = [0.0; 3];
+    for (c, o) in out.iter_mut().enumerate() {
+        let g = |xx: usize, yy: usize| b.2[(yy * w + xx) * 3 + c] as f64;
+        *o = (g(x0, y0) * (1.0 - fx) + g(x1, y0) * fx) * (1.0 - fy) + (g(x0, y1) * (1.0 - fx) + g(x1, y1) * fx) * fy;
+    }
+    out
+}
+
+const TOUCH: f64 = 0.5;
+
+fn seg_dist(p: DVec2, a: DVec2, b: DVec2) -> f64 {
+    let d = b - a;
+    let l2 = d.length_squared();
+    let t = if l2 < 1e-12 { 0.0 } else { ((p - a).dot(d) / l2).clamp(0.0, 1.0) };
+    (p - (a + d * t)).length()
+}
+
+fn polys_touch(a: &[DVec2], b: &[DVec2]) -> bool {
+    let near = |p: &[DVec2], q: &[DVec2]| {
+        p.iter().any(|&v| (0..q.len()).any(|e| seg_dist(v, q[e], q[(e + 1) % q.len()]) <= TOUCH))
+    };
+    near(a, b) || near(b, a)
+}
+
+fn uf_find(p: &mut [usize], mut i: usize) -> usize {
+    while p[i] != i {
+        p[i] = p[p[i]];
+        i = p[i];
+    }
+    i
+}
+
+fn merge_lightmaps(records: &mut [Record], atlas: &mut Atlas) {
+    let mut planes: HashMap<[i64; 4], Vec<usize>> = HashMap::new();
+    for (i, r) in records.iter().enumerate() {
+        if r.model != 0 || r.lmap.is_none() || r.mode != Mode::Opaque {
+            continue;
+        }
+        let n = r.normal;
+        let q = |v: f64, s: f64| (v * s).round() as i64;
+        planes.entry([q(n.x, 1e3), q(n.y, 1e3), q(n.z, 1e3), 0]).or_default().push(i);
+    }
+    let mut jobs: Vec<Vec<usize>> = Vec::new();
+    for (_, ids) in planes {
+        if ids.len() < 2 {
+            continue;
+        }
+        let mut parent: Vec<usize> = (0..ids.len()).collect();
+        let n0 = records[ids[0]].normal;
+        let u0 = n0.any_orthonormal_vector();
+        let w0 = n0.cross(u0);
+        let shapes: Vec<(Vec<DVec2>, DVec2, DVec2)> = ids
+            .iter()
+            .map(|&ri| {
+                let poly: Vec<DVec2> = records[ri].p.iter().map(|q| DVec2::new(q.dot(u0), q.dot(w0))).collect();
+                let lo = poly.iter().fold(DVec2::INFINITY, |m, p| m.min(*p));
+                let hi = poly.iter().fold(DVec2::NEG_INFINITY, |m, p| m.max(*p));
+                (poly, lo, hi)
+            })
+            .collect();
+        let ds: Vec<f64> = ids.iter().map(|&ri| n0.dot(records[ri].p[0])).collect();
+        for x in 0..ids.len() {
+            for y in x + 1..ids.len() {
+                let (a, b) = (&shapes[x], &shapes[y]);
+                if a.1.x > b.2.x + TOUCH || b.1.x > a.2.x + TOUCH || a.1.y > b.2.y + TOUCH || b.1.y > a.2.y + TOUCH {
+                    continue;
+                }
+                if (ds[x] - ds[y]).abs() < 0.2 && polys_touch(&a.0, &b.0) {
+                    let (p, q) = (uf_find(&mut parent, x), uf_find(&mut parent, y));
+                    parent[p] = q;
+                }
+            }
+        }
+        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (k, &ri) in ids.iter().enumerate() {
+            let root = uf_find(&mut parent, k);
+            groups.entry(root).or_default().push(ri);
+        }
+        jobs.extend(groups.into_values().filter(|g| g.len() > 1));
+    }
+    for g in jobs {
+        let r0 = &records[g[0]];
+        let n = r0.normal;
+        let m0 = r0.lmap.unwrap();
+        let mut u = m0.sv - n * m0.sv.dot(n);
+        if u.length() < 1e-9 {
+            u = n.any_orthonormal_vector();
+        }
+        let u = u.normalize();
+        let w = n.cross(u);
+        let texel = g
+            .iter()
+            .flat_map(|&i| {
+                let m = records[i].lmap.unwrap();
+                [16.0 / m.sv.length().max(1e-9), 16.0 / m.tv.length().max(1e-9)]
+            })
+            .fold(16.0f64, f64::min)
+            .max(1.0);
+        let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
+        for &i in &g {
+            for p in &records[i].p {
+                let q = DVec2::new(p.dot(u), p.dot(w));
+                lo = lo.min(q);
+                hi = hi.max(q);
+            }
+        }
+        let gw = ((hi.x - lo.x) / texel).ceil() as usize + 1;
+        let gh = ((hi.y - lo.y) / texel).ceil() as usize + 1;
+        if gw * gh > 1 << 18 {
+            continue;
+        }
+        let polys: Vec<(Vec<DVec2>, f64)> = g
+            .iter()
+            .map(|&i| {
+                let poly: Vec<DVec2> = records[i].p.iter().map(|p| DVec2::new(p.dot(u), p.dot(w))).collect();
+                let a = signed_area(&poly);
+                (poly, if a < 0.0 { -1.0 } else { 1.0 })
+            })
+            .collect();
+        let origin = n * n.dot(r0.p[0]);
+        let mut rgb = vec![0u8; gw * gh * 3];
+        for gy in 0..gh {
+            for gx in 0..gw {
+                let q2 = DVec2::new(lo.x + gx as f64 * texel, lo.y + gy as f64 * texel);
+                let q = origin + u * q2.x + w * q2.y;
+                let (mut acc, mut wsum) = ([0.0f64; 3], 0.0);
+                let mut best = (f64::NEG_INFINITY, [0.0f64; 3]);
+                for (k, &i) in g.iter().enumerate() {
+                    let (poly, sgn) = &polys[k];
+                    let mut sd = f64::INFINITY;
+                    for e in 0..poly.len() {
+                        let (a, b) = (poly[e], poly[(e + 1) % poly.len()]);
+                        let d = b - a;
+                        let l = d.length().max(1e-9);
+                        let dist = sgn * (d.x * (q2.y - a.y) - d.y * (q2.x - a.x)) / l;
+                        sd = sd.min(dist);
+                    }
+                    let m = records[i].lmap.unwrap();
+                    let c = sample_block(&atlas.blocks[records[i].block], q.dot(m.ax) + m.c[0], q.dot(m.ay) + m.c[1]);
+                    if sd > best.0 {
+                        best = (sd, c);
+                    }
+                    let wt = ((sd + texel) / (2.0 * texel)).clamp(0.0, 1.0);
+                    if wt > 0.0 {
+                        for (a, v) in acc.iter_mut().zip(c) {
+                            *a += v * wt;
+                        }
+                        wsum += wt;
+                    }
+                }
+                let c = if wsum > 0.0 { acc.map(|v| v / wsum) } else { best.1 };
+                let d = (gy * gw + gx) * 3;
+                for k in 0..3 {
+                    rgb[d + k] = c[k].round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        let block = atlas.add(gw as u32, gh as u32, rgb);
+        for &i in &g {
+            atlas.blocks[records[i].block] = (1, 1, vec![0, 0, 0]);
+            let r = &mut records[i];
+            r.block = block;
+            let (a, b): (Vec<f64>, Vec<f64>) =
+                r.p.iter().map(|p| ((p.dot(u) - lo.x) / texel + 0.5, (p.dot(w) - lo.y) / texel + 0.5)).unzip();
+            r.lm = Some((a, b));
+            r.lmap = None;
+        }
+    }
 }
 
 fn overlap_levels(records: &[Record]) -> Vec<u8> {
