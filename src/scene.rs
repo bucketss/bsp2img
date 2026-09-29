@@ -27,6 +27,29 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl PartialEq for Cancel {
+    fn eq(&self, _: &Cancel) -> bool {
+        true
+    }
+}
+
+impl Cancel {
+    pub fn set(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        if self.is_set() { Err(Cancelled.into()) } else { Ok(()) }
+    }
+}
+
 pub struct Report<'a> {
     pub log: &'a mut dyn FnMut(String),
     pub progress: &'a mut dyn FnMut(f32) -> bool,
@@ -51,6 +74,7 @@ pub struct LoadOpts {
     pub hull: Option<usize>,
     pub hull_pad: f64,
     pub tex_max: usize,
+    pub cancel: Cancel,
 }
 
 impl Default for LoadOpts {
@@ -63,6 +87,7 @@ impl Default for LoadOpts {
             hull: None,
             hull_pad: 64.0,
             tex_max: 512,
+            cancel: Cancel::default(),
         }
     }
 }
@@ -189,8 +214,10 @@ impl Scene {
         } else {
             None
         };
+        opts.cancel.check()?;
         let mut tm = crate::prof::Timer::new("goldsrc");
         let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim)?;
+        opts.cancel.check()?;
         tm.lap("mesh");
         for e in tex.errors() {
             log(format!("wad unreadable: {e}"));
@@ -233,6 +260,7 @@ impl Scene {
     }
 
     fn load_extra(bsp: Bsp, mesh: Mesh, opts: &LoadOpts, log: Log) -> Result<Scene> {
+        opts.cancel.check()?;
         if !mesh.missing.is_empty() {
             log(format!("missing ({}): {}", mesh.missing.len(), mesh.missing.join(", ")));
         }

@@ -305,11 +305,11 @@ pub struct Health {
 
 pub enum Engine {
     Gold(Box<GoldHealth>),
-    Cs2(Box<Cs2Health>),
+    Cs2(Box<ModernHealth>),
     Source(Box<SrcHealth>),
 }
 
-pub struct Cs2Health {
+pub struct ModernHealth {
     pub paks: Vec<PathBuf>,
     pub legacy: usize,
     pub bad_models: Vec<String>,
@@ -410,7 +410,7 @@ pub enum NavFile {
 }
 
 pub struct SrcHealth {
-    pub base: Cs2Health,
+    pub base: ModernHealth,
     pub version: u32,
     pub revision: i32,
     pub game: &'static str,
@@ -878,7 +878,7 @@ fn gather_cs2(scene: &Scene, x: &Extra, name: &str, o: &HealthOpts) -> Health {
                 .collect()
         })
         .unwrap_or_default();
-    let cs2 = Cs2Health {
+    let cs2 = ModernHealth {
         paks: x.fs.srcs.iter().map(|p| p.path().to_path_buf()).collect(),
         legacy: st.legacy_ents,
         bad_models: st.bad_models.clone(),
@@ -930,7 +930,7 @@ fn opt(v: Option<usize>) -> String {
 }
 
 impl Health {
-    fn modern(&self) -> Option<&Cs2Health> {
+    fn modern(&self) -> Option<&ModernHealth> {
         match &self.engine {
             Engine::Gold(_) => None,
             Engine::Cs2(c) => Some(c),
@@ -938,7 +938,7 @@ impl Health {
         }
     }
 
-    fn modern_mut(&mut self) -> Option<&mut Cs2Health> {
+    fn modern_mut(&mut self) -> Option<&mut ModernHealth> {
         match &mut self.engine {
             Engine::Gold(_) => None,
             Engine::Cs2(c) => Some(c),
@@ -1114,7 +1114,7 @@ impl Health {
         Ok(())
     }
 
-    fn cs2_warnings(&self, c: &Cs2Health) -> Vec<String> {
+    fn cs2_warnings(&self, c: &ModernHealth) -> Vec<String> {
         let mut w = Vec::new();
         if !c.bad_models.is_empty() {
             w.push(format!("{} models failed to load", c.bad_models.len()));
@@ -1185,7 +1185,7 @@ impl Health {
         Ok(())
     }
 
-    fn write_cs2(&self, c: &Cs2Health, s: &mut String) -> std::fmt::Result {
+    fn write_cs2(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "{} health", self.name)?;
         writeln!(s)?;
         writeln!(s, "Load")?;
@@ -1224,7 +1224,7 @@ impl Health {
         Ok(())
     }
 
-    fn write_spawns(&self, c: &Cs2Health, s: &mut String) -> std::fmt::Result {
+    fn write_spawns(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "Spawns")?;
         writeln!(
             s,
@@ -1266,7 +1266,7 @@ impl Health {
         Ok(())
     }
 
-    fn write_graph(&self, c: &Cs2Health, s: &mut String) -> std::fmt::Result {
+    fn write_graph(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         match &c.graph {
             Some(g) => {
                 let pct = g.reach as f64 * 100.0 / g.cells.max(1) as f64;
@@ -1279,7 +1279,7 @@ impl Health {
         Ok(())
     }
 
-    fn write_collision(&self, c: &Cs2Health, s: &mut String) -> std::fmt::Result {
+    fn write_collision(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "Collision")?;
         match &c.collision {
             Ok(k) => {
@@ -1306,7 +1306,7 @@ impl Health {
         Ok(())
     }
 
-    fn write_overview(&self, c: &Cs2Health, s: &mut String) -> std::fmt::Result {
+    fn write_overview(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "Overview")?;
         let r = &c.radar;
         let txt = s2radar::txt_name(&self.name.to_lowercase());
@@ -1372,19 +1372,23 @@ impl Health {
         }
     }
 
-    fn cs2_row(&self, c: &Cs2Health) -> String {
-        let b = |v: bool| if v { "1" } else { "0" }.to_string();
-        let (off, m2, rad) = match &self.nav {
+    fn nav_cols(&self) -> (String, String, String) {
+        match &self.nav {
             Ok(n) => (
                 n.off_ground.len().to_string(),
                 format!("{:.0}", n.walkable_m2),
                 n.spots.first().map_or(String::new(), |s| format!("{:.0}", s.radius)),
             ),
             Err(_) => (String::new(), String::new(), String::new()),
-        };
+        }
+    }
+
+    fn cs2_row(&self, c: &ModernHealth) -> String {
+        let b = |v: bool| if v { "1" } else { "0" }.to_string();
+        let (off, m2, rad) = self.nav_cols();
         let e = String::new;
         let mut cols = vec![
-            self.name.clone(),
+            csv_quote(&self.name),
             "cs2".to_string(),
             match &self.nav {
                 Err(e) => csv_quote(&format!("nav: {e}")),
@@ -1423,16 +1427,9 @@ impl Health {
 
     fn gold_row(&self, g: &GoldHealth) -> String {
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
-        let (off, m2, rad) = match &self.nav {
-            Ok(n) => (
-                n.off_ground.len().to_string(),
-                format!("{:.0}", n.walkable_m2),
-                n.spots.first().map_or(String::new(), |s| format!("{:.0}", s.radius)),
-            ),
-            Err(_) => (String::new(), String::new(), String::new()),
-        };
+        let (off, m2, rad) = self.nav_cols();
         let mut cols = vec![
-            self.name.clone(),
+            csv_quote(&self.name),
             "goldsrc".to_string(),
             match &self.nav {
                 Err(e) => csv_quote(&format!("walk grid: {e}")),
@@ -1625,19 +1622,12 @@ impl Health {
     fn src_row(&self, h: &SrcHealth) -> String {
         let c = &h.base;
         let b = |v: bool| if v { "1" } else { "0" }.to_string();
-        let (off, m2, rad) = match &self.nav {
-            Ok(n) => (
-                n.off_ground.len().to_string(),
-                format!("{:.0}", n.walkable_m2),
-                n.spots.first().map_or(String::new(), |s| format!("{:.0}", s.radius)),
-            ),
-            Err(_) => (String::new(), String::new(), String::new()),
-        };
+        let (off, m2, rad) = self.nav_cols();
         let e = String::new;
         let lit = h.hdr.as_ref().or(h.ldr.as_ref());
         let light = h.ldr.as_ref().map_or(0, |l| l.bytes) + h.hdr.as_ref().map_or(0, |l| l.bytes);
         let mut cols = vec![
-            self.name.clone(),
+            csv_quote(&self.name),
             format!("source{}", h.version),
             match &self.nav {
                 Err(e) => csv_quote(&format!("walk: {e}")),
@@ -1865,7 +1855,7 @@ fn card_facts(h: &Health) -> Vec<(String, [u8; 3])> {
     }
 }
 
-fn cs2_facts(h: &Health, c: &Cs2Health) -> Vec<(String, [u8; 3])> {
+fn cs2_facts(h: &Health, c: &ModernHealth) -> Vec<(String, [u8; 3])> {
     let white = [220, 220, 220];
     let ok = |b: bool| if b { GREEN } else { RED };
     let mut v = Vec::new();

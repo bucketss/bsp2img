@@ -417,6 +417,7 @@ pub struct Renderer {
 
 fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
     let mut out: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+    let masked = rgba.chunks_exact(4).all(|p| p[3] == 0 || p[3] == 255) && rgba.chunks_exact(4).any(|p| p[3] == 0);
     loop {
         let (pw, ph, prev) = out.last().map_or((w, h, rgba), |(a, b, c)| (*a, *b, &c[..]));
         if pw == 1 && ph == 1 {
@@ -427,6 +428,7 @@ fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
         for y in 0..nh {
             for x in 0..nw {
                 let mut acc = [0u32; 4];
+                let mut wacc = [0u32; 3];
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let sx = (x * 2 + dx).min(pw - 1);
                     let sy = (y * 2 + dy).min(ph - 1);
@@ -434,10 +436,13 @@ fn mip_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<(u32, u32, Vec<u8>)> {
                     for c in 0..4 {
                         acc[c] += prev[i + c] as u32;
                     }
+                    for c in 0..3 {
+                        wacc[c] += prev[i + c] as u32 * prev[i + 3] as u32;
+                    }
                 }
                 let o = ((y * nw + x) * 4) as usize;
                 for c in 0..4 {
-                    next[o + c] = ((acc[c] + 2) / 4) as u8;
+                    next[o + c] = if masked && c < 3 && acc[3] > 0 { ((wacc[c] + acc[3] / 2) / acc[3]) as u8 } else { ((acc[c] + 2) / 4) as u8 };
                 }
             }
         }

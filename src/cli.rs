@@ -443,6 +443,7 @@ impl Common {
             hull: self.hull.as_ref().and_then(|h| h.parse().ok()),
             hull_pad: self.hull_pad,
             tex_max: self.tex_max.max(16),
+            cancel: Default::default(),
         }
     }
 

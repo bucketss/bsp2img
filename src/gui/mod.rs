@@ -95,7 +95,7 @@ const RECENT_MAX: usize = 10;
 
 enum Msg {
     Log(String),
-    Loaded(Box<Result<Scene, String>>),
+    Loaded(Box<Result<(Scene, Result<Renderer, String>), String>>),
     Progress(f32, String),
     JobDone(Result<PathBuf, String>),
 }
@@ -128,6 +128,8 @@ struct App {
     game: String,
     recent: Vec<String>,
     maps: Vec<(String, PathBuf)>,
+    maps_rx: Option<(String, Receiver<Vec<(String, PathBuf)>>)>,
+    ctx: egui::Context,
     filter: String,
     current: Option<PathBuf>,
     load: LoadOpts,
@@ -142,6 +144,7 @@ struct App {
     scene: Option<Arc<Scene>>,
     renderer: Option<Renderer>,
     load_rx: Option<Receiver<Msg>>,
+    load_cancel: crate::scene::Cancel,
     log: Vec<String>,
     log_open: bool,
     tab: Tab,
@@ -212,6 +215,8 @@ impl App {
             game: String::new(),
             recent: Vec::new(),
             maps: Vec::new(),
+            maps_rx: None,
+            ctx: cc.egui_ctx.clone(),
             filter: String::new(),
             current: None,
             load: LoadOpts::default(),
@@ -226,6 +231,7 @@ impl App {
             scene: None,
             renderer: None,
             load_rx: None,
+            load_cancel: crate::scene::Cancel::default(),
             log: Vec::new(),
             log_open: true,
             tab: Tab::Map,
@@ -291,9 +297,31 @@ impl App {
     }
 
     fn refresh_maps(&mut self) {
-        self.maps = if self.game.is_empty() { Vec::new() } else { list_maps(Path::new(&self.game)) };
+        self.maps.clear();
+        self.maps_rx = None;
+        if self.game.is_empty() {
+            return;
+        }
+        let (tx, rx) = channel();
+        let game = self.game.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(list_maps(Path::new(&game)));
+            ctx.request_repaint();
+        });
+        self.maps_rx = Some((self.game.clone(), rx));
+    }
+
+    fn poll_maps(&mut self) {
+        let Some((g, rx)) = &self.maps_rx else { return };
+        let Ok(maps) = rx.try_recv() else { return };
+        let g = g.clone();
+        self.maps_rx = None;
+        if g != self.game {
+            return;
+        }
+        self.maps = maps;
         if !self.maps.is_empty() {
-            let g = self.game.clone();
             self.recent.retain(|r| Path::new(r) != Path::new(&g));
             self.recent.insert(0, g);
             self.recent.truncate(RECENT_MAX);
@@ -311,7 +339,12 @@ impl App {
         self.last_key.clear();
         let (tx, rx) = channel();
         self.load_rx = Some(rx);
-        let opts = self.wanted_load();
+        self.load_cancel.set();
+        self.load_cancel = crate::scene::Cancel::default();
+        let mut opts = self.wanted_load();
+        opts.cancel = self.load_cancel.clone();
+        let gpu = self.gpu.clone();
+        let nearest = self.look.nearest;
         let max_dim = self.gpu.max_dim;
         let ctx = ctx.clone();
         let note = crate::paths::workshop_title(&path).map(|t| format!(" ({t})")).unwrap_or_default();
@@ -320,6 +353,13 @@ impl App {
             let t = std::time::Instant::now();
             let res = Scene::load(&path, &opts, max_dim, &mut |s| {
                 let _ = tx.send(Msg::Log(s));
+            });
+            if opts.cancel.is_set() {
+                return;
+            }
+            let res = res.map(|scene| {
+                let r = scene.renderer(&gpu, None, nearest).map_err(|e| format!("{e:#}"));
+                (scene, r)
             });
             let _ = tx.send(Msg::Log(format!("loaded in {:.1}s", t.elapsed().as_secs_f64())));
             let _ = tx.send(Msg::Loaded(Box::new(res.map_err(|e| format!("{e:#}")))));
@@ -347,16 +387,19 @@ impl App {
             if let Some(r) = done {
                 self.load_rx = None;
                 match r {
-                    Ok(scene) => {
+                    Ok((scene, renderer)) => {
                         let (lo, hi) = scene.mesh.points.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(a, b), p| (a.min(*p), b.max(*p)));
                         self.map_span = (hi - lo).length().clamp(256.0, 1e6);
                         if self.cam_map != self.current {
                             self.frame_cam = true;
                             self.cam_map = self.current.clone();
                         }
-                        match scene.renderer(&self.gpu, None, self.look.nearest) {
-                            Ok(r) => self.renderer = Some(r),
-                            Err(e) => self.log.push(format!("error: {e:#}")),
+                        match renderer {
+                            Ok(mut r) => {
+                                r.set_nearest(self.look.nearest);
+                                self.renderer = Some(r);
+                            }
+                            Err(e) => self.log.push(format!("error: {e}")),
                         }
                         self.scene = Some(Arc::new(scene));
                         self.sky_loaded = None;
@@ -367,6 +410,7 @@ impl App {
             }
         }
         self.poll_job();
+        self.poll_maps();
         self.log.extend(crate::prof::take_gpu_errors().into_iter().map(|e| format!("gpu error: {e}")));
     }
 
@@ -438,7 +482,8 @@ impl App {
                 } else {
                     if let Some(o) = &self.last_out {
                         if ui.button("Open folder").clicked() {
-                            let _ = std::process::Command::new("explorer").arg(o).spawn();
+                            let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                            let _ = std::process::Command::new(opener).arg(o).spawn();
                         }
                     }
                     if !self.status.is_empty() {
