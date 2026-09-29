@@ -719,138 +719,165 @@ fn uf_find(p: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+struct Merged {
+    g: Vec<usize>,
+    u: DVec3,
+    w: DVec3,
+    lo: DVec2,
+    texel: f64,
+    gw: usize,
+    gh: usize,
+    rgb: Vec<u8>,
+}
+
+fn plane_groups(records: &[Record], ids: &[usize]) -> Vec<Vec<usize>> {
+    if ids.len() < 2 {
+        return Vec::new();
+    }
+    let mut parent: Vec<usize> = (0..ids.len()).collect();
+    let n0 = records[ids[0]].normal;
+    let u0 = n0.any_orthonormal_vector();
+    let w0 = n0.cross(u0);
+    let shapes: Vec<(Vec<DVec2>, DVec2, DVec2)> = ids
+        .iter()
+        .map(|&ri| {
+            let poly: Vec<DVec2> = records[ri].p.iter().map(|q| DVec2::new(q.dot(u0), q.dot(w0))).collect();
+            let lo = poly.iter().fold(DVec2::INFINITY, |m, p| m.min(*p));
+            let hi = poly.iter().fold(DVec2::NEG_INFINITY, |m, p| m.max(*p));
+            (poly, lo, hi)
+        })
+        .collect();
+    let ds: Vec<f64> = ids.iter().map(|&ri| n0.dot(records[ri].p[0])).collect();
+    let mut order: Vec<usize> = (0..ids.len()).collect();
+    order.sort_by(|&a, &b| ds[a].total_cmp(&ds[b]).then(a.cmp(&b)));
+    for (k, &x) in order.iter().enumerate() {
+        for &y in &order[k + 1..] {
+            if ds[y] - ds[x] >= 0.2 {
+                break;
+            }
+            let (a, b) = (&shapes[x], &shapes[y]);
+            if a.1.x > b.2.x + TOUCH || b.1.x > a.2.x + TOUCH || a.1.y > b.2.y + TOUCH || b.1.y > a.2.y + TOUCH {
+                continue;
+            }
+            if polys_touch(&a.0, &b.0) {
+                let (p, q) = (uf_find(&mut parent, x), uf_find(&mut parent, y));
+                parent[p] = q;
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (k, &ri) in ids.iter().enumerate() {
+        let root = uf_find(&mut parent, k);
+        groups.entry(root).or_default().push(ri);
+    }
+    groups.into_values().filter(|g| g.len() > 1).collect()
+}
+
+fn merge_group(records: &[Record], atlas: &Atlas, g: Vec<usize>) -> Option<Merged> {
+    let r0 = &records[g[0]];
+    let n = r0.normal;
+    let m0 = r0.lmap.unwrap();
+    let mut u = m0.sv - n * m0.sv.dot(n);
+    if u.length() < 1e-9 {
+        u = n.any_orthonormal_vector();
+    }
+    let u = u.normalize();
+    let w = n.cross(u);
+    let texel = g
+        .iter()
+        .flat_map(|&i| {
+            let m = records[i].lmap.unwrap();
+            [16.0 / m.sv.length().max(1e-9), 16.0 / m.tv.length().max(1e-9)]
+        })
+        .fold(16.0f64, f64::min)
+        .max(1.0);
+    let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
+    for &i in &g {
+        for p in &records[i].p {
+            let q = DVec2::new(p.dot(u), p.dot(w));
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+    }
+    let gw = ((hi.x - lo.x) / texel).ceil() as usize + 1;
+    let gh = ((hi.y - lo.y) / texel).ceil() as usize + 1;
+    if gw * gh > 1 << 18 {
+        return None;
+    }
+    let polys: Vec<(Vec<DVec2>, f64)> = g
+        .iter()
+        .map(|&i| {
+            let poly: Vec<DVec2> = records[i].p.iter().map(|p| DVec2::new(p.dot(u), p.dot(w))).collect();
+            let a = signed_area(&poly);
+            (poly, if a < 0.0 { -1.0 } else { 1.0 })
+        })
+        .collect();
+    let origin = n * n.dot(r0.p[0]);
+    let mut rgb = vec![0u8; gw * gh * 3];
+    for gy in 0..gh {
+        for gx in 0..gw {
+            let q2 = DVec2::new(lo.x + gx as f64 * texel, lo.y + gy as f64 * texel);
+            let q = origin + u * q2.x + w * q2.y;
+            let (mut acc, mut wsum) = ([0.0f64; 3], 0.0);
+            let mut best = (f64::NEG_INFINITY, [0.0f64; 3]);
+            for (k, &i) in g.iter().enumerate() {
+                let (poly, sgn) = &polys[k];
+                let mut sd = f64::INFINITY;
+                for e in 0..poly.len() {
+                    let (a, b) = (poly[e], poly[(e + 1) % poly.len()]);
+                    let d = b - a;
+                    let l = d.length().max(1e-9);
+                    let dist = sgn * (d.x * (q2.y - a.y) - d.y * (q2.x - a.x)) / l;
+                    sd = sd.min(dist);
+                }
+                let m = records[i].lmap.unwrap();
+                let c = sample_block(&atlas.blocks[records[i].block], q.dot(m.ax) + m.c[0], q.dot(m.ay) + m.c[1]);
+                if sd > best.0 {
+                    best = (sd, c);
+                }
+                let wt = ((sd + texel) / (2.0 * texel)).clamp(0.0, 1.0);
+                if wt > 0.0 {
+                    for (a, v) in acc.iter_mut().zip(c) {
+                        *a += v * wt;
+                    }
+                    wsum += wt;
+                }
+            }
+            let c = if wsum > 0.0 { acc.map(|v| v / wsum) } else { best.1 };
+            let d = (gy * gw + gx) * 3;
+            for k in 0..3 {
+                rgb[d + k] = c[k].round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Some(Merged { g, u, w, lo, texel, gw, gh, rgb })
+}
+
 fn merge_lightmaps(records: &mut [Record], atlas: &mut Atlas) {
-    let mut planes: HashMap<[i64; 4], Vec<usize>> = HashMap::new();
+    let mut planes: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
     for (i, r) in records.iter().enumerate() {
         if r.model != 0 || r.lmap.is_none() || r.mode != Mode::Opaque {
             continue;
         }
         let n = r.normal;
-        let q = |v: f64, s: f64| (v * s).round() as i64;
-        planes.entry([q(n.x, 1e3), q(n.y, 1e3), q(n.z, 1e3), 0]).or_default().push(i);
+        let q = |v: f64| (v * 1e3).round() as i64;
+        planes.entry([q(n.x), q(n.y), q(n.z)]).or_default().push(i);
     }
-    let mut jobs: Vec<Vec<usize>> = Vec::new();
-    for (_, ids) in planes {
-        if ids.len() < 2 {
-            continue;
-        }
-        let mut parent: Vec<usize> = (0..ids.len()).collect();
-        let n0 = records[ids[0]].normal;
-        let u0 = n0.any_orthonormal_vector();
-        let w0 = n0.cross(u0);
-        let shapes: Vec<(Vec<DVec2>, DVec2, DVec2)> = ids
-            .iter()
-            .map(|&ri| {
-                let poly: Vec<DVec2> = records[ri].p.iter().map(|q| DVec2::new(q.dot(u0), q.dot(w0))).collect();
-                let lo = poly.iter().fold(DVec2::INFINITY, |m, p| m.min(*p));
-                let hi = poly.iter().fold(DVec2::NEG_INFINITY, |m, p| m.max(*p));
-                (poly, lo, hi)
-            })
-            .collect();
-        let ds: Vec<f64> = ids.iter().map(|&ri| n0.dot(records[ri].p[0])).collect();
-        for x in 0..ids.len() {
-            for y in x + 1..ids.len() {
-                let (a, b) = (&shapes[x], &shapes[y]);
-                if a.1.x > b.2.x + TOUCH || b.1.x > a.2.x + TOUCH || a.1.y > b.2.y + TOUCH || b.1.y > a.2.y + TOUCH {
-                    continue;
-                }
-                if (ds[x] - ds[y]).abs() < 0.2 && polys_touch(&a.0, &b.0) {
-                    let (p, q) = (uf_find(&mut parent, x), uf_find(&mut parent, y));
-                    parent[p] = q;
-                }
-            }
-        }
-        let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (k, &ri) in ids.iter().enumerate() {
-            let root = uf_find(&mut parent, k);
-            groups.entry(root).or_default().push(ri);
-        }
-        jobs.extend(groups.into_values().filter(|g| g.len() > 1));
-    }
-    for g in jobs {
-        let r0 = &records[g[0]];
-        let n = r0.normal;
-        let m0 = r0.lmap.unwrap();
-        let mut u = m0.sv - n * m0.sv.dot(n);
-        if u.length() < 1e-9 {
-            u = n.any_orthonormal_vector();
-        }
-        let u = u.normalize();
-        let w = n.cross(u);
-        let texel = g
-            .iter()
-            .flat_map(|&i| {
-                let m = records[i].lmap.unwrap();
-                [16.0 / m.sv.length().max(1e-9), 16.0 / m.tv.length().max(1e-9)]
-            })
-            .fold(16.0f64, f64::min)
-            .max(1.0);
-        let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
-        for &i in &g {
-            for p in &records[i].p {
-                let q = DVec2::new(p.dot(u), p.dot(w));
-                lo = lo.min(q);
-                hi = hi.max(q);
-            }
-        }
-        let gw = ((hi.x - lo.x) / texel).ceil() as usize + 1;
-        let gh = ((hi.y - lo.y) / texel).ceil() as usize + 1;
-        if gw * gh > 1 << 18 {
-            continue;
-        }
-        let polys: Vec<(Vec<DVec2>, f64)> = g
-            .iter()
-            .map(|&i| {
-                let poly: Vec<DVec2> = records[i].p.iter().map(|p| DVec2::new(p.dot(u), p.dot(w))).collect();
-                let a = signed_area(&poly);
-                (poly, if a < 0.0 { -1.0 } else { 1.0 })
-            })
-            .collect();
-        let origin = n * n.dot(r0.p[0]);
-        let mut rgb = vec![0u8; gw * gh * 3];
-        for gy in 0..gh {
-            for gx in 0..gw {
-                let q2 = DVec2::new(lo.x + gx as f64 * texel, lo.y + gy as f64 * texel);
-                let q = origin + u * q2.x + w * q2.y;
-                let (mut acc, mut wsum) = ([0.0f64; 3], 0.0);
-                let mut best = (f64::NEG_INFINITY, [0.0f64; 3]);
-                for (k, &i) in g.iter().enumerate() {
-                    let (poly, sgn) = &polys[k];
-                    let mut sd = f64::INFINITY;
-                    for e in 0..poly.len() {
-                        let (a, b) = (poly[e], poly[(e + 1) % poly.len()]);
-                        let d = b - a;
-                        let l = d.length().max(1e-9);
-                        let dist = sgn * (d.x * (q2.y - a.y) - d.y * (q2.x - a.x)) / l;
-                        sd = sd.min(dist);
-                    }
-                    let m = records[i].lmap.unwrap();
-                    let c = sample_block(&atlas.blocks[records[i].block], q.dot(m.ax) + m.c[0], q.dot(m.ay) + m.c[1]);
-                    if sd > best.0 {
-                        best = (sd, c);
-                    }
-                    let wt = ((sd + texel) / (2.0 * texel)).clamp(0.0, 1.0);
-                    if wt > 0.0 {
-                        for (a, v) in acc.iter_mut().zip(c) {
-                            *a += v * wt;
-                        }
-                        wsum += wt;
-                    }
-                }
-                let c = if wsum > 0.0 { acc.map(|v| v / wsum) } else { best.1 };
-                let d = (gy * gw + gx) * 3;
-                for k in 0..3 {
-                    rgb[d + k] = c[k].round().clamp(0.0, 255.0) as u8;
-                }
-            }
-        }
-        let block = atlas.add(gw as u32, gh as u32, rgb);
-        for &i in &g {
+    let recs: &[Record] = records;
+    let mut jobs: Vec<Vec<usize>> = planes.into_par_iter().flat_map_iter(|(_, ids)| plane_groups(recs, &ids)).collect();
+    jobs.sort_unstable_by_key(|g| g[0]);
+    let merged: Vec<Merged> = jobs.into_par_iter().filter_map(|g| merge_group(recs, atlas, g)).collect();
+    for m in merged {
+        let block = atlas.add(m.gw as u32, m.gh as u32, m.rgb);
+        for &i in &m.g {
             atlas.blocks[records[i].block] = (1, 1, vec![0, 0, 0]);
             let r = &mut records[i];
             r.block = block;
-            let (a, b): (Vec<f64>, Vec<f64>) =
-                r.p.iter().map(|p| ((p.dot(u) - lo.x) / texel + 0.5, (p.dot(w) - lo.y) / texel + 0.5)).unzip();
+            let (a, b): (Vec<f64>, Vec<f64>) = r
+                .p
+                .iter()
+                .map(|p| ((p.dot(m.u) - m.lo.x) / m.texel + 0.5, (p.dot(m.w) - m.lo.y) / m.texel + 0.5))
+                .unzip();
             r.lm = Some((a, b));
             r.lmap = None;
         }
