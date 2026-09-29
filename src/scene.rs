@@ -190,7 +190,7 @@ impl Scene {
             None
         };
         let mut tm = crate::prof::Timer::new("goldsrc");
-        let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim);
+        let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim)?;
         tm.lap("mesh");
         for e in tex.errors() {
             log(format!("wad unreadable: {e}"));

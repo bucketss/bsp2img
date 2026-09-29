@@ -127,7 +127,7 @@ fn layout(off: usize, n1: usize, n2: usize, n4: usize, n8: usize, force8: bool) 
 }
 
 pub fn zstd(src: &[u8], cap: usize) -> Result<Vec<u8>> {
-    let mut out = Vec::with_capacity(cap);
+    let mut out = Vec::with_capacity(cap.min(src.len().saturating_mul(64)));
     let mut s = src;
     while s.len() >= 4 {
         let mut d = ruzstd::decoding::StreamingDecoder::new(&mut s).map_err(|e| anyhow::anyhow!("zstd: {e}"))?;

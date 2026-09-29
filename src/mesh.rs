@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
+use anyhow::{Result, bail};
 use bytemuck::{Pod, Zeroable};
 use glam::{DVec2, DVec3};
 use rayon::prelude::*;
@@ -234,10 +235,11 @@ impl Atlas {
         self.blocks.len() - 1
     }
 
-    fn pack(&mut self, max_dim: u32) -> Image {
+    fn pack(&mut self, max_dim: u32) -> Result<Image> {
         let mut order: Vec<usize> = (0..self.blocks.len()).collect();
         order.sort_by_key(|&i| std::cmp::Reverse(self.blocks[i].1));
-        let mut width = 2048;
+        let widest = self.blocks.iter().map(|b| b.0 + 2).max().unwrap_or(0);
+        let mut width = widest.next_power_of_two().max(2048);
         loop {
             let (mut x, mut y, mut shelf) = (0u32, 0u32, 0u32);
             let mut pos = vec![(0, 0); self.blocks.len()];
@@ -257,6 +259,9 @@ impl Atlas {
                 width *= 2;
                 continue;
             }
+            if width > max_dim || height > max_dim {
+                bail!("lightmap atlas needs {width}x{height}, over the GPU limit of {max_dim}");
+            }
             let mut img = vec![0u8; (width * height * 4) as usize];
             for (i, &(px, py)) in pos.iter().enumerate() {
                 let (w, h, ref b) = self.blocks[i];
@@ -272,7 +277,7 @@ impl Atlas {
                 }
             }
             self.pos = pos;
-            return Image { w: width, h: height, rgba: img };
+            return Ok(Image { w: width, h: height, rgba: img });
         }
     }
 }
@@ -369,7 +374,7 @@ pub fn build_mesh(
     light: &LightParams,
     reach: Option<&Reach>,
     max_dim: u32,
-) -> Mesh {
+) -> Result<Mesh> {
     let lut = light.tex_lut();
     let mut missing = BTreeSet::new();
     let mut tex_images: Vec<Option<Image>> = Vec::with_capacity(bsp.miptex.len());
@@ -533,7 +538,7 @@ pub fn build_mesh(
     merge_lightmaps(&mut records, &mut atlas);
     equalize_edges(&records, &mut atlas);
     let levels = overlap_levels(&records);
-    let atlas_img = atlas.pack(max_dim);
+    let atlas_img = atlas.pack(max_dim)?;
     let (aw, ah) = (atlas_img.w as f64, atlas_img.h as f64);
     let mut index: HashMap<(usize, Mode, u32, Option<[u32; 4]>), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
@@ -585,7 +590,7 @@ pub fn build_mesh(
         points.extend(b.verts.iter().map(|v| DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64)));
     }
 
-    Mesh {
+    Ok(Mesh {
         batches,
         textures: tex_images,
         anim,
@@ -600,7 +605,7 @@ pub fn build_mesh(
         caster_idx: Vec::new(),
         point_cell: None,
         compressed: Vec::new(),
-    }
+    })
 }
 
 const OVERLAP_MIN_AREA: f64 = 4.0;

@@ -537,7 +537,7 @@ impl Bsp {
         }
         let mut steps = 0;
         loop {
-            let node = &self.clipnodes[n as usize];
+            let Some(node) = self.clipnodes.get(n as usize) else { return CONTENTS_SOLID };
             let pl = &self.planes[node.plane as usize];
             let c = node.children[if p.dot(pl.normal) - pl.dist >= 0.0 { 0 } else { 1 }] as i32;
             if c < 0 {
