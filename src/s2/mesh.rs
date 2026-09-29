@@ -471,7 +471,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             atlas,
             faces,
             missing: missing.into_iter().collect(),
-            points,
+            points: points.into(),
             nudged: 0,
             names: tex_label,
             hdr: o.hdr,

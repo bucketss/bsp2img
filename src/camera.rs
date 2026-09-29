@@ -28,14 +28,33 @@ pub fn top_down(r: DVec3, u: DVec3) -> Basis {
 }
 
 pub fn extents(points: &[DVec3], b: &Basis) -> [(f64, f64); 3] {
-    let mut e = [(f64::INFINITY, f64::NEG_INFINITY); 3];
-    for p in points {
-        for (k, v) in [p.dot(b.r), p.dot(b.u), p.dot(b.f)].into_iter().enumerate() {
-            e[k].0 = e[k].0.min(v);
-            e[k].1 = e[k].1.max(v);
-        }
-    }
-    e
+    use rayon::prelude::*;
+    let empty = [(f64::INFINITY, f64::NEG_INFINITY); 3];
+    let merge = |a: [(f64, f64); 3], c: [(f64, f64); 3]| std::array::from_fn(|k| (a[k].0.min(c[k].0), a[k].1.max(c[k].1)));
+    points
+        .par_chunks(1 << 14)
+        .map(|ch| {
+            let mut e = empty;
+            for p in ch {
+                for (k, v) in [p.dot(b.r), p.dot(b.u), p.dot(b.f)].into_iter().enumerate() {
+                    e[k].0 = e[k].0.min(v);
+                    e[k].1 = e[k].1.max(v);
+                }
+            }
+            e
+        })
+        .reduce(|| empty, merge)
+}
+
+pub fn span(points: &[DVec3], f: impl Fn(&DVec3) -> f64 + Sync) -> (f64, f64) {
+    use rayon::prelude::*;
+    points
+        .par_chunks(1 << 14)
+        .map(|ch| ch.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
+            let d = f(p);
+            (a.min(d), c.max(d))
+        }))
+        .reduce(|| (f64::INFINITY, f64::NEG_INFINITY), |a, c| (a.0.min(c.0), a.1.max(c.1)))
 }
 
 pub fn ortho(b: &Basis, cx: f64, cy: f64, w: f64, h: f64, d0: f64, d1: f64) -> DMat4 {

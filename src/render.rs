@@ -6,7 +6,7 @@ use wgpu::util::DeviceExt;
 
 use std::sync::{Arc, Mutex};
 
-use crate::camera::{Basis, camera_basis, extents, ortho, persp};
+use crate::camera::{Basis, camera_basis, extents, ortho, persp, span};
 use crate::explode::{Explode, band_points};
 use crate::look::Look;
 use crate::mesh::{Batch, Chunk, Mesh, Mode, Vertex};
@@ -385,14 +385,14 @@ pub struct GpuScene {
     pipelines: Vec<wgpu::RenderPipeline>,
     shadow_pipe: [wgpu::RenderPipeline; 2],
     batches: Vec<GpuBatch>,
-    points: Vec<DVec3>,
+    points: Arc<[DVec3]>,
 }
 
 pub struct Renderer {
     pub gpu: Gpu,
     sc: Arc<GpuScene>,
     nearest: bool,
-    pub points: Vec<DVec3>,
+    pub points: Arc<[DVec3]>,
     pub mask: Option<HullMask>,
     orig: Option<Vec<DVec3>>,
     pt_band: Vec<u16>,
@@ -410,7 +410,9 @@ pub struct Renderer {
     shadow_frame_buf: wgpu::Buffer,
     shadow_frame_bind: wgpu::BindGroup,
     shadow: Mutex<Vec<ShadowMap>>,
-    pts_cache: Mutex<Option<(String, Arc<Vec<DVec3>>)>>,
+    pts_cache: Mutex<Option<(String, Arc<[DVec3]>)>>,
+    range_cache: Mutex<Option<([f64; 6], (f64, f64))>>,
+    pick: std::sync::OnceLock<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     pub sun_env: SunEnv,
     pub tex_gamma: f32,
 }
@@ -1190,6 +1192,8 @@ impl Renderer {
             shadow_frame_bind,
             shadow: Mutex::new(Vec::new()),
             pts_cache: Mutex::new(None),
+            range_cache: Mutex::new(None),
+            pick: std::sync::OnceLock::new(),
             sun_env: SunEnv::default(),
             tex_gamma: 0.0,
             nearest,
@@ -1380,7 +1384,7 @@ impl Renderer {
         }
     }
 
-    pub fn points_in(&self, cuts: &Cuts) -> Arc<Vec<DVec3>> {
+    pub fn points_in(&self, cuts: &Cuts) -> Arc<[DVec3]> {
         let key = format!("{cuts:?}{:?}", self.explode);
         let mut cache = self.pts_cache.lock().unwrap();
         if let Some((k, v)) = cache.as_ref().filter(|(k, _)| *k == key) {
@@ -1388,9 +1392,9 @@ impl Renderer {
             return v.clone();
         }
         let keep = self.keeps(cuts);
-        let base = self.orig.as_ref().unwrap_or(&self.points);
-        let sel: Vec<DVec3> = base.iter().zip(&self.points).filter(|(p, _)| keep(p)).map(|(_, q)| *q).collect();
-        let v = Arc::new(if sel.is_empty() { self.points.clone() } else { sel });
+        let base: &[DVec3] = self.orig.as_deref().unwrap_or(&self.points);
+        let sel: Vec<DVec3> = base.iter().zip(self.points.iter()).filter(|(p, _)| keep(p)).map(|(_, q)| *q).collect();
+        let v: Arc<[DVec3]> = if sel.is_empty() || sel.len() == self.points.len() { self.points.clone() } else { sel.into() };
         *cache = Some((key, v.clone()));
         v
     }
@@ -1401,7 +1405,7 @@ impl Renderer {
 
     pub fn z_range(&self, cuts: &Cuts) -> (f64, f64) {
         let keep = self.keeps(cuts);
-        let base = self.orig.as_ref().unwrap_or(&self.points);
+        let base: &[DVec3] = self.orig.as_deref().unwrap_or(&self.points);
         let span = |it: &mut dyn Iterator<Item = &DVec3>| {
             it.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.z), b.max(p.z)))
         };
@@ -1432,6 +1436,7 @@ impl Renderer {
         self.guides = e.filter(|x| x.guides).map(|x| self.make_guides(x.planes.len()));
         self.explode = e.cloned();
         *self.pts_cache.lock().unwrap() = None;
+        *self.range_cache.lock().unwrap() = None;
         if let (Some(orig), Some(x)) = (&self.orig, &self.explode) {
             self.points = orig.iter().zip(&self.pt_band).map(|(p, &b)| *p + DVec3::Z * (b as f64 * x.gap)).collect();
         }
@@ -1553,18 +1558,27 @@ impl Renderer {
         (view, wpx, hpx)
     }
 
+    fn cached_range(&self, f: DVec3, eye: Option<DVec3>) -> (f64, f64) {
+        let e = eye.unwrap_or(DVec3::NAN);
+        let key = [f.x, f.y, f.z, e.x, e.y, e.z];
+        let same = |k: &[f64; 6]| k.iter().zip(&key).all(|(a, b)| a.to_bits() == b.to_bits());
+        if let Some((_, r)) = self.range_cache.lock().unwrap().as_ref().filter(|(k, _)| same(k)) {
+            return *r;
+        }
+        let r = match eye {
+            None => span(&self.points, |p| p.dot(f)),
+            Some(eye) => span(&self.points, |p| (*p - eye).dot(f)),
+        };
+        *self.range_cache.lock().unwrap() = Some((key, r));
+        r
+    }
+
     fn depth_range(&self, b: &Basis) -> (f64, f64) {
-        self.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
-            let d = p.dot(b.f);
-            (a.min(d), c.max(d))
-        })
+        self.cached_range(b.f, None)
     }
 
     fn persp_range(&self, b: &Basis, eye: DVec3) -> (f64, f64) {
-        let (z0, z1) = self.points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, c), p| {
-            let d = (*p - eye).dot(b.f);
-            (a.min(d), c.max(d))
-        });
+        let (z0, z1) = self.cached_range(b.f, Some(eye));
         let near = (z0 - PERSP_MARGIN).max(PERSP_NEAR);
         let far = (z1 + PERSP_MARGIN).max(near + PERSP_MARGIN);
         (near, far)
@@ -1609,32 +1623,105 @@ impl Renderer {
         }
     }
 
+    fn pick_pipe(&self) -> &(wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+        self.pick.get_or_init(|| {
+            let dev = &self.gpu.device;
+            let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
+            let buffer = |ty| wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None };
+            let layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[
+                    entry(
+                        0,
+                        wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                    ),
+                    entry(1, buffer(wgpu::BufferBindingType::Storage { read_only: false })),
+                    entry(2, buffer(wgpu::BufferBindingType::Uniform)),
+                ],
+            });
+            let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(include_str!("shaders/pick.wgsl").into()),
+            });
+            let pl = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+            let pipe = dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None,
+                layout: Some(&pl),
+                module: &module,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            (pipe, layout)
+        })
+    }
+
     pub fn read_depth(&self, t: &Targets, x: u32, y: u32) -> Option<f64> {
         if x >= t.w || y >= t.h {
             return None;
         }
         let dev = &self.gpu.device;
-        let row = (t.w * 4).div_ceil(256) * 256;
+        let lim = dev.limits();
+        let compute = lim.max_compute_workgroups_per_dimension > 0 && lim.max_storage_buffers_per_shader_stage > 0;
+        let size = if compute { 4 } else { ((t.w * 4).div_ceil(256) * 256 * t.h) as u64 };
         let buf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: None,
-            size: (row * t.h) as u64,
+            size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut enc = dev.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &t.depth,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::DepthOnly,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buf,
-                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(t.h) },
-            },
-            wgpu::Extent3d { width: t.w, height: t.h, depth_or_array_layers: 1 },
-        );
+        let offset = if compute {
+            let (pipe, layout) = self.pick_pipe();
+            let out = dev.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let at = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&[x, y, 0u32, 0]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.depth_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: out.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: at.as_entire_binding() },
+                ],
+            });
+            {
+                let mut pass = enc.begin_compute_pass(&Default::default());
+                pass.set_pipeline(pipe);
+                pass.set_bind_group(0, &bind, &[]);
+                pass.dispatch_workgroups(1, 1, 1);
+            }
+            enc.copy_buffer_to_buffer(&out, 0, &buf, 0, 4);
+            0
+        } else {
+            let row = (t.w * 4).div_ceil(256) * 256;
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &t.depth,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::DepthOnly,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buf,
+                    layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(t.h) },
+                },
+                wgpu::Extent3d { width: t.w, height: t.h, depth_or_array_layers: 1 },
+            );
+            (y * row + x * 4) as usize
+        };
         self.gpu.queue.submit([enc.finish()]);
         let slice = buf.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1645,8 +1732,7 @@ impl Renderer {
         rx.recv().ok()?.ok()?;
         let d = {
             let data = slice.get_mapped_range().ok()?;
-            let i = (y * row + x * 4) as usize;
-            f32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as f64
+            f32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as f64
         };
         buf.unmap();
         Some(d)

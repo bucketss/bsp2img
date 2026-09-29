@@ -132,17 +132,19 @@ pub fn spin_views(r: &Renderer, cuts: &Cuts, yaws: &[f64], pitch: f64, size: u32
     let (lo, hi) = pts.iter().fold((DVec3::INFINITY, DVec3::NEG_INFINITY), |(a, b), p| (a.min(*p), b.max(*p)));
     let pivot = (lo + hi) / 2.0;
     let bases: Vec<_> = yaws.iter().map(|&y| camera_basis(y, pitch)).collect();
-    let (mut r0, mut r1, mut u0, mut u1) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
-    for b in &bases {
-        for p in pts.iter() {
-            let d = *p - pivot;
-            let (x, y) = (d.dot(b.r), d.dot(b.u));
-            r0 = r0.min(x);
-            r1 = r1.max(x);
-            u0 = u0.min(y);
-            u1 = u1.max(y);
-        }
-    }
+    let empty = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    let (r0, r1, u0, u1) = bases
+        .par_iter()
+        .map(|b| {
+            let mut e = empty;
+            for p in pts.iter() {
+                let d = *p - pivot;
+                let (x, y) = (d.dot(b.r), d.dot(b.u));
+                e = (e.0.min(x), e.1.max(x), e.2.min(y), e.3.max(y));
+            }
+            e
+        })
+        .reduce(|| empty, |a, c| (a.0.min(c.0), a.1.max(c.1), a.2.min(c.2), a.3.max(c.3)));
     let upp = (r1 - r0).max(u1 - u0) / (size as f64 - 2.0 * PAD as f64).max(1.0);
     let even = |v: u32| v + v % 2;
     let wpx = even(((r1 - r0) / upp).ceil() as u32 + 2 * PAD);

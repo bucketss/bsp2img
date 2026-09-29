@@ -533,7 +533,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
     out.skipped = skipped;
     out.tris = batches.iter().map(|b| b.idx.len() / 3).sum();
     mesh.faces += out.tris;
-    mesh.points.extend(sample_points(&batches));
+    mesh.points = mesh.points.iter().copied().chain(sample_points(&batches)).collect();
     mesh.missing.extend(out.missing.iter().cloned());
     mesh.missing.sort();
     mesh.missing.dedup();
