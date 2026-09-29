@@ -109,14 +109,14 @@ fn winner(v: Option<&Variant>) -> Option<Team> {
     t.playing().then_some(t)
 }
 
-fn death(e: &GameEvent, round: u32, ids: &mut HashMap<i32, u8>) -> Death {
+fn death(e: &GameEvent, round: u32, ids: &mut HashMap<i32, u16>) -> Death {
     let pos = |p: &str| -> Option<[f32; 3]> {
         let c = |a: &str| num(field(e, &format!("{p}_{a}")));
         Some([c("X")? as f32, c("Y")? as f32, (c("Z")? + STAND_OFS) as f32])
     };
     let mut ent = |p: &str| {
         num(field(e, &format!("{p}_entity_id"))).map_or(0, |v| {
-            let n = ids.len().min(254) as u8 + 1;
+            let n = ids.len().min(65534) as u16 + 1;
             *ids.entry(v as i32).or_insert(n)
         })
     };
