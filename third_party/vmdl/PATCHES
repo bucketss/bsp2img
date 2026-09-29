@@ -1,5 +1,6 @@
 Upstream: https://github.com/icewind1991/vmdl (crates.io vmdl 0.2.0, MIT)
 Copied: src, README.md
+LICENSE: upstream ships none; standard MIT text added for the declared licence
 
 Patches:
 - src/shared.rs: FixedString accepts a name that fills all LEN bytes without a NUL

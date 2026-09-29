@@ -26,7 +26,7 @@ use crate::stl::{StlOpts, export_stl};
 use crate::timing::{TimingOpts, export_timing};
 
 #[derive(Parser)]
-#[command(name = "bsp2img", version, about = "Render GoldSrc and Source BSP and CS2 maps: isometric views and CS overviews. Run without arguments for the GUI.")]
+#[command(name = "bsp2img", version, about = "Render GoldSrc, Source and CS2 maps: isometric views, animations, overviews, heatmaps, reports and 3D exports. Run without arguments for the GUI.")]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -68,7 +68,7 @@ pub enum Cmd {
 
 #[derive(Args, Clone)]
 pub struct Common {
-    #[arg(required = true, help = "path to .bsp or CS2 .vpk, or map name with --game")]
+    #[arg(required = true, help = "path to .bsp or CS2 .vpk, or map name with --game; * and ? globs allowed")]
     pub maps: Vec<String>,
     #[arg(long, help = "game install root or mod directory")]
     pub game: Option<PathBuf>,
@@ -276,7 +276,7 @@ pub struct TimingArgs {
     pub interval: f64,
     #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
-    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image per section)")]
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2/Source radar (one image per section)")]
     pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -305,7 +305,7 @@ pub struct KillsArgs {
     pub presence_every: f64,
     #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
-    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2 radar (one image set per section)")]
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official CS2/Source radar (one image set per section)")]
     pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
@@ -408,17 +408,17 @@ pub struct OverviewArgs {
     pub c: Common,
     #[arg(long, default_value_t = 0.04, value_parser = non_negative, help = "border around the map")]
     pub margin: f64,
-    #[arg(long = "from-txt", help = "reuse the framing from an existing overview .txt (GoldSrc ZOOM/ORIGIN/ROTATED, CS2 pos_x/pos_y/scale and sections)")]
+    #[arg(long = "from-txt", help = "reuse the framing from an existing overview .txt (GoldSrc ZOOM/ORIGIN/ROTATED, CS2/Source pos_x/pos_y/scale and sections)")]
     pub from_txt: Option<PathBuf>,
     #[arg(long, help = "also write a transparent PNG")]
     pub png: bool,
-    #[arg(long, help = "CS2: fit the radar to the geometry instead of the map's official overview")]
+    #[arg(long, help = "CS2 and Source: fit the radar to the geometry instead of the map's official overview")]
     pub fit: bool,
-    #[arg(long, allow_hyphen_values = true, value_name = "auto|none|Z,..", help = "CS2: one radar per vertical section: auto, none, or split heights (default: the overview's sections)")]
+    #[arg(long, allow_hyphen_values = true, value_name = "auto|none|Z,..", help = "CS2 and Source: one radar per vertical section: auto, none, or split heights (default: the overview's sections)")]
     pub sections: Option<String>,
     #[arg(long, help = "CS2: also write 32-bit <map>_radar.tga with alpha")]
     pub tga: bool,
-    #[arg(long, help = "CS2: also write the decoded official radar images as PNG")]
+    #[arg(long, help = "CS2 and Source: also write the decoded official radar images as PNG")]
     pub official: bool,
     #[arg(long, value_name = "ADDON", help = "CS2: write the radar TGA, .vtex and .txt into this existing csgo_addons addon and compile it with resourcecompiler")]
     pub compile: Option<String>,

@@ -259,7 +259,7 @@ impl Bsp {
         }
         let r = Rd { data };
         if data.starts_with(b"VBSP") {
-            bail!("Source engine map (VBSP version {}); only GoldSrc and CS2 maps are supported", r.i32(4));
+            bail!("Source engine map (VBSP version {}) passed to the GoldSrc reader", r.i32(4));
         }
         let version = r.i32(0);
         if version != 30 {
