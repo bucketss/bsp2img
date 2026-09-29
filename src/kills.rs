@@ -266,7 +266,7 @@ fn is_kill(d: &Death) -> bool {
 }
 
 struct Floor {
-    nav: Nav,
+    nav: std::sync::Arc<Nav>,
     reach: Vec<f32>,
     zmax: f64,
     top: Vec<u32>,

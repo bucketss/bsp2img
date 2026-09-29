@@ -558,7 +558,7 @@ fn count(bsp: &Bsp, classes: &[&str]) -> usize {
 
 struct Walk {
     info: NavInfo,
-    nav: Nav,
+    nav: std::sync::Arc<Nav>,
     reach: Vec<usize>,
 }
 
