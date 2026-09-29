@@ -74,7 +74,7 @@ pub struct Common {
     pub game: Option<PathBuf>,
     #[arg(long = "wad-dir", help = "extra directory to search for WADs")]
     pub wad_dir: Vec<PathBuf>,
-    #[arg(short, long, default_value = "renders", help = "base folder; each run goes in a new <out>/<map>NN/")]
+    #[arg(short, long, default_value = "renders", help = "base folder; each run goes in a new <out>/<mod>-<map>-YYYY-MMDD-hhmm/")]
     pub out: PathBuf,
     #[arg(long, default_value_t = 0, help = "remove the N highest roof levels (0 = keep all)")]
     pub roofs: usize,
