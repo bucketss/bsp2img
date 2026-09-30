@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::addon::Addon;
 use crate::bsp::Bsp;
@@ -310,6 +310,9 @@ pub fn export_overview(
     out: &Path,
     rep: &mut Report,
 ) -> Result<()> {
+    if bsp.is_tf2() {
+        bail!("overviews are not supported for TF2 maps");
+    }
     let mut files = Partial::default();
     rep.step(0.0)?;
     let addon = match o.addon.trim() {

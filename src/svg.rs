@@ -320,7 +320,7 @@ pub fn export_svg(
     let (st, sct) = (spawn("info_player_deathmatch"), spawn("info_player_start"));
     let seeds: Vec<usize> = st.iter().chain(&sct).filter_map(|s| s.1).collect();
     if st.is_empty() && sct.is_empty() {
-        bail!("no T or CT spawn points in the map");
+        bail!("no team spawn points in the map");
     }
     if seeds.is_empty() {
         bail!("none of the {} spawn points is on walkable ground", st.len() + sct.len());

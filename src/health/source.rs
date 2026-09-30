@@ -94,7 +94,7 @@ pub(super) fn nav_file(x: &Extra, map: &Map, name: &str) -> NavFile {
 }
 
 pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o: &HealthOpts) -> Health {
-    let Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, engine } = gather_cs2(scene, x, name, o);
+    let Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, tf2, tf2_checks, engine } = gather_cs2(scene, x, name, o);
     let Engine::Cs2(mut c) = engine else { unreachable!() };
     let (missing_models, missing_materials): (Vec<String>, Vec<String>) = std::mem::take(&mut c.missing_materials).into_iter().partition(|m| m.ends_with(".mdl"));
     c.missing_materials = missing_materials;
@@ -106,7 +106,13 @@ pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o
     let s = SrcHealth {
         version: map.version,
         revision: map.revision,
-        game: if csgo { "CS:GO" } else { "CS:S" },
+        game: if csgo {
+            "CS:GO"
+        } else if tf2 {
+            "TF2"
+        } else {
+            "CS:S"
+        },
         sdk: if csgo { "CS:GO" } else { "SDK 2013" },
         limits: src_limits(map, ents),
         ldr: lit(map, s1b::LUMP_FACES, s1b::LUMP_LIGHTING),
@@ -120,7 +126,7 @@ pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o
         pak,
         base: *c,
     };
-    Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, engine: Engine::Source(Box::new(s)) }
+    Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, tf2, tf2_checks, engine: Engine::Source(Box::new(s)) }
 }
 
 pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
@@ -140,11 +146,15 @@ pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
     v.push((format!("load: {nf} failed, {nm} missing models, {nmat} materials, {nt} textures"), ok(nf + nm + nmat + nt == 0)));
     v.push((format!("geometry: {:.1}M triangles, {} displacements, {} props", c.tris as f64 / 1e6, s.displacements, s.static_props), white));
     v.push((s.pak.map_or("pakfile: none".to_string(), |(b, n)| format!("pakfile: {:.1} MB, {n} files", b as f64 / 1048576.0)), white));
-    let comp_ok = c.comp.iter().all(|&n| n >= COMP_MIN);
-    v.push((
-        format!("spawns: T {} (comp {}), CT {} (comp {}), {} disabled", h.t.len(), c.comp[0], h.ct.len(), c.comp[1], c.disabled[0] + c.disabled[1]),
-        if comp_ok { GREEN } else { AMBER },
-    ));
+    if h.tf2 {
+        v.push((format!("spawns: RED {}, BLU {}", h.t.len(), h.ct.len()), ok(!h.t.is_empty() && !h.ct.is_empty())));
+    } else {
+        let comp_ok = c.comp.iter().all(|&n| n >= COMP_MIN);
+        v.push((
+            format!("spawns: T {} (comp {}), CT {} (comp {}), {} disabled", h.t.len(), c.comp[0], h.ct.len(), c.comp[1], c.disabled[0] + c.disabled[1]),
+            if comp_ok { GREEN } else { AMBER },
+        ));
+    }
     match &h.nav {
         Ok(n) => v.push((format!("spawns off walkable ground: {}", n.off_ground.len()), ok(n.off_ground.is_empty()))),
         Err(_) => v.push(("spawns off walkable ground: unknown".into(), AMBER)),
@@ -163,23 +173,25 @@ pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
         NavFile::Ignored { .. } => v.push(("nav: ignored, collision walk fallback".into(), AMBER)),
         NavFile::Missing { .. } => v.push(("nav: none, collision walk fallback".into(), AMBER)),
     }
-    let r = &c.radar;
-    let have = r.images.iter().filter(|i| i.1.is_some()).count();
-    let txt = match (&r.err, r.txt) {
-        (Some(_), _) => "txt broken",
-        (None, true) => "txt",
-        (None, false) => "no txt",
-    };
-    v.push((
-        format!("overview: {txt}, radar images {have}/{}", r.images.len()),
-        if r.txt && r.err.is_none() && r.images_ok() { GREEN } else { AMBER },
-    ));
-    if let Some((_, m)) = r.cover {
-        v.push((format!("radar frame holds {:.1}% of reachable walk", m * 100.0), if m >= COVER_MIN { GREEN } else { AMBER }));
-    }
-    let far = r.icons.iter().filter(|(_, d)| d.is_some_and(|d| d > ICON_FAR)).count();
-    if !r.icons.is_empty() {
-        v.push((format!("radar icons: {} of {} far from spawns or sites", far, r.icons.len()), if far == 0 { GREEN } else { AMBER }));
+    if !h.tf2 {
+        let r = &c.radar;
+        let have = r.images.iter().filter(|i| i.1.is_some()).count();
+        let txt = match (&r.err, r.txt) {
+            (Some(_), _) => "txt broken",
+            (None, true) => "txt",
+            (None, false) => "no txt",
+        };
+        v.push((
+            format!("overview: {txt}, radar images {have}/{}", r.images.len()),
+            if r.txt && r.err.is_none() && r.images_ok() { GREEN } else { AMBER },
+        ));
+        if let Some((_, m)) = r.cover {
+            v.push((format!("radar frame holds {:.1}% of reachable walk", m * 100.0), if m >= COVER_MIN { GREEN } else { AMBER }));
+        }
+        let far = r.icons.iter().filter(|(_, d)| d.is_some_and(|d| d > ICON_FAR)).count();
+        if !r.icons.is_empty() {
+            v.push((format!("radar icons: {} of {} far from spawns or sites", far, r.icons.len()), if far == 0 { GREEN } else { AMBER }));
+        }
     }
     match &h.nav {
         Ok(n) => {
@@ -223,9 +235,13 @@ impl Health {
         if !c.missing_textures.is_empty() {
             w.push(format!("{} textures missing", c.missing_textures.len()));
         }
-        for (team, n) in [("T", c.comp[0]), ("CT", c.comp[1])] {
-            if n < COMP_MIN {
-                w.push(format!("{n} competitive {team} spawns (fewer than {COMP_MIN})"));
+        if self.tf2 {
+            self.tf2_warnings(&mut w);
+        } else {
+            for (team, n) in [("T", c.comp[0]), ("CT", c.comp[1])] {
+                if n < COMP_MIN {
+                    w.push(format!("{n} competitive {team} spawns (fewer than {COMP_MIN})"));
+                }
             }
         }
         match &h.nav {
@@ -250,8 +266,14 @@ impl Health {
         if !self.sky_found {
             w.push(format!("sky {} missing", self.sky));
         }
-        radar_warnings(&c.radar, &mut w);
+        if !self.tf2 {
+            radar_warnings(&c.radar, &mut w);
+        }
         w
+    }
+
+    fn tf2_warnings(&self, w: &mut Vec<String>) {
+        w.extend(self.tf2_checks.iter().cloned());
     }
 
     pub(super) fn write_src(&self, h: &SrcHealth, s: &mut String) -> std::fmt::Result {
@@ -326,7 +348,9 @@ impl Health {
         }
         self.write_graph(c, s)?;
         self.write_collision(c, s)?;
-        self.write_overview(c, s)?;
+        if !self.tf2 {
+            self.write_overview(c, s)?;
+        }
         self.write_open(s)?;
         writeln!(s)?;
         let w = self.warnings();
@@ -346,7 +370,7 @@ impl Health {
         let light = h.ldr.as_ref().map_or(0, |l| l.bytes) + h.hdr.as_ref().map_or(0, |l| l.bytes);
         let mut cols = vec![
             csv_quote(&self.name),
-            format!("source{}", h.version),
+            if self.tf2 { "tf2".to_string() } else { format!("source{}", h.version) },
             match &self.nav {
                 Err(e) => csv_quote(&format!("walk: {e}")),
                 _ => String::new(),

@@ -1,6 +1,6 @@
 # bsp2img
 
-Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
+Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
 
 ## CS2
 
@@ -16,6 +16,10 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO) maps from the `.bs
 ## CS:S and CS:GO
 
 `--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Blends render all layers (two-way and four-way); glTF and OBJ use the first. `--sky` draws the map's `skyname`, HDR skies included. Timing, svg, stl, auto crop and `--hull` use the map's `.nav`, or walk the collision (brushes, displacements, static props) when there is none or it misses every spawn. Overviews read the official `.txt` and radar `.vtf`/`.dds`. Health checks the SDK 2013 (CS:S) or CS:GO `bspfile.h` limits, LDR/HDR lighting, VIS, the `.nav`, the pakfile and the radar. glTF and OBJ lighting includes prop vertex lighting: glTF keeps vertex-lit props on their own textures with vertex colours, OBJ `baked` bakes them into the atlas (too many for CS:GO maps).
+
+## TF2
+
+`--game` is the `tf` folder or the install folder above it. Rendering works as for CS:S. RED and BLU spawns (`info_player_teamspawn`) seed auto crop, `--hull`, svg and health; the 3D skybox is cropped away by auto crop and drawn with `--no-auto-crop`. The shipped `.nav` files are read. Markers show control points, capture areas, flags and flag capture zones. `overview`, `timing` and `kills` are not supported.
 
 ## GUI
 

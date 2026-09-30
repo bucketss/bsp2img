@@ -236,6 +236,9 @@ pub fn export_timing(
     out: &Path,
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
+    if bsp.is_tf2() {
+        bail!("timing is not supported for TF2 maps");
+    }
     let t0 = std::time::Instant::now();
     rep.step(0.0)?;
     let nav = Nav::build(bsp, o.cell, o.speed)?;

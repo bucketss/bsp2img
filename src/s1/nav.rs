@@ -100,6 +100,9 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
         bail!("nav version {ver} not supported (1 to {MAX_VERSION} are)");
     }
     let sub_version = if ver >= 10 { r.u32()? } else { 0 };
+    if ver >= 15 && sub_version > 2 {
+        bail!("nav v{ver} sub-version {sub_version} not supported (1 and 2 are)");
+    }
     let bsp_size = if ver >= 4 { r.u32()? } else { 0 };
     let analyzed = ver >= 14 && r.u8()? != 0;
     let mut places = Vec::new();
@@ -174,7 +177,11 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
             r.skip(n * 5 + 4)?;
         }
         if ver >= 15 {
-            skip_approach(&mut r)?;
+            if sub_version >= 2 {
+                r.u32()?;
+            } else {
+                skip_approach(&mut r)?;
+            }
         }
         let poly = vec![nw, [se[0], nw[1], ne_z], se, [nw[0], se[1], sw_z]];
         areas.push(Area { poly, crouch: flags & CROUCH != 0, conns });

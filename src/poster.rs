@@ -303,6 +303,13 @@ fn legend_name(label: &str) -> &'static str {
         "BOMB" => "Bomb site",
         "RESCUE" => "Rescue zone",
         "ESCAPE" => "VIP escape",
+        "RED" => "RED spawn",
+        "BLU" => "BLU spawn",
+        "SPAWN" => "Team spawn",
+        "CP" => "Control point",
+        "CAP" => "Capture area",
+        "FLAG" => "Flag",
+        "CAPZONE" => "Flag capture zone",
         _ => "",
     }
 }

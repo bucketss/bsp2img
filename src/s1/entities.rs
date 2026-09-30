@@ -4,10 +4,13 @@ use glam::{DMat3, DVec3};
 
 use crate::bsp::Entity;
 
+const TF2_CLASSES: &[&str] = &["info_player_teamspawn", "tf_gamerules", "team_control_point_master", "item_teamflag", "team_train_watcher", "tf_logic_koth", "tf_logic_arena"];
+
 pub struct Ents {
     pub list: Vec<Entity>,
     pub disabled: Vec<(String, DVec3)>,
     pub sky: Option<String>,
+    pub tf2: bool,
 }
 
 fn nums(s: Option<&String>) -> Vec<f64> {
@@ -41,10 +44,25 @@ fn normalize(mut kv: HashMap<String, String>, disabled: &mut Vec<(String, DVec3)
         disabled.push((cls, DVec3::new(o.first().copied().unwrap_or(0.0), o.get(1).copied().unwrap_or(0.0), o.get(2).copied().unwrap_or(0.0))));
         return None;
     }
+    let has = |k: &str| kv.get(k).is_some_and(|v| !v.trim().is_empty());
+    let team = match kv.get("teamnum").map(|v| v.trim()) {
+        Some("2") => 2,
+        Some("3") => 3,
+        _ if has("round_redspawn") => 2,
+        _ if has("round_bluespawn") => 3,
+        _ if has("controlpoint") => 1,
+        _ => 0,
+    };
     let renamed = match cls.as_str() {
         "info_player_terrorist" => "info_player_deathmatch",
         "info_player_counterterrorist" => "info_player_start",
         "info_player_start" => "info_player_start_source",
+        "info_player_teamspawn" => match team {
+            2 => "info_player_deathmatch",
+            3 => "info_player_start",
+            1 => "",
+            _ => "info_player_teamspawn_unassigned",
+        },
         _ => "",
     };
     if !renamed.is_empty() {
@@ -64,7 +82,9 @@ fn normalize(mut kv: HashMap<String, String>, disabled: &mut Vec<(String, DVec3)
 
 pub fn parse(text: &str) -> Ents {
     let mut disabled = Vec::new();
-    let mut list: Vec<Entity> = crate::bsp::parse_entities(text)
+    let raw = crate::bsp::parse_entities(text);
+    let tf2 = raw.iter().any(|e| TF2_CLASSES.contains(&e.class()));
+    let mut list: Vec<Entity> = raw
         .into_iter()
         .filter_map(|e| normalize(e.0.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(), &mut disabled))
         .collect();
@@ -77,5 +97,5 @@ pub fn parse(text: &str) -> Ents {
         None => list.insert(0, Entity(HashMap::from([("classname".to_string(), "worldspawn".to_string())]))),
     }
     let sky = list[0].get("skyname").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    Ents { list, disabled, sky }
+    Ents { list, disabled, sky, tf2 }
 }

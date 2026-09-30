@@ -30,9 +30,14 @@ fn marker_style(cls: &str) -> Option<([u8; 3], &'static str, bool)> {
         "info_player_deathmatch" => (T, "T", true),
         "hostage_entity" => (HOSTAGE, "H", false),
         "info_vip_start" => ([60, 220, 90], "VIP", true),
+        "info_player_teamspawn" => ([200, 200, 200], "SPAWN", true),
         "func_bomb_target" | "info_bomb_target" => ([255, 140, 0], "BOMB", false),
         "func_hostage_rescue" => ([0, 220, 220], "RESCUE", false),
         "func_vip_safetyzone" => ([0, 220, 220], "ESCAPE", false),
+        "team_control_point" => ([255, 200, 0], "CP", false),
+        "trigger_capture_area" => ([255, 140, 0], "CAP", false),
+        "item_teamflag" => ([255, 255, 255], "FLAG", false),
+        "func_capturezone" => ([0, 220, 220], "CAPZONE", false),
         _ => return None,
     })
 }
@@ -52,6 +57,11 @@ pub fn entity_marks(bsp: &Bsp) -> Vec<Marker> {
     let mut out = Vec::new();
     for e in &bsp.entities {
         let Some((color, label, spawn)) = marker_style(e.class()) else { continue };
+        let label = match (bsp.is_tf2(), label) {
+            (true, "T") => "RED",
+            (true, "CT") => "BLU",
+            (_, l) => l,
+        };
         let team_best = match e.class() {
             "info_player_start" => best_ct,
             "info_player_deathmatch" => best_t,

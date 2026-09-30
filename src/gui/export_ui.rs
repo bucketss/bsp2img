@@ -143,10 +143,18 @@ impl App {
             }
         });
         ui.separator();
+        let tf2 = self.scene.as_ref().is_some_and(|s| s.bsp.is_tf2());
+        let shown = |e: &Exporter| !(tf2 && matches!(e, Exporter::Overview | Exporter::Timing | Exporter::Kills));
+        if !shown(&self.exporter) {
+            self.exporter = Exporter::Iso;
+        }
         for (group, items) in GROUPS {
+            if !items.iter().any(shown) {
+                continue;
+            }
             ui.weak(*group);
             ui.indent(*group, |ui| {
-                for &e in *items {
+                for &e in items.iter().filter(|e| shown(e)) {
                     ui.selectable_value(&mut self.exporter, e, e.label());
                 }
             });

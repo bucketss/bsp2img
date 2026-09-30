@@ -3,10 +3,11 @@ use super::*;
 pub(super) fn stuck_spawns(bsp: &Bsp, st: &LoadStats, phys: &Phys) -> Vec<(String, DVec3)> {
     let mut out = Vec::new();
     let mut iv = Vec::new();
+    let [tn, ctn] = teams(bsp.is_tf2());
     for (i, e) in bsp.entities.iter().enumerate() {
         let team = match e.class() {
-            "info_player_deathmatch" => "T",
-            "info_player_start" => "CT",
+            "info_player_deathmatch" => tn,
+            "info_player_start" => ctn,
             _ => continue,
         };
         let Some(p) = e.origin() else { continue };
@@ -155,7 +156,7 @@ pub(super) fn gather_cs2(scene: &Scene, x: &Extra, name: &str, o: &HealthOpts) -
     let st = &x.stats;
     let (missing_textures, missing_materials): (Vec<String>, Vec<String>) = st.missing.iter().cloned().partition(|m| m.ends_with(".vtex") || m.ends_with(".vtf"));
     let marks = crate::grid::entity_marks(bsp);
-    let comp = ["T", "CT"].map(|l| marks.iter().filter(|m| m.spawn && m.label == l && m.comp != Some(false)).count());
+    let comp = teams(bsp.is_tf2()).map(|l| marks.iter().filter(|m| m.spawn && m.label == l && m.comp != Some(false)).count());
     let disabled = ["info_player_terrorist", "info_player_counterterrorist"].map(|c| st.disabled.iter().filter(|d| d.0 == c).count());
     let walked = walk(bsp, o, &t, &ct);
     let phys = x.phys();
@@ -203,6 +204,8 @@ pub(super) fn gather_cs2(scene: &Scene, x: &Extra, name: &str, o: &HealthOpts) -
         sky,
         sky_found: x.sky.is_some() || !has_sky,
         nav: walked.map(|w| w.info).map_err(|e| format!("{e:#}")),
+        tf2: bsp.is_tf2(),
+        tf2_checks: tf2_checks(bsp),
         engine: Engine::Cs2(Box::new(cs2)),
     }
 }
@@ -386,18 +389,23 @@ impl Health {
 
     pub(super) fn write_spawns(&self, c: &ModernHealth, s: &mut String) -> std::fmt::Result {
         writeln!(s, "Spawns")?;
-        writeln!(
-            s,
-            "  spawns         T {} (comp {}, disabled {}), CT {} (comp {}, disabled {})",
-            self.t.len(),
-            c.comp[0],
-            c.disabled[0],
-            self.ct.len(),
-            c.comp[1],
-            c.disabled[1]
-        )?;
+        let [tn, ctn] = teams(self.tf2);
+        if self.tf2 {
+            writeln!(s, "  spawns         {tn} {}, {ctn} {}", self.t.len(), self.ct.len())?;
+        } else {
+            writeln!(
+                s,
+                "  spawns         T {} (comp {}, disabled {}), CT {} (comp {}, disabled {})",
+                self.t.len(),
+                c.comp[0],
+                c.disabled[0],
+                self.ct.len(),
+                c.comp[1],
+                c.disabled[1]
+            )?;
+        }
         let gap = |g: Option<(f64, DVec3)>| g.map_or("-".to_string(), |(d, p)| format!("{d:.0} units near {:.0} {:.0} {:.0}", p.x, p.y, p.z));
-        writeln!(s, "  closest pair   T {}, CT {}", gap(c.gaps[0]), gap(c.gaps[1]))?;
+        writeln!(s, "  closest pair   {tn} {}, {ctn} {}", gap(c.gaps[0]), gap(c.gaps[1]))?;
         match &c.stuck {
             Ok(v) if v.is_empty() => writeln!(s, "  in collision   none")?,
             Ok(v) => {
@@ -420,7 +428,9 @@ impl Health {
         }
         let obj: Vec<String> = self.objectives.iter().filter(|(_, n)| *n > 0).map(|(k, n)| format!("{n} {k}")).collect();
         writeln!(s, "  objectives     {}", list(&obj))?;
-        writeln!(s, "  buy zones      {}", self.buyzones)?;
+        if !self.tf2 {
+            writeln!(s, "  buy zones      {}", self.buyzones)?;
+        }
         writeln!(s, "  sky            {}", if self.sky_found { self.sky.clone() } else { format!("{} missing", self.sky) })?;
         writeln!(s)?;
         Ok(())

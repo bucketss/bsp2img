@@ -7,7 +7,7 @@ use crate::bsp::{Bsp, CONTENTS_SKY, CONTENTS_SOLID};
 use crate::nav::{Nav, STAND_OFS};
 
 pub const SEED_CLASSES: &[&str] =
-    &["info_player_start", "info_player_deathmatch", "info_vip_start", "hostage_entity", "monster_scientist"];
+    &["info_player_start", "info_player_deathmatch", "info_vip_start", "hostage_entity", "monster_scientist", "info_player_teamspawn"];
 
 pub fn seeds(bsp: &Bsp) -> Vec<DVec3> {
     bsp.entities.iter().filter(|e| SEED_CLASSES.contains(&e.class())).filter_map(|e| e.origin()).collect()

@@ -63,7 +63,20 @@ pub fn norm_name(name: &str) -> String {
             out.push(c);
         }
     }
-    out
+    if !out.split('/').any(|p| p == ".." || p == ".") {
+        return out;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for p in out.split('/') {
+        match p {
+            "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(p),
+        }
+    }
+    parts.join("/")
 }
 
 fn i32_at(d: &[u8], o: usize) -> Result<i32> {
@@ -257,6 +270,7 @@ mod tests {
     fn names() {
         assert_eq!(norm_name("./Models\\Props//x.MDL"), "models/props/x.mdl");
         assert_eq!(norm_name("/models/a.mdl"), "models/a.mdl");
+        assert_eq!(norm_name("materials/models/a/../b/./c.vmt"), "materials/models/b/c.vmt");
     }
 
     #[test]

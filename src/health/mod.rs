@@ -143,6 +143,8 @@ pub struct Health {
     pub sky: String,
     pub sky_found: bool,
     pub nav: Result<NavInfo, String>,
+    pub tf2: bool,
+    pub tf2_checks: Vec<String>,
     pub engine: Engine,
 }
 
@@ -272,6 +274,30 @@ pub struct SrcHealth {
 
 const OV_EXTS: [&str; 3] = ["txt", "bmp", "tga"];
 
+pub(super) fn teams(tf2: bool) -> [&'static str; 2] {
+    if tf2 { ["RED", "BLU"] } else { ["T", "CT"] }
+}
+
+pub(super) fn tf2_checks(bsp: &Bsp) -> Vec<String> {
+    let mut w = Vec::new();
+    if !bsp.is_tf2() {
+        return w;
+    }
+    let neutral = count(bsp, &["info_player_teamspawn"]);
+    for (team, cls) in [("RED", "info_player_deathmatch"), ("BLU", "info_player_start")] {
+        if neutral == 0 && count(bsp, &[cls]) == 0 {
+            w.push(format!("no {team} spawns"));
+        }
+    }
+    if count(bsp, &["team_control_point"]) > 0 && count(bsp, &["team_control_point_master"]) == 0 {
+        w.push("control points without a team_control_point_master".to_string());
+    }
+    if count(bsp, &["func_respawnroom"]) == 0 {
+        w.push("no func_respawnroom".to_string());
+    }
+    w
+}
+
 fn count(bsp: &Bsp, classes: &[&str]) -> usize {
     bsp.entities.iter().filter(|e| classes.contains(&e.class())).count()
 }
@@ -290,7 +316,8 @@ fn walk(bsp: &Bsp, o: &HealthOpts, t: &[DVec3], ct: &[DVec3]) -> Result<Walk> {
     let nav = Nav::build(bsp, o.cell, 250.0)?;
     let mut off_ground = Vec::new();
     let mut seeds = Vec::new();
-    for (team, pts) in [("T", t), ("CT", ct)] {
+    let [tn, ctn] = teams(bsp.is_tf2());
+    for (team, pts) in [(tn, t), (ctn, ct)] {
         for &p in pts {
             match nav.nearest(p, STAND_OFS) {
                 Some(n) => seeds.push(n),
@@ -379,6 +406,8 @@ pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
         sky,
         sky_found,
         nav,
+        tf2: false,
+        tf2_checks: Vec::new(),
         engine: Engine::Gold(Box::new(GoldHealth {
             limits: limits(bsp),
             vis_bytes: bsp.lump_len[LUMP_VISIBILITY],
@@ -409,6 +438,11 @@ fn basics(bsp: &Bsp) -> Basics {
         ("VIP starts", count(bsp, &["info_vip_start"])),
         ("VIP escapes", count(bsp, &["func_vip_safetyzone"])),
         ("escape zones", count(bsp, &["func_escapezone"])),
+        ("control points", count(bsp, &["team_control_point"])),
+        ("capture areas", count(bsp, &["trigger_capture_area"])),
+        ("flags", count(bsp, &["item_teamflag"])),
+        ("flag capture zones", count(bsp, &["func_capturezone"])),
+        ("payload tracks", count(bsp, &["team_train_watcher"])),
     ];
     let buyzones = count(bsp, &["func_buyzone"]);
     (t, ct, objectives, buyzones)
@@ -488,7 +522,7 @@ impl Health {
         let mut cols: Vec<String> = [
             "map", "engine", "error", "warnings", "vis_bytes", "lighting_bytes", "unlit_faces", "lightable_faces", "t_spawns",
             "ct_spawns", "spawns_off_ground", "bombsites", "hostages", "rescue_zones", "vip_starts", "vip_escapes",
-            "escape_zones", "buyzones", "missing_wads", "missing_textures", "sky_missing", "missing_files", "ov_txt",
+            "escape_zones", "control_points", "capture_areas", "flags", "flag_zones", "payload_tracks", "buyzones", "missing_wads", "missing_textures", "sky_missing", "missing_files", "ov_txt",
             "ov_bmp", "ov_tga", "bmp_index255_px", "res", "res_txt", "res_bmp", "res_tga", "walkable_m2", "open_radius",
         ]
         .map(String::from)

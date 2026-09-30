@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 
-use crate::bsp::{Bsp, Engine, Model as BModel};
+use crate::bsp::{Bsp, Engine, Game, Model as BModel};
 use crate::extra::{Extra, LoadStats, PhysSrc};
 use crate::mesh::Mesh;
 use crate::navmesh::NavMesh;
@@ -50,6 +50,10 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     }
 
     let mut b = Bsp::empty(path, Engine::Source(map.version));
+    let tf_root = opened.root.as_deref().and_then(|r| r.file_name()).is_some_and(|n| n.eq_ignore_ascii_case("tf"));
+    if map.version == 20 && (tf_root || ents.tf2) {
+        b.game = Game::Tf2;
+    }
     b.models = w
         .models
         .iter()

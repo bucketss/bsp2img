@@ -212,6 +212,13 @@ pub enum Engine {
     Cs2,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Game {
+    #[default]
+    Cs,
+    Tf2,
+}
+
 impl Engine {
     pub fn modern(self) -> bool {
         self != Engine::GoldSrc
@@ -221,6 +228,7 @@ impl Engine {
 pub struct Bsp {
     pub path: PathBuf,
     pub engine: Engine,
+    pub game: Game,
     pub entities: Vec<Entity>,
     pub planes: Vec<Plane>,
     pub vertices: Vec<DVec3>,
@@ -365,6 +373,7 @@ impl Bsp {
             lump_len: std::array::from_fn(|i| lumps[i].1),
             extra: None,
             nav_cache: Default::default(),
+            game: Game::Cs,
         };
         bsp.validate()?;
         Ok(bsp)
@@ -452,11 +461,16 @@ impl Bsp {
             lump_len: [0; 15],
             extra: None,
             nav_cache: Default::default(),
+            game: Game::Cs,
         }
     }
 
     pub fn engine(&self) -> Engine {
         self.engine
+    }
+
+    pub fn is_tf2(&self) -> bool {
+        self.game == Game::Tf2
     }
 
     pub fn is_cs2(&self) -> bool {

@@ -103,7 +103,11 @@ impl Zip {
 }
 
 pub fn norm(name: &str) -> String {
-    name.to_lowercase().replace('\\', "/").trim_start_matches('/').to_string()
+    let mut s = name.to_lowercase().replace('\\', "/");
+    while s.contains("//") {
+        s = s.replace("//", "/");
+    }
+    s.trim_start_matches('/').to_string()
 }
 
 fn gameinfo_dir(map: &Path, game: Option<&Path>) -> Option<PathBuf> {
@@ -120,7 +124,7 @@ fn gameinfo_dir(map: &Path, game: Option<&Path>) -> Option<PathBuf> {
     let mut subs: Vec<PathBuf> = std::fs::read_dir(g).ok()?.flatten().map(|e| e.path()).filter(|p| has(p)).collect();
     subs.sort_by_key(|p| {
         let l = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        (l != "cstrike" && l != "csgo", l)
+        (l != "cstrike" && l != "csgo" && l != "tf", l)
     });
     subs.into_iter().next()
 }
