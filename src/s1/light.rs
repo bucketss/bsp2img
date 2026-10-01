@@ -229,3 +229,31 @@ pub fn finish(a: &Atlas, light: &LightParams) -> (Image, HdrLight) {
     )
 }
 
+
+pub fn floor_light(map: &Map, w: &World, crop: Option<[f64; 4]>) -> Option<f32> {
+    let l = Lighting::open(map, w, false).ok()??;
+    let mut lum: Vec<f32> = Vec::new();
+    for (fi, f) in w.faces.iter().enumerate() {
+        let flags = usize::try_from(f.texinfo).ok().and_then(|t| w.texinfo.get(t)).map_or(super::bsp::SURF_NOLIGHT, |t| t.flags);
+        if flags & (super::bsp::SURF_HIDDEN | super::bsp::SURF_NOLIGHT | super::bsp::SURF_WARP) != 0 || f.dispinfo < 0 && w.planes.get(f.plane as usize).is_none_or(|p| p.normal.z < 0.7) {
+            continue;
+        }
+        let v = usize::try_from(f.first_edge)
+            .ok()
+            .and_then(|e| w.surfedges.get(e))
+            .and_then(|&se| w.edges.get(se.unsigned_abs() as usize).map(|e| e[(se < 0) as usize]))
+            .and_then(|i| w.vertices.get(i as usize));
+        if let (Some(c), Some(v)) = (crop, v)
+            && (v.x < c[0] || v.y < c[1] || v.x > c[2] || v.y > c[3])
+        {
+            continue;
+        }
+        let Some(b) = l.sample(w, fi) else { continue };
+        lum.extend(b.rgb.iter().map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]));
+    }
+    if lum.is_empty() {
+        return None;
+    }
+    let mid = lum.len() / 2;
+    Some(*lum.select_nth_unstable_by(mid, f32::total_cmp).1)
+}

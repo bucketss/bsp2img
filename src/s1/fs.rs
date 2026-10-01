@@ -124,7 +124,7 @@ fn gameinfo_dir(map: &Path, game: Option<&Path>) -> Option<PathBuf> {
     let mut subs: Vec<PathBuf> = std::fs::read_dir(g).ok()?.flatten().map(|e| e.path()).filter(|p| has(p)).collect();
     subs.sort_by_key(|p| {
         let l = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        (l != "cstrike" && l != "csgo" && l != "tf", l)
+        (!matches!(l.as_str(), "cstrike" | "csgo" | "tf" | "left4dead" | "left4dead2"), l)
     });
     subs.into_iter().next()
 }
@@ -174,6 +174,15 @@ pub fn search_paths(gameinfo: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(out)
+}
+
+pub fn lump_files(map: &Path, game: Option<&Path>, name: &str) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(g) = gameinfo_dir(map, game) {
+        dirs.extend(search_paths(&g).unwrap_or_default().into_iter().filter(|p| p.is_dir()).map(|p| p.join("maps")));
+    }
+    dirs.extend(std::path::absolute(map).ok().and_then(|p| p.parent().map(Path::to_path_buf)));
+    (0..super::bsp::LUMPS).filter_map(|n| dirs.iter().map(|d| d.join(format!("{name}_l_{n}.lmp"))).find(|p| p.is_file())).collect()
 }
 
 fn same(a: &Path, b: &Path) -> bool {

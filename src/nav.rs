@@ -90,7 +90,7 @@ pub struct Zone {
 }
 
 pub fn zones(bsp: &Bsp) -> Vec<Zone> {
-    let kinds: [(&[&str], &str, [u8; 3]); 7] = [
+    let kinds: [(&[&str], &str, [u8; 3]); 10] = [
         (&["func_bomb_target", "info_bomb_target"], "bombsite", [255, 140, 0]),
         (&["func_hostage_rescue", "info_hostage_rescue"], "rescue", [0, 220, 220]),
         (&["hostage_entity"], "hostage", [255, 220, 0]),
@@ -98,6 +98,9 @@ pub fn zones(bsp: &Bsp) -> Vec<Zone> {
         (&["trigger_capture_area"], "capture area", [255, 140, 0]),
         (&["item_teamflag"], "flag", [255, 255, 255]),
         (&["func_capturezone"], "flag zone", [0, 220, 220]),
+        (&["info_l4d_saferoom"], "saferoom", [60, 220, 90]),
+        (&["info_changelevel"], "saferoom exit", [0, 220, 220]),
+        (&["trigger_finale"], "finale", [255, 140, 0]),
     ];
     let mut out = Vec::new();
     for (classes, name, color) in kinds {

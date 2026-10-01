@@ -1,6 +1,6 @@
 # bsp2img
 
-Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
+Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
 
 ## CS2
 
@@ -20,6 +20,10 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2) maps from the
 ## TF2
 
 `--game` is the `tf` folder or the install folder above it. Rendering works as for CS:S. RED and BLU spawns (`info_player_teamspawn`) seed auto crop, `--hull`, svg and health; the 3D skybox is cropped away by auto crop and drawn with `--no-auto-crop`. The shipped `.nav` files are read. Markers show control points, capture areas, flags and flag capture zones. `overview`, `timing` and `kills` are not supported.
+
+## L4D and L4D2
+
+`--game` is the `left 4 dead` or `Left 4 Dead 2` install folder, or a content folder in it. Rendering works as for CS:S; dark maps get an automatic exposure (up to 24x) from the median floor light. L4D2 `_l_` lump files (`update\maps`) are applied; Survival and Scavenge (`_h_`, `_s_`) ones are not. Saferooms (nav checkpoint areas), `info_player_start` and `info_landmark` seed auto crop, `--hull`, svg and health. Markers show saferooms, saferoom exits, finales and rescue closets. `overview`, `timing` and `kills` are not supported.
 
 ## GUI
 

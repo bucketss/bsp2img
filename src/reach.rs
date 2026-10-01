@@ -9,8 +9,15 @@ use crate::nav::{Nav, STAND_OFS};
 pub const SEED_CLASSES: &[&str] =
     &["info_player_start", "info_player_deathmatch", "info_vip_start", "hostage_entity", "monster_scientist", "info_player_teamspawn"];
 
+pub const L4D_SEED_CLASSES: &[&str] = &["info_player_start", "info_landmark", "info_l4d_saferoom", "info_survivor_position_seed"];
+
+pub fn seed_classes(bsp: &Bsp) -> &'static [&'static str] {
+    if bsp.is_l4d() { L4D_SEED_CLASSES } else { SEED_CLASSES }
+}
+
 pub fn seeds(bsp: &Bsp) -> Vec<DVec3> {
-    bsp.entities.iter().filter(|e| SEED_CLASSES.contains(&e.class())).filter_map(|e| e.origin()).collect()
+    let classes = seed_classes(bsp);
+    bsp.entities.iter().filter(|e| classes.contains(&e.class())).filter_map(|e| e.origin()).collect()
 }
 
 struct Grid {

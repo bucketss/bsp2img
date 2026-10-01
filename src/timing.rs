@@ -236,8 +236,8 @@ pub fn export_timing(
     out: &Path,
     rep: &mut Report,
 ) -> Result<Vec<PathBuf>> {
-    if bsp.is_tf2() {
-        bail!("timing is not supported for TF2 maps");
+    if !bsp.is_cs() {
+        bail!("timing is not supported for {} maps", bsp.game.label());
     }
     let t0 = std::time::Instant::now();
     rep.step(0.0)?;

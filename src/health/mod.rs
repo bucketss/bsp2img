@@ -8,7 +8,7 @@ use glam::DVec3;
 use rayon::prelude::*;
 use tiny_skia::{FillRule, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::bsp::{Bsp, LUMP_ENTITIES, LUMP_LIGHTING, LUMP_TEXTURES, LUMP_VISIBILITY, TEX_SPECIAL};
+use crate::bsp::{Bsp, Game, LUMP_ENTITIES, LUMP_LIGHTING, LUMP_TEXTURES, LUMP_VISIBILITY, TEX_SPECIAL};
 use crate::camera::top_down;
 use crate::grid::{CT, T, Text, grid_frame, line, paint, rect};
 use crate::nav::{NONE, Nav, STAND_OFS, STEP, root, unite};
@@ -143,8 +143,8 @@ pub struct Health {
     pub sky: String,
     pub sky_found: bool,
     pub nav: Result<NavInfo, String>,
-    pub tf2: bool,
-    pub tf2_checks: Vec<String>,
+    pub game: Game,
+    pub game_checks: Vec<String>,
     pub engine: Engine,
 }
 
@@ -274,12 +274,28 @@ pub struct SrcHealth {
 
 const OV_EXTS: [&str; 3] = ["txt", "bmp", "tga"];
 
-pub(super) fn teams(tf2: bool) -> [&'static str; 2] {
-    if tf2 { ["RED", "BLU"] } else { ["T", "CT"] }
+pub(super) fn teams(game: Game) -> [&'static str; 2] {
+    match game {
+        Game::Tf2 => ["RED", "BLU"],
+        Game::L4d | Game::L4d2 => ["SAFE", "START"],
+        Game::Cs => ["T", "CT"],
+    }
 }
 
-pub(super) fn tf2_checks(bsp: &Bsp) -> Vec<String> {
+pub(super) fn game_checks(bsp: &Bsp) -> Vec<String> {
     let mut w = Vec::new();
+    if bsp.is_l4d() {
+        if count(bsp, &["info_l4d_saferoom"]) == 0 {
+            w.push("no saferoom (nav checkpoint areas)".to_string());
+        }
+        if count(bsp, &["info_changelevel", "trigger_finale"]) == 0 {
+            w.push("no info_changelevel or trigger_finale".to_string());
+        }
+        if count(bsp, &["info_director"]) == 0 {
+            w.push("no info_director".to_string());
+        }
+        return w;
+    }
     if !bsp.is_tf2() {
         return w;
     }
@@ -316,7 +332,7 @@ fn walk(bsp: &Bsp, o: &HealthOpts, t: &[DVec3], ct: &[DVec3]) -> Result<Walk> {
     let nav = Nav::build(bsp, o.cell, 250.0)?;
     let mut off_ground = Vec::new();
     let mut seeds = Vec::new();
-    let [tn, ctn] = teams(bsp.is_tf2());
+    let [tn, ctn] = teams(bsp.game);
     for (team, pts) in [(tn, t), (ctn, ct)] {
         for &p in pts {
             match nav.nearest(p, STAND_OFS) {
@@ -406,8 +422,8 @@ pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
         sky,
         sky_found,
         nav,
-        tf2: false,
-        tf2_checks: Vec::new(),
+        game: Game::Cs,
+        game_checks: Vec::new(),
         engine: Engine::Gold(Box::new(GoldHealth {
             limits: limits(bsp),
             vis_bytes: bsp.lump_len[LUMP_VISIBILITY],
@@ -429,8 +445,11 @@ type Basics = (Vec<DVec3>, Vec<DVec3>, Vec<(&'static str, usize)>, usize);
 
 fn basics(bsp: &Bsp) -> Basics {
     let origins = |cls: &str| -> Vec<DVec3> { bsp.entities.iter().filter(|e| e.class() == cls).filter_map(|e| e.origin()).collect() };
-    let t = origins("info_player_deathmatch");
-    let ct = origins("info_player_start");
+    let (t, ct) = if bsp.is_l4d() {
+        (["info_l4d_saferoom", "info_landmark", "info_survivor_position_seed"].iter().flat_map(|c| origins(c)).collect(), origins("info_player_start"))
+    } else {
+        (origins("info_player_deathmatch"), origins("info_player_start"))
+    };
     let objectives = vec![
         ("bombsites", count(bsp, &["func_bomb_target", "info_bomb_target"])),
         ("hostages", count(bsp, &["hostage_entity"])),
@@ -443,6 +462,10 @@ fn basics(bsp: &Bsp) -> Basics {
         ("flags", count(bsp, &["item_teamflag"])),
         ("flag capture zones", count(bsp, &["func_capturezone"])),
         ("payload tracks", count(bsp, &["team_train_watcher"])),
+        ("saferooms", count(bsp, &["info_l4d_saferoom"])),
+        ("saferoom exits", count(bsp, &["info_changelevel"])),
+        ("finales", count(bsp, &["trigger_finale"])),
+        ("rescue closets", count(bsp, &["info_survivor_rescue"])),
     ];
     let buyzones = count(bsp, &["func_buyzone"]);
     (t, ct, objectives, buyzones)
@@ -522,7 +545,7 @@ impl Health {
         let mut cols: Vec<String> = [
             "map", "engine", "error", "warnings", "vis_bytes", "lighting_bytes", "unlit_faces", "lightable_faces", "t_spawns",
             "ct_spawns", "spawns_off_ground", "bombsites", "hostages", "rescue_zones", "vip_starts", "vip_escapes",
-            "escape_zones", "control_points", "capture_areas", "flags", "flag_zones", "payload_tracks", "buyzones", "missing_wads", "missing_textures", "sky_missing", "missing_files", "ov_txt",
+            "escape_zones", "control_points", "capture_areas", "flags", "flag_zones", "payload_tracks", "saferooms", "saferoom_exits", "finales", "rescue_closets", "buyzones", "missing_wads", "missing_textures", "sky_missing", "missing_files", "ov_txt",
             "ov_bmp", "ov_tga", "bmp_index255_px", "res", "res_txt", "res_bmp", "res_tga", "walkable_m2", "open_radius",
         ]
         .map(String::from)

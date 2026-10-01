@@ -310,6 +310,11 @@ fn legend_name(label: &str) -> &'static str {
         "CAP" => "Capture area",
         "FLAG" => "Flag",
         "CAPZONE" => "Flag capture zone",
+        "SAFE" => "Saferoom",
+        "START" => "Start area",
+        "EXIT" => "Saferoom exit",
+        "FINALE" => "Finale",
+        "CLOSET" => "Rescue closet",
         _ => "",
     }
 }

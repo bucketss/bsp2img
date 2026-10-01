@@ -38,6 +38,10 @@ fn marker_style(cls: &str) -> Option<([u8; 3], &'static str, bool)> {
         "trigger_capture_area" => ([255, 140, 0], "CAP", false),
         "item_teamflag" => ([255, 255, 255], "FLAG", false),
         "func_capturezone" => ([0, 220, 220], "CAPZONE", false),
+        "info_l4d_saferoom" => ([60, 220, 90], "SAFE", true),
+        "info_changelevel" => ([0, 220, 220], "EXIT", false),
+        "trigger_finale" => ([255, 140, 0], "FINALE", false),
+        "info_survivor_rescue" => ([255, 220, 0], "CLOSET", false),
         _ => return None,
     })
 }
@@ -57,9 +61,13 @@ pub fn entity_marks(bsp: &Bsp) -> Vec<Marker> {
     let mut out = Vec::new();
     for e in &bsp.entities {
         let Some((color, label, spawn)) = marker_style(e.class()) else { continue };
+        if bsp.is_l4d() && e.class() == "info_player_start" {
+            continue;
+        }
         let label = match (bsp.is_tf2(), label) {
             (true, "T") => "RED",
             (true, "CT") => "BLU",
+            (_, "SAFE") if e.get("start").is_some_and(|v| v == "1") => "START",
             (_, l) => l,
         };
         let team_best = match e.class() {
@@ -384,7 +392,11 @@ pub fn grid_preview(r: &mut Renderer, bsp: &Bsp, path: &Path, cuts: &Cuts) -> Re
         outline(&mut pm, sx(cx0.max(x0)), sy(cy1.min(y1)), sx(cx1.min(x1)), sy(cy0.max(y0)), [255, 60, 60], 2.0);
     }
 
-    let legend: [(&str, [u8; 3]); 4] = [("CT", CT), ("T", T), ("hostage", HOSTAGE), ("removed", REMOVED)];
+    let legend: [(&str, [u8; 3]); 4] = if bsp.is_l4d() {
+        [("saferoom", [60, 220, 90]), ("closet", HOSTAGE), ("finale", [255, 140, 0]), ("removed", REMOVED)]
+    } else {
+        [("CT", CT), ("T", T), ("hostage", HOSTAGE), ("removed", REMOVED)]
+    };
     let (lx, ly) = (fw - 110.0, fh - 18.0 * legend.len() as f32 - 8.0);
     rect(&mut pm, lx - 6.0, ly - 4.0, fw - 4.0, fh - 4.0, [0, 0, 0], 180);
     for (i, (t, c)) in legend.iter().enumerate() {

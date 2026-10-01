@@ -125,6 +125,8 @@ pub struct Map {
     pub version: u32,
     pub revision: i32,
     pub lumps: [Lump; LUMPS],
+    pub l4d2: bool,
+    patched: Vec<Option<Vec<u8>>>,
     data: Mmap,
 }
 
@@ -164,18 +166,38 @@ impl Map {
         let r = Rd { data: &data };
         let version = r.u32(4);
         if !(19..=21).contains(&version) {
-            bail!("Source BSP version {version} is not supported (CS:S is 19/20, CS:GO 21)");
+            bail!("Source BSP version {version} is not supported (CS:S, TF2 and L4D are 19/20, CS:GO and L4D2 21)");
         }
+        let l4d2 = version == 21 && (0..LUMPS).any(|i| r.u32(8 + i * 16 + 4) != 0 && (r.u32(8 + i * 16) as usize) < HEADER);
         let mut lumps = [Lump::default(); LUMPS];
         for (i, l) in lumps.iter_mut().enumerate() {
             let o = 8 + i * 16;
-            *l = Lump { ofs: r.u32(o) as usize, len: r.u32(o + 4) as usize, version: r.i32(o + 8), fourcc: data[o + 12..o + 16].try_into().unwrap() };
+            let fourcc = data[o + 12..o + 16].try_into().unwrap();
+            *l = if l4d2 {
+                Lump { ofs: r.u32(o + 4) as usize, len: r.u32(o + 8) as usize, version: r.i32(o), fourcc }
+            } else {
+                Lump { ofs: r.u32(o) as usize, len: r.u32(o + 4) as usize, version: r.i32(o + 8), fourcc }
+            };
             if l.len > 0 && l.ofs.checked_add(l.len).is_none_or(|e| e > data.len()) {
                 bail!("lump {i} runs past the end of the file");
             }
         }
         let revision = r.i32(8 + LUMPS * 16);
-        Ok(Map { path: path.to_path_buf(), version, revision, lumps, data })
+        Ok(Map { path: path.to_path_buf(), version, revision, lumps, l4d2, patched: vec![None; LUMPS], data })
+    }
+
+    pub fn apply_lump_file(&mut self, b: &[u8]) -> Result<usize> {
+        let r = Rd { data: b };
+        ensure!(b.len() >= 20, "lump file too short");
+        let (ofs, id, version, len) = (r.u32(0) as usize, r.u32(4) as usize, r.i32(8), r.u32(12) as usize);
+        ensure!(id < LUMPS, "lump file patches lump {id}");
+        ensure!(id != LUMP_PAKFILE && id != LUMP_GAME_LUMP, "lump file patches lump {id}, which is not supported");
+        let body = ofs.checked_add(len).and_then(|e| b.get(ofs..e)).context("lump file data runs past the end")?;
+        self.lumps[id].len = body.len();
+        self.lumps[id].version = version;
+        self.lumps[id].fourcc = [0; 4];
+        self.patched[id] = Some(body.to_vec());
+        Ok(id)
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -183,6 +205,9 @@ impl Map {
     }
 
     pub fn raw(&self, i: usize) -> &[u8] {
+        if let Some(p) = &self.patched[i] {
+            return p;
+        }
         let l = &self.lumps[i];
         &self.data[l.ofs..l.ofs + l.len]
     }

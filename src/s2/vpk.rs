@@ -52,6 +52,14 @@ fn read_at(f: &File, buf: &mut [u8], off: u64) -> std::io::Result<()> {
     f.read_exact_at(buf, off)
 }
 
+fn tree_str(r: &mut Rd) -> Result<String> {
+    let rest = r.b.get(r.p..).unwrap_or(&[]);
+    let Some(e) = rest.iter().position(|&c| c == 0) else { bail!("unterminated string at {}", r.p) };
+    let s = std::str::from_utf8(&rest[..e]).map_or_else(|_| crate::bsp::latin1(&rest[..e]), str::to_string);
+    r.p += e + 1;
+    Ok(s)
+}
+
 impl Vpk {
     pub fn open(path: &Path) -> Result<Vpk> {
         Self::read_tree(path, 0, None).with_context(|| format!("reading {}", path.display()))
@@ -86,17 +94,17 @@ impl Vpk {
         let mut max_arc = 0u16;
         let mut end = 0u64;
         loop {
-            let ext = r.cstr()?;
+            let ext = tree_str(&mut r)?;
             if ext.is_empty() {
                 break;
             }
             loop {
-                let dir = r.cstr()?;
+                let dir = tree_str(&mut r)?;
                 if dir.is_empty() {
                     break;
                 }
                 loop {
-                    let name = r.cstr()?;
+                    let name = tree_str(&mut r)?;
                     if name.is_empty() {
                         break;
                     }

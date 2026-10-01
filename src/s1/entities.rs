@@ -6,11 +6,14 @@ use crate::bsp::Entity;
 
 const TF2_CLASSES: &[&str] = &["info_player_teamspawn", "tf_gamerules", "team_control_point_master", "item_teamflag", "team_train_watcher", "tf_logic_koth", "tf_logic_arena"];
 
+const L4D_CLASSES: &[&str] = &["info_director", "prop_door_rotating_checkpoint", "info_survivor_rescue", "info_survivor_position", "info_changelevel", "trigger_finale", "info_gamemode"];
+
 pub struct Ents {
     pub list: Vec<Entity>,
     pub disabled: Vec<(String, DVec3)>,
     pub sky: Option<String>,
     pub tf2: bool,
+    pub l4d: bool,
 }
 
 fn nums(s: Option<&String>) -> Vec<f64> {
@@ -36,7 +39,7 @@ pub fn rotation(e: &Entity) -> DMat3 {
     crate::s2::entities::angle_matrix(angles(e))
 }
 
-fn normalize(mut kv: HashMap<String, String>, disabled: &mut Vec<(String, DVec3)>) -> Option<Entity> {
+fn normalize(mut kv: HashMap<String, String>, l4d: bool, disabled: &mut Vec<(String, DVec3)>) -> Option<Entity> {
     let cls = kv.get("classname").cloned().unwrap_or_default();
     let spawn = matches!(cls.as_str(), "info_player_terrorist" | "info_player_counterterrorist");
     if spawn && kv.get("enabled").is_some_and(|v| v.trim() == "0") {
@@ -56,7 +59,7 @@ fn normalize(mut kv: HashMap<String, String>, disabled: &mut Vec<(String, DVec3)
     let renamed = match cls.as_str() {
         "info_player_terrorist" => "info_player_deathmatch",
         "info_player_counterterrorist" => "info_player_start",
-        "info_player_start" => "info_player_start_source",
+        "info_player_start" if !l4d => "info_player_start_source",
         "info_player_teamspawn" => match team {
             2 => "info_player_deathmatch",
             3 => "info_player_start",
@@ -81,12 +84,17 @@ fn normalize(mut kv: HashMap<String, String>, disabled: &mut Vec<(String, DVec3)
 }
 
 pub fn parse(text: &str) -> Ents {
+    parse_with(text, false)
+}
+
+pub fn parse_with(text: &str, l4d_root: bool) -> Ents {
     let mut disabled = Vec::new();
     let raw = crate::bsp::parse_entities(text);
     let tf2 = raw.iter().any(|e| TF2_CLASSES.contains(&e.class()));
+    let l4d = l4d_root || raw.iter().any(|e| L4D_CLASSES.contains(&e.class()));
     let mut list: Vec<Entity> = raw
         .into_iter()
-        .filter_map(|e| normalize(e.0.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(), &mut disabled))
+        .filter_map(|e| normalize(e.0.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect(), l4d, &mut disabled))
         .collect();
     match list.iter().position(|e| e.class() == "worldspawn") {
         Some(0) => {}
@@ -97,5 +105,5 @@ pub fn parse(text: &str) -> Ents {
         None => list.insert(0, Entity(HashMap::from([("classname".to_string(), "worldspawn".to_string())]))),
     }
     let sky = list[0].get("skyname").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    Ents { list, disabled, sky, tf2 }
+    Ents { list, disabled, sky, tf2, l4d }
 }

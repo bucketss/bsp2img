@@ -36,7 +36,7 @@ pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
                 subs.sort();
                 subs.sort_by_key(|d| {
                     let l = d.to_lowercase();
-                    (l != "cstrike" && l != "csgo" && l != "tf", l.ends_with("_downloads") || l.ends_with("_addon"))
+                    (!matches!(l.as_str(), "cstrike" | "csgo" | "tf" | "left4dead" | "left4dead2"), l.ends_with("_downloads") || l.ends_with("_addon"))
                 });
                 cands.extend(subs.iter().map(|d| root.join(d)));
             }
@@ -153,7 +153,7 @@ pub fn list_maps(game: &Path) -> Vec<(String, PathBuf)> {
             let mut subs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join("maps").is_dir()).collect();
             subs.sort_by_key(|p| {
                 let l = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                (l != "cstrike" && l != "csgo" && l != "tf", l.ends_with("_downloads") || l.ends_with("_addon"), l)
+                (!matches!(l.as_str(), "cstrike" | "csgo" | "tf" | "left4dead" | "left4dead2"), l.ends_with("_downloads") || l.ends_with("_addon"), l)
             });
             dirs.extend(subs);
         }
@@ -309,7 +309,12 @@ pub fn mod_tag(engine: crate::bsp::Engine) -> &'static str {
 }
 
 pub fn game_tag(bsp: &crate::bsp::Bsp) -> &'static str {
-    if bsp.is_tf2() { "tf2" } else { mod_tag(bsp.engine) }
+    match bsp.game {
+        crate::bsp::Game::Tf2 => "tf2",
+        crate::bsp::Game::L4d => "l4d",
+        crate::bsp::Game::L4d2 => "l4d2",
+        crate::bsp::Game::Cs => mod_tag(bsp.engine),
+    }
 }
 
 pub fn run_name(bsp: &crate::bsp::Bsp) -> String {

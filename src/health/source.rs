@@ -34,7 +34,7 @@ pub(super) fn lump_len(map: &Map, i: usize) -> usize {
 }
 
 pub(super) fn src_limits(map: &Map, entities: usize) -> Vec<SrcLimit> {
-    let csgo = map.version >= 21;
+    let csgo = map.version >= 21 && !map.l4d2;
     let mut out: Vec<SrcLimit> = SRC_LIMITS
         .iter()
         .map(|&(key, label, lump, size, sdk, go)| {
@@ -94,7 +94,7 @@ pub(super) fn nav_file(x: &Extra, map: &Map, name: &str) -> NavFile {
 }
 
 pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o: &HealthOpts) -> Health {
-    let Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, tf2, tf2_checks, engine } = gather_cs2(scene, x, name, o);
+    let Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, game, game_checks, engine } = gather_cs2(scene, x, name, o);
     let Engine::Cs2(mut c) = engine else { unreachable!() };
     let (missing_models, missing_materials): (Vec<String>, Vec<String>) = std::mem::take(&mut c.missing_materials).into_iter().partition(|m| m.ends_with(".mdl"));
     c.missing_materials = missing_materials;
@@ -102,16 +102,16 @@ pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o
     let ents = map.entities().map(|t| crate::s1::entities::parse(&t)).map_or(0, |e| e.list.len() + e.disabled.len());
     let static_props = StaticProps::from_bsp(map.bytes(), map.raw(s1b::LUMP_GAME_LUMP)).ok().flatten().map_or(0, |s| s.props.len());
     let pak = crate::s1::fs::Zip::open(map.clone()).ok().flatten().map(|z| (z.bytes(), z.len()));
-    let csgo = map.version >= 21;
+    let csgo = map.version >= 21 && !map.l4d2;
     let s = SrcHealth {
         version: map.version,
         revision: map.revision,
-        game: if csgo {
-            "CS:GO"
-        } else if tf2 {
-            "TF2"
-        } else {
-            "CS:S"
+        game: match game {
+            Game::Tf2 => "TF2",
+            Game::L4d => "L4D",
+            Game::L4d2 => "L4D2",
+            Game::Cs if csgo => "CS:GO",
+            Game::Cs => "CS:S",
         },
         sdk: if csgo { "CS:GO" } else { "SDK 2013" },
         limits: src_limits(map, ents),
@@ -126,7 +126,7 @@ pub(super) fn gather_src(scene: &Scene, x: &Extra, map: &Arc<Map>, name: &str, o
         pak,
         base: *c,
     };
-    Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, tf2, tf2_checks, engine: Engine::Source(Box::new(s)) }
+    Health { name: hname, t, ct, objectives, buyzones, sky, sky_found, nav, game, game_checks, engine: Engine::Source(Box::new(s)) }
 }
 
 pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
@@ -146,8 +146,10 @@ pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
     v.push((format!("load: {nf} failed, {nm} missing models, {nmat} materials, {nt} textures"), ok(nf + nm + nmat + nt == 0)));
     v.push((format!("geometry: {:.1}M triangles, {} displacements, {} props", c.tris as f64 / 1e6, s.displacements, s.static_props), white));
     v.push((s.pak.map_or("pakfile: none".to_string(), |(b, n)| format!("pakfile: {:.1} MB, {n} files", b as f64 / 1048576.0)), white));
-    if h.tf2 {
-        v.push((format!("spawns: RED {}, BLU {}", h.t.len(), h.ct.len()), ok(!h.t.is_empty() && !h.ct.is_empty())));
+    if h.game != Game::Cs {
+        let [tn, ctn] = teams(h.game);
+        let good = if h.game == Game::Tf2 { !h.t.is_empty() && !h.ct.is_empty() } else { !h.t.is_empty() || !h.ct.is_empty() };
+        v.push((format!("spawns: {tn} {}, {ctn} {}", h.t.len(), h.ct.len()), ok(good)));
     } else {
         let comp_ok = c.comp.iter().all(|&n| n >= COMP_MIN);
         v.push((
@@ -173,7 +175,7 @@ pub(super) fn src_facts(h: &Health, s: &SrcHealth) -> Vec<(String, [u8; 3])> {
         NavFile::Ignored { .. } => v.push(("nav: ignored, collision walk fallback".into(), AMBER)),
         NavFile::Missing { .. } => v.push(("nav: none, collision walk fallback".into(), AMBER)),
     }
-    if !h.tf2 {
+    if h.game == Game::Cs {
         let r = &c.radar;
         let have = r.images.iter().filter(|i| i.1.is_some()).count();
         let txt = match (&r.err, r.txt) {
@@ -235,8 +237,8 @@ impl Health {
         if !c.missing_textures.is_empty() {
             w.push(format!("{} textures missing", c.missing_textures.len()));
         }
-        if self.tf2 {
-            self.tf2_warnings(&mut w);
+        if self.game != Game::Cs {
+            self.game_warnings(&mut w);
         } else {
             for (team, n) in [("T", c.comp[0]), ("CT", c.comp[1])] {
                 if n < COMP_MIN {
@@ -266,14 +268,14 @@ impl Health {
         if !self.sky_found {
             w.push(format!("sky {} missing", self.sky));
         }
-        if !self.tf2 {
+        if self.game == Game::Cs {
             radar_warnings(&c.radar, &mut w);
         }
         w
     }
 
-    fn tf2_warnings(&self, w: &mut Vec<String>) {
-        w.extend(self.tf2_checks.iter().cloned());
+    fn game_warnings(&self, w: &mut Vec<String>) {
+        w.extend(self.game_checks.iter().cloned());
     }
 
     pub(super) fn write_src(&self, h: &SrcHealth, s: &mut String) -> std::fmt::Result {
@@ -348,7 +350,7 @@ impl Health {
         }
         self.write_graph(c, s)?;
         self.write_collision(c, s)?;
-        if !self.tf2 {
+        if self.game == Game::Cs {
             self.write_overview(c, s)?;
         }
         self.write_open(s)?;
@@ -370,7 +372,10 @@ impl Health {
         let light = h.ldr.as_ref().map_or(0, |l| l.bytes) + h.hdr.as_ref().map_or(0, |l| l.bytes);
         let mut cols = vec![
             csv_quote(&self.name),
-            if self.tf2 { "tf2".to_string() } else { format!("source{}", h.version) },
+            match self.game {
+                Game::Cs => format!("source{}", h.version),
+                g => g.label().to_lowercase(),
+            },
             match &self.nav {
                 Err(e) => csv_quote(&format!("walk: {e}")),
                 _ => String::new(),

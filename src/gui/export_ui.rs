@@ -143,8 +143,8 @@ impl App {
             }
         });
         ui.separator();
-        let tf2 = self.scene.as_ref().is_some_and(|s| s.bsp.is_tf2());
-        let shown = |e: &Exporter| !(tf2 && matches!(e, Exporter::Overview | Exporter::Timing | Exporter::Kills));
+        let other = self.scene.as_ref().is_some_and(|s| !s.bsp.is_cs());
+        let shown = |e: &Exporter| !(other && matches!(e, Exporter::Overview | Exporter::Timing | Exporter::Kills));
         if !shown(&self.exporter) {
             self.exporter = Exporter::Iso;
         }

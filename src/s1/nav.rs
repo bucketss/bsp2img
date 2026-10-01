@@ -7,6 +7,8 @@ use crate::s2::buf::Rd;
 pub const MAGIC: u32 = 0xFEEDFACE;
 pub const MAX_VERSION: u32 = 16;
 const CROUCH: u32 = 0x1;
+pub const SPAWN_PLAYER_START: u32 = 0x80;
+pub const SPAWN_CHECKPOINT: u32 = 0x800;
 pub const MIN_AREAS: usize = 16;
 
 pub struct SrcNav {
@@ -18,6 +20,7 @@ pub struct SrcNav {
     #[allow(dead_code)]
     pub area_ids: Vec<u32>,
     pub area_place: Vec<u16>,
+    pub spawn_attrs: Vec<u32>,
     pub connections: usize,
     pub dangling: usize,
     pub mesh: NavMesh,
@@ -38,15 +41,15 @@ pub fn name(map: &str) -> String {
     format!("maps/{map}.nav")
 }
 
-pub fn load(fs: &Fs, map: &str, bsp_len: usize, log: &mut dyn FnMut(String)) -> (Option<NavMesh>, Option<Places>) {
+pub fn load(fs: &Fs, map: &str, bsp_len: usize, log: &mut dyn FnMut(String)) -> (Option<NavMesh>, Option<Places>, Vec<u32>) {
     let n = name(map);
     if std::env::var("BSP2IMG_SOURCE_NAV").is_ok_and(|v| v == "off") {
         log(format!("BSP2IMG_SOURCE_NAV=off: {n} ignored, timing, svg, auto crop and --hull walk the brush collision instead"));
-        return (None, None);
+        return (None, None, Vec::new());
     }
     if !fs.has(&n) {
         log(format!("no {n}: timing, svg, auto crop and --hull walk the brush collision instead"));
-        return (None, None);
+        return (None, None, Vec::new());
     }
     match fs.read(&n).and_then(|b| parse(&b)) {
         Ok(s) if s.mesh.areas.len() >= MIN_AREAS => {
@@ -66,15 +69,15 @@ pub fn load(fs: &Fs, map: &str, bsp_len: usize, log: &mut dyn FnMut(String)) -> 
                 log(format!("nav {n} was generated for a {} byte BSP, this one is {bsp_len}", s.bsp_size));
             }
             let p = s.places();
-            (Some(s.mesh), Some(p))
+            (Some(s.mesh), Some(p), s.spawn_attrs)
         }
         Ok(_) => {
             log(format!("nav {n} has fewer than {MIN_AREAS} areas: timing, svg, auto crop and --hull walk the brush collision instead"));
-            (None, None)
+            (None, None, Vec::new())
         }
         Err(e) => {
             log(format!("nav {n}: {e:#}; timing, svg, auto crop and --hull walk the brush collision instead"));
-            (None, None)
+            (None, None, Vec::new())
         }
     }
 }
@@ -100,8 +103,9 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
         bail!("nav version {ver} not supported (1 to {MAX_VERSION} are)");
     }
     let sub_version = if ver >= 10 { r.u32()? } else { 0 };
-    if ver >= 15 && sub_version > 2 {
-        bail!("nav v{ver} sub-version {sub_version} not supported (1 and 2 are)");
+    let l4d = ver >= 15 && (13..=14).contains(&sub_version);
+    if ver >= 15 && sub_version > 2 && !l4d {
+        bail!("nav v{ver} sub-version {sub_version} not supported (1, 2, 13 and 14 are)");
     }
     let bsp_size = if ver >= 4 { r.u32()? } else { 0 };
     let analyzed = ver >= 14 && r.u8()? != 0;
@@ -118,10 +122,15 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
             r.u8()?;
         }
     }
+    if l4d {
+        while r.u8()? != 0 {}
+        r.u16()?;
+    }
     let na = count(&mut r, 45, "area")?;
     let mut ids = Vec::with_capacity(na);
     let mut areas = Vec::with_capacity(na);
     let mut area_place = Vec::with_capacity(na);
+    let mut spawn_attrs = Vec::new();
     let mut connections = 0;
     for _ in 0..na {
         ids.push(r.u32()?);
@@ -172,11 +181,15 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
         if ver >= 11 {
             r.skip(16)?;
         }
-        if ver >= 16 {
+        if l4d {
+            spawn_attrs.push(r.u32()?);
+            r.u16()?;
+        }
+        if ver >= 16 || l4d {
             let n = count(&mut r, 5, "visible area")?;
             r.skip(n * 5 + 4)?;
         }
-        if ver >= 15 {
+        if ver >= 15 && !l4d {
             if sub_version >= 2 {
                 r.u32()?;
             } else {
@@ -201,11 +214,14 @@ pub fn parse(b: &[u8]) -> Result<SrcNav> {
         let bottom_areas = vec![r.u32()?];
         ladders.push(Ladder { top, bottom, width, top_areas, bottom_areas });
     }
+    if l4d {
+        r.f32()?;
+    }
     ensure!(r.p == b.len(), "nav v{ver}: {} trailing bytes after {} areas and {nl} ladders", b.len() - r.p, na);
     let known: std::collections::HashSet<u32> = ids.iter().copied().collect();
     let dangling = areas.iter().flat_map(|a| &a.conns).filter(|c| !known.contains(c)).count();
     let mesh = NavMesh::from_ids(&ids, areas, ladders);
-    Ok(SrcNav { version: ver, sub_version, bsp_size, analyzed, places, area_ids: ids, area_place, connections, dangling, mesh })
+    Ok(SrcNav { version: ver, sub_version, bsp_size, analyzed, places, area_ids: ids, area_place, spawn_attrs, connections, dangling, mesh })
 }
 
 #[cfg(test)]
@@ -221,8 +237,13 @@ mod tests {
     }
 
     fn file(ver: u32) -> Vec<u8> {
+        file_sub(ver, 1)
+    }
+
+    fn file_sub(ver: u32, sub: u32) -> Vec<u8> {
+        let l4d = sub >= 13;
         let mut b = Vec::new();
-        for v in [MAGIC, ver, 1, 1234] {
+        for v in [MAGIC, ver, sub, 1234] {
             u(&mut b, v);
         }
         b.push(1);
@@ -233,6 +254,10 @@ mod tests {
             b.push(0);
         }
         b.push(0);
+        if l4d {
+            b.extend_from_slice(b"hospital\0");
+            b.extend_from_slice(&0u16.to_le_bytes());
+        }
         u(&mut b, 2);
         for (id, flags, x0, z, conns, place) in [(5u32, 0u32, 0.0f32, 0.0f32, [0u32, 1, 0, 0], 2u16), (9, CROUCH, 32.0, -8.0, [0, 0, 0, 0], 0)] {
             u(&mut b, id);
@@ -257,10 +282,16 @@ mod tests {
             u(&mut b, 1);
             u(&mut b, 3);
             b.extend_from_slice(&[0; 24]);
+            if l4d {
+                u(&mut b, if id == 5 { SPAWN_CHECKPOINT } else { 0 });
+                b.extend_from_slice(&[0; 2]);
+            }
             u(&mut b, 1);
             b.extend_from_slice(&[0; 9]);
-            b.push(1);
-            b.extend_from_slice(&[0; 14]);
+            if !l4d {
+                b.push(1);
+                b.extend_from_slice(&[0; 14]);
+            }
         }
         u(&mut b, 1);
         u(&mut b, 3);
@@ -270,6 +301,9 @@ mod tests {
         }
         for v in [0, 5, 0, 0, 0, 9] {
             u(&mut b, v);
+        }
+        if l4d {
+            f(&mut b, 1500.0);
         }
         b
     }
@@ -286,6 +320,19 @@ mod tests {
         assert_eq!((n.connections, n.dangling), (1, 0));
         assert_eq!(n.mesh.ladders.len(), 1);
         assert_eq!((n.mesh.ladders[0].top_areas.clone(), n.mesh.ladders[0].bottom_areas.clone()), (vec![0], vec![1]));
+    }
+
+    #[test]
+    fn l4d_layout() {
+        for (ver, sub) in [(15, 13), (16, 14)] {
+            let n = parse(&file_sub(ver, sub)).unwrap();
+            assert_eq!((n.version, n.sub_version), (ver, sub));
+            assert_eq!(n.mesh.areas.len(), 2);
+            assert_eq!(n.spawn_attrs, vec![SPAWN_CHECKPOINT, 0]);
+            assert_eq!(n.mesh.ladders.len(), 1);
+            assert_eq!(n.place(0), Some("BombsiteA"));
+        }
+        assert!(parse(&file_sub(16, 12)).is_err());
     }
 
     #[test]
@@ -322,6 +369,19 @@ mod tests {
         loose.sort();
         for p in loose {
             files.push((format!("csgo {}", p.file_name().unwrap().to_string_lossy()), std::fs::read(&p).unwrap()));
+        }
+        for root in [r"E:\steam\steamapps\common\left 4 dead", r"E:\steam\steamapps\common\Left 4 Dead 2"] {
+            let mut navs: Vec<_> = std::fs::read_dir(root)
+                .unwrap()
+                .flatten()
+                .filter_map(|d| std::fs::read_dir(d.path().join("maps")).ok())
+                .flat_map(|rd| rd.flatten().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "nav"))
+                .collect();
+            navs.sort();
+            for p in navs {
+                files.push((format!("l4d {}", p.display()), std::fs::read(&p).unwrap()));
+            }
         }
         let mut bad = 0;
         for (name, b) in &files {

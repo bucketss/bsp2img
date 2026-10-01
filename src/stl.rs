@@ -115,7 +115,7 @@ fn region(bsp: &Bsp, cuts: &Cuts, o: &StlOpts, rep: &mut Report) -> Result<Regio
     let seeds: Vec<usize> = bsp
         .entities
         .iter()
-        .filter(|e| matches!(e.class(), "info_player_deathmatch" | "info_player_start"))
+        .filter(|e| if bsp.is_l4d() { crate::reach::L4D_SEED_CLASSES.contains(&e.class()) } else { matches!(e.class(), "info_player_deathmatch" | "info_player_start") })
         .filter_map(|e| e.origin())
         .filter_map(|p| nav.nearest(p, STAND_OFS))
         .collect();

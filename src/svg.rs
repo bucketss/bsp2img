@@ -314,10 +314,14 @@ pub fn export_svg(
     rep.step(0.0)?;
     let nav = Nav::build(bsp, o.cell, 250.0)?;
     rep.step(0.4)?;
-    let spawn = |cls: &str| -> Vec<(glam::DVec3, Option<usize>)> {
-        bsp.entities.iter().filter(|e| e.class() == cls).filter_map(|e| e.origin()).map(|p| (p, nav.nearest(p, STAND_OFS))).collect()
+    let spawn = |cls: &[&str]| -> Vec<(glam::DVec3, Option<usize>)> {
+        bsp.entities.iter().filter(|e| cls.contains(&e.class())).filter_map(|e| e.origin()).map(|p| (p, nav.nearest(p, STAND_OFS))).collect()
     };
-    let (st, sct) = (spawn("info_player_deathmatch"), spawn("info_player_start"));
+    let (st, sct) = if bsp.is_l4d() {
+        (spawn(&["info_l4d_saferoom", "info_landmark", "info_survivor_position_seed"]), spawn(&["info_player_start"]))
+    } else {
+        (spawn(&["info_player_deathmatch"]), spawn(&["info_player_start"]))
+    };
     let seeds: Vec<usize> = st.iter().chain(&sct).filter_map(|s| s.1).collect();
     if st.is_empty() && sct.is_empty() {
         bail!("no team spawn points in the map");

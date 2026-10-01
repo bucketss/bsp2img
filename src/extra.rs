@@ -101,7 +101,8 @@ pub fn raise_spawns_phys(bsp: &mut Bsp, p: &crate::phys::Phys, log: &mut dyn FnM
 
 fn raise_spawns_to(bsp: &mut Bsp, floor_below: &dyn Fn(f32, f32, f32) -> Option<f32>, what: &str, log: &mut dyn FnMut(String)) -> Vec<usize> {
     let mut raised = Vec::new();
-    for (i, e) in bsp.entities.iter_mut().enumerate().filter(|(_, e)| crate::reach::SEED_CLASSES.contains(&e.class())) {
+    let classes = crate::reach::seed_classes(bsp);
+    for (i, e) in bsp.entities.iter_mut().enumerate().filter(|(_, e)| classes.contains(&e.class())) {
         let Some(o) = e.origin() else { continue };
         let ring = [(0.0, 0.0), (24.0, 0.0), (-24.0, 0.0), (0.0, 24.0), (0.0, -24.0), (48.0, 0.0), (-48.0, 0.0), (0.0, 48.0), (0.0, -48.0)];
         let found = ring.iter().find_map(|&(dx, dy)| floor_below(o.x as f32 + dx, o.y as f32 + dy, o.z as f32 + SPAWN_REACH));

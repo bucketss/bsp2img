@@ -310,8 +310,8 @@ pub fn export_overview(
     out: &Path,
     rep: &mut Report,
 ) -> Result<()> {
-    if bsp.is_tf2() {
-        bail!("overviews are not supported for TF2 maps");
+    if !bsp.is_cs() {
+        bail!("overviews are not supported for {} maps", bsp.game.label());
     }
     let mut files = Partial::default();
     rep.step(0.0)?;

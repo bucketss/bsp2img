@@ -217,6 +217,19 @@ pub enum Game {
     #[default]
     Cs,
     Tf2,
+    L4d,
+    L4d2,
+}
+
+impl Game {
+    pub fn label(self) -> &'static str {
+        match self {
+            Game::Cs => "CS",
+            Game::Tf2 => "TF2",
+            Game::L4d => "L4D",
+            Game::L4d2 => "L4D2",
+        }
+    }
 }
 
 impl Engine {
@@ -471,6 +484,14 @@ impl Bsp {
 
     pub fn is_tf2(&self) -> bool {
         self.game == Game::Tf2
+    }
+
+    pub fn is_l4d(&self) -> bool {
+        matches!(self.game, Game::L4d | Game::L4d2)
+    }
+
+    pub fn is_cs(&self) -> bool {
+        self.game == Game::Cs
     }
 
     pub fn is_cs2(&self) -> bool {
