@@ -125,6 +125,7 @@ pub fn cstr(b: &[u8]) -> String {
 pub struct Plane {
     pub normal: DVec3,
     pub dist: f64,
+    pub kind: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -251,6 +252,7 @@ pub struct Bsp {
     pub surfedges: Vec<i32>,
     pub models: Vec<Model>,
     pub nodes: Vec<Node>,
+    pub node_faces: Vec<[u16; 2]>,
     pub leaves: Vec<Leaf>,
     pub marksurfaces: Vec<u16>,
     pub clipnodes: Vec<Node>,
@@ -299,7 +301,11 @@ impl Bsp {
 
         let planes = lump(&r, lumps[LUMP_PLANES], 20, |r, o| {
             let n = r.vec3(o);
-            Plane { normal: DVec3::new(n[0] as f64, n[1] as f64, n[2] as f64), dist: r.f32(o + 12) as f64 }
+            Plane {
+                normal: DVec3::new(n[0] as f64, n[1] as f64, n[2] as f64),
+                dist: r.f32(o + 12) as f64,
+                kind: r.i32(o + 16) as u8,
+            }
         })?;
         let vertices = lump(&r, lumps[LUMP_VERTICES], 12, |r, o| {
             let v = r.vec3(o);
@@ -338,6 +344,7 @@ impl Bsp {
             plane: r.i32(o),
             children: [r.i16(o + 4), r.i16(o + 6)],
         })?;
+        let node_faces = lump(&r, lumps[LUMP_NODES], 24, |r, o| [r.u16(o + 20), r.u16(o + 22)])?;
         let leaves = lump(&r, lumps[LUMP_LEAVES], 28, |r, o| Leaf {
             contents: r.i32(o),
             firstmarksurface: r.u16(o + 20),
@@ -378,6 +385,7 @@ impl Bsp {
             surfedges,
             models,
             nodes,
+            node_faces,
             leaves,
             marksurfaces,
             clipnodes,
@@ -466,6 +474,7 @@ impl Bsp {
             surfedges: Vec::new(),
             models: Vec::new(),
             nodes: Vec::new(),
+            node_faces: Vec::new(),
             leaves: Vec::new(),
             marksurfaces: Vec::new(),
             clipnodes: Vec::new(),

@@ -37,6 +37,7 @@ mod spin;
 mod stl;
 mod sun;
 mod timing;
+mod wallbang;
 mod wad;
 
 use clap::Parser;
