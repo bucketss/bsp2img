@@ -2,29 +2,6 @@
 
 Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
 
-## CS2
-
-`--game` is the CS2 `game` folder or the install folder above it. `--sky` draws the map's `env_sky`; NAME may be another sky material.
-
-| Map name | Source |
-|---|---|
-| `de_dust2` | `csgo\maps\de_dust2.vpk` |
-| `<addon>/<map>` | `csgo_addons\<addon>\maps\<map>.vpk` or loose `maps\<map>\world.vwrld_c` |
-| `workshop/<map>`, `<id>/<map>` | Subscribed workshop map in `steamapps\workshop\content\730` |
-| folder or `world.vwrld_c` | Loose compiled map |
-
-## CS:S and CS:GO
-
-`--game` is the `cstrike` or `csgo` folder or the install folder above it; with a CS2 install folder, CS2 maps come first. Content is read through `gameinfo.txt`, the VPKs and the map's pakfile. Brush faces and displacements with lightmaps (HDR when the map has them), and props (static props and `prop_*` models, lit from CS:GO's baked `.vhv` vertex colours or the leaf ambient cubes). Blends render all layers (two-way and four-way); glTF and OBJ use the first. `--sky` draws the map's `skyname`, HDR skies included. Timing, svg, stl, auto crop and `--hull` use the map's `.nav`, or walk the collision (brushes, displacements, static props) when there is none or it misses every spawn. Overviews read the official `.txt` and radar `.vtf`/`.dds`. Health checks the SDK 2013 (CS:S) or CS:GO `bspfile.h` limits, LDR/HDR lighting, VIS, the `.nav`, the pakfile and the radar. glTF and OBJ lighting includes prop vertex lighting: glTF keeps vertex-lit props on their own textures with vertex colours, OBJ `baked` bakes them into the atlas (too many for CS:GO maps).
-
-## TF2
-
-`--game` is the `tf` folder or the install folder above it. Rendering works as for CS:S. RED and BLU spawns (`info_player_teamspawn`) seed auto crop, `--hull`, svg and health; the 3D skybox is cropped away by auto crop and drawn with `--no-auto-crop`. The shipped `.nav` files are read. Markers show control points, capture areas, flags and flag capture zones. `overview`, `timing` and `kills` are not supported.
-
-## L4D and L4D2
-
-`--game` is the `left 4 dead` or `Left 4 Dead 2` install folder, or a content folder in it. Rendering works as for CS:S; dark maps get an automatic exposure (up to 24x) from the median floor light. L4D2 `_l_` lump files (`update\maps`) are applied; Survival and Scavenge (`_h_`, `_s_`) ones are not. Saferooms (nav checkpoint areas), `info_player_start` and `info_landmark` seed auto crop, `--hull`, svg and health. Markers show saferooms, saferoom exits, finales and rescue closets. `overview`, `timing` and `kills` are not supported.
-
 ## GUI
 
 `bsp2img` or `bsp2img gui <map>`. Settings are saved to `%APPDATA%\bsp2img\gui.cfg` on Windows, or `$XDG_CONFIG_HOME/bsp2img/gui.cfg` (default `~/.config/bsp2img/gui.cfg`) elsewhere.
