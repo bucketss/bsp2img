@@ -6,9 +6,10 @@ use anyhow::{Context, Result};
 use glam::DVec3;
 use tiny_skia::{FillRule, PathBuilder, Pixmap, Stroke, Transform};
 
-use super::finder::Find;
+use super::finder::{Find, drive_yaw};
 use super::output::yaw_of;
 use super::{FinderOpts, find};
+pub use crate::nav::Stance;
 use crate::bsp::Bsp;
 use crate::grid::{Backdrop, Text, paint, rect};
 use crate::paths::{Partial, free_name};
@@ -22,28 +23,6 @@ const HUE_HIGH: f64 = 120.0;
 const YAW_TICK: f64 = 48.0;
 const LINE_W: f32 = 4.0;
 const DOT_R: f32 = 5.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Stance {
-    Stand,
-    Duck,
-}
-
-impl Stance {
-    pub fn label(self) -> &'static str {
-        match self {
-            Stance::Stand => "stand",
-            Stance::Duck => "duck",
-        }
-    }
-
-    pub fn feet(self) -> f64 {
-        match self {
-            Stance::Stand => 36.0,
-            Stance::Duck => 18.0,
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Pixelwalk {
@@ -77,13 +56,20 @@ pub struct PixelwalkOpts {
     pub labels: bool,
 }
 
-fn dv(v: &[f32; 3]) -> DVec3 {
-    DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64)
+impl Default for PixelwalkOpts {
+    fn default() -> Self {
+        PixelwalkOpts { finder: FinderOpts::default(), merge_gap: 64.0, split: Split::None, base: Backdrop::Render, size: 1600, labels: false }
+    }
+}
+
+pub fn setpos_yaw(approach: &[f32; 3]) -> f32 {
+    let y = drive_yaw(approach);
+    if y < 0.0 { y + 360.0 } else { y }
 }
 
 fn ends(f: &Find) -> (DVec3, DVec3) {
-    let a = dv(&f.pos);
-    (a, if f.length > 0.5 { dv(&f.to) } else { a })
+    let a = crate::wallbang::dv(&f.pos);
+    (a, if f.length > 0.5 { crate::wallbang::dv(&f.to) } else { a })
 }
 
 pub fn merge(finds: &[Find], gap: f64) -> Vec<Pixelwalk> {
@@ -117,18 +103,18 @@ pub fn merge(finds: &[Find], gap: f64) -> Vec<Pixelwalk> {
                     c.to = hi;
                 }
                 c.catch_frames = c.catch_frames.max(f.catch_frames.clamp(0, 255) as u8);
-                c.finds.push(f.clone());
+                c.finds.push(*f);
                 continue;
             }
             if let Some(c) = cur.take() {
                 out.push(c);
             }
             cur = Some(Pixelwalk {
-                stance: if f.usehull == 0 { Stance::Stand } else { Stance::Duck },
-                yaw: yaw_of(&f.approach),
+                stance: Stance::from_hull(f.usehull),
+                yaw: setpos_yaw(&f.approach),
                 from: lo,
                 to: hi,
-                finds: vec![f.clone()],
+                finds: vec![*f],
                 floor_model: f.floor_model,
                 wall_model: f.wall_model,
                 catch_frames: f.catch_frames.clamp(0, 255) as u8,
@@ -167,7 +153,7 @@ pub fn txt(name: &str, pws: &[Pixelwalk], zr: (f64, f64)) -> String {
                 let k = [q.x as f32, q.y as f32, q.z as f32].map(f32::to_bits);
                 if !seen.contains(&k) {
                     seen.push(k);
-                    let _ = writeln!(s, "  {}", setpos(q, yaw_of(&f.approach)));
+                    let _ = writeln!(s, "  {}", setpos(q, setpos_yaw(&f.approach)));
                 }
             }
         }
@@ -272,6 +258,10 @@ pub struct Summary {
 
 pub fn find_pixelwalks(bsp: &Bsp, o: &PixelwalkOpts) -> Result<Vec<Pixelwalk>> {
     Ok(merge(&find(bsp, &o.finder)?.finds, o.merge_gap))
+}
+
+pub fn find_with(mover: &super::Mover, o: &PixelwalkOpts, stop: Option<&std::sync::atomic::AtomicBool>) -> Result<Vec<Pixelwalk>> {
+    Ok(merge(&mover.find(&o.finder, stop)?.finds, o.merge_gap))
 }
 
 pub fn world_z(bsp: &Bsp) -> (f64, f64) {

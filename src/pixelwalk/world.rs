@@ -157,10 +157,7 @@ pub fn build_world(bsp: &Bsp, map: &PwMap) -> WorldModels {
         }
         let idx = idx as usize;
         let cn = e.get("classname").map(|c| c.to_ascii_lowercase()).unwrap_or_default();
-        let origin = match e.get("origin") {
-            Some(o) => parse_vec3(o),
-            None => map.models[idx].origin,
-        };
+        let origin = e.get("origin").map(parse_vec3).unwrap_or([0.0; 3]);
         let angles = e.get("angles").map(parse_vec3).unwrap_or([0.0; 3]);
         wm.model_origin[idx] = origin;
         if !classname_is_solid(&cn) {

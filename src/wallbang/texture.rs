@@ -6,6 +6,7 @@ use super::hull0::{HPlane, V3, dot};
 
 const MAX_TEXTURES: usize = 1024;
 const NAME_LEN: usize = 16;
+const GAME_SUFFIXES: [&str; 4] = ["_downloads", "_addon", "_hd", "_lv"];
 
 #[derive(Clone, Copy, Debug)]
 pub struct Surf {
@@ -111,8 +112,8 @@ impl Textures {
         Textures { nodes, surfs, vecs, names }
     }
 
-    pub fn name(&self, surf: u32) -> &[u8] {
-        cname(&self.names[self.surfs[surf as usize].texinfo as usize])
+    pub fn names(&self) -> impl Iterator<Item = &[u8]> {
+        self.names.iter().map(|n| cname(n))
     }
 
     pub fn surface_at(&self, planes: &[HPlane], node: i32, start: &V3, end: &V3) -> Option<u32> {
@@ -223,23 +224,29 @@ impl Materials {
         Ok(m)
     }
 
-    pub fn locate(bsp: &Path) -> Option<PathBuf> {
-        let game = std::path::absolute(bsp).ok()?.parent()?.parent()?.to_path_buf();
-        let own = game.join("sound").join("materials.txt");
-        if own.exists() {
-            return Some(own);
-        }
-        let lib = std::fs::read(game.join("liblist.gam")).ok()?;
-        for line in crate::bsp::latin1(&lib).lines() {
-            let parts: Vec<&str> = line.split('"').collect();
-            if line.trim().to_ascii_lowercase().starts_with("fallback_dir") && parts.len() > 1 {
-                let fb = game.parent()?.join(parts[1]).join("sound").join("materials.txt");
-                if fb.exists() {
-                    return Some(fb);
+    pub fn locate(bsp: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
+        let dir = std::path::absolute(bsp).ok()?.parent()?.parent()?.to_path_buf();
+        let name = dir.file_name()?.to_string_lossy().to_ascii_lowercase();
+        let base = GAME_SUFFIXES.iter().find_map(|s| name.strip_suffix(s)).map(|b| dir.with_file_name(b));
+        let mut cands: Vec<PathBuf> = vec![dir.clone()];
+        cands.extend(base.clone());
+        for game in [Some(&dir), base.as_ref()].into_iter().flatten() {
+            let Ok(lib) = std::fs::read(game.join("liblist.gam")) else { continue };
+            for line in crate::bsp::latin1(&lib).lines() {
+                let parts: Vec<&str> = line.split('"').collect();
+                if line.trim().to_ascii_lowercase().starts_with("fallback_dir")
+                    && parts.len() > 1
+                    && let Some(root) = game.parent()
+                {
+                    cands.push(root.join(parts[1]));
                 }
             }
         }
-        None
+        if let Some(root) = dir.parent() {
+            cands.extend(["cstrike", "valve"].map(|g| root.join(g)));
+        }
+        cands.extend(dirs.iter().cloned());
+        cands.into_iter().map(|d| d.join("sound").join("materials.txt")).find(|p| p.is_file())
     }
 
     fn find(&self, name: &[u8]) -> u8 {

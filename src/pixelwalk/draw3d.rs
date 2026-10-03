@@ -1,6 +1,7 @@
 use glam::DVec3;
 
-use super::present::{Pixelwalk, Stance, zcolor};
+use super::present::{Pixelwalk, zcolor};
+use crate::nav::Stance;
 use crate::mesh::overlay::Splat;
 use crate::render::{MarkLine, Markers};
 
@@ -86,8 +87,8 @@ pub fn seam_splats(pws: &[Pixelwalk]) -> Vec<Splat> {
                     layer: SEAM_LAYER,
                     sigma: SEAM_SIGMA,
                 };
-                out.push(splat(o + d * support + DVec3::Z * WALL_UP, d, p.wall_model));
-                out.push(splat(o + d * (support - 1.0), -DVec3::Z, p.floor_model));
+                out.push(splat(o + d * support + DVec3::Z * WALL_UP, d, f.wall_model));
+                out.push(splat(o + d * (support - 1.0), -DVec3::Z, f.floor_model));
             }
         }
     }

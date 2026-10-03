@@ -140,7 +140,7 @@ impl<'a> Pm<'a> {
                 break;
             }
             let end: V3 = std::array::from_fn(|i| self.origin[i] + time_left * self.velocity[i]);
-            let trace = self.trace(&self.origin.clone(), &end);
+            let trace = self.trace(&self.origin, &end);
             all_fraction += trace.fraction;
             if trace.allsolid {
                 self.velocity = [0.0; 3];
@@ -228,7 +228,7 @@ impl<'a> Pm<'a> {
             self.onground = -1;
             return;
         }
-        let tr = self.trace(&self.origin.clone(), &point);
+        let tr = self.trace(&self.origin, &point);
         self.onground = if tr.normal[2] < 0.7 { -1 } else { tr.ent };
         if self.onground != -1 {
             self.waterjumptime = 0.0;
@@ -354,7 +354,7 @@ impl<'a> Pm<'a> {
             self.origin[1] + self.velocity[1] * self.frametime,
             self.origin[2],
         ];
-        let trace = self.trace(&self.origin.clone(), &dest);
+        let trace = self.trace(&self.origin, &dest);
         if trace.fraction == 1.0 {
             self.origin = trace.endpos;
             return;
@@ -374,14 +374,14 @@ impl<'a> Pm<'a> {
         self.velocity = originalvel;
         dest = self.origin;
         dest[2] += self.mv_stepsize;
-        let trace = self.trace(&self.origin.clone(), &dest);
+        let trace = self.trace(&self.origin, &dest);
         if !trace.startsolid && !trace.allsolid {
             self.origin = trace.endpos;
         }
         self.fly_move();
         dest = self.origin;
         dest[2] -= self.mv_stepsize;
-        let trace = self.trace(&self.origin.clone(), &dest);
+        let trace = self.trace(&self.origin, &dest);
         let mut usedown = trace.normal[2] < 0.7;
         if !usedown {
             if !trace.startsolid && !trace.allsolid {

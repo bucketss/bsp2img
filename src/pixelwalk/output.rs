@@ -1,12 +1,9 @@
 #[cfg(test)]
-use std::fmt::Write as _;
-
-#[cfg(test)]
 use super::finder::Find;
 use super::vec::atan2f;
 
 pub fn yaw_of(a: &[f32; 3]) -> f32 {
-    let mut y = atan2f(a[1], a[0]) * 180.0f32 / 3.14159265358979f32;
+    let mut y = atan2f(a[1], a[0]) * 180.0f32 / std::f32::consts::PI;
     if y < 0.0 {
         y += 360.0;
     }
@@ -46,16 +43,4 @@ pub fn raw_line(f: &Find) -> String {
             f.wall_model
         )
     }
-}
-
-#[cfg(test)]
-pub fn raw_block(path: &str, finds: &[Find]) -> String {
-    let mut s = String::new();
-    let n = finds.len();
-    let _ = writeln!(s, "\n=== {path} : {n} spot{} ===", if n == 1 { "" } else { "s" });
-    for f in finds {
-        let _ = writeln!(s, "{}", raw_line(f));
-    }
-    s.push('\n');
-    s
 }

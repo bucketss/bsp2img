@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rayon::prelude::*;
 
@@ -91,12 +92,15 @@ struct SimOut {
     catch_wall_ent: i32,
 }
 
+pub fn drive_yaw(md: &V3) -> f32 {
+    let yawd = atan2(md[1] as f64, md[0] as f64) * (180.0 / std::f64::consts::PI);
+    ((yawd * (65536.0 / 360.0)).round() * (360.0 / 65536.0)) as f32
+}
+
 fn sim_drive(map: &PwMap, phys: &[Physent], usehull: usize, start: &V3, md: &V3, eps: f32, nframes: i32) -> SimOut {
     let mut pm = Pm::new(map, phys, usehull, eps);
     pm.fmove = 400.0;
-    let yawd = atan2(md[1] as f64, md[0] as f64) * (180.0 / 3.14159265358979323846);
-    let yaw = ((yawd * (65536.0 / 360.0)).round() * (360.0 / 65536.0)) as f32;
-    pm.angles = [0.0, yaw, 0.0];
+    pm.angles = [0.0, drive_yaw(md), 0.0];
     pm.origin = *start;
     let mut caught = 0;
     let (mut cfe, mut cwe) = (-1, -1);
@@ -279,12 +283,16 @@ fn speculate(ctx: &SeamCtx) -> Vec<SampleRec> {
     out
 }
 
-fn seam_finds(map: &PwMap, wm: &WorldModels, seams: &[Seam], cfg: &FinderConfig) -> Vec<Find> {
+fn seam_finds(map: &PwMap, wm: &WorldModels, seams: &[Seam], cfg: &FinderConfig, stop: Option<&AtomicBool>) -> Vec<Find> {
+    let halt = || stop.is_some_and(|s| s.load(Ordering::Relaxed));
     let specs: Vec<Option<Vec<SampleRec>>> =
-        seams.par_iter().map(|s| seam_ctx(map, s, wm, cfg).map(|ctx| speculate(&ctx))).collect();
+        seams.par_iter().map(|s| if halt() { None } else { seam_ctx(map, s, wm, cfg).map(|ctx| speculate(&ctx)) }).collect();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (s, spec) in seams.iter().zip(specs) {
+        if halt() {
+            break;
+        }
         let Some(spec) = spec else { continue };
         let mut ctx = None;
         for (ti, rec) in spec.into_iter().enumerate() {
@@ -332,8 +340,8 @@ fn nonzero(n: &V3) -> bool {
     n[0] != 0.0 || n[1] != 0.0 || n[2] != 0.0
 }
 
-pub fn run_finder(map: &PwMap, wm: &WorldModels, seams: &[Seam], cfg: &FinderConfig) -> Vec<Find> {
-    let raw = seam_finds(map, wm, seams, cfg);
+pub fn run_finder(map: &PwMap, wm: &WorldModels, seams: &[Seam], cfg: &FinderConfig, stop: Option<&AtomicBool>) -> Vec<Find> {
+    let raw = seam_finds(map, wm, seams, cfg, stop);
     let mut finds: Vec<Find> = Vec::new();
     let mut idx: HashMap<u64, usize> = HashMap::new();
     for f in raw {

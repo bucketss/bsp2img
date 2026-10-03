@@ -358,7 +358,7 @@ impl VertexLight {
 }
 
 fn painted<'a>(ov: Option<&'a Image>, v: &[Vertex]) -> Option<&'a Image> {
-    ov.filter(|_| v.iter().all(|x| x.uv2 != [0.0; 2]))
+    ov.filter(|_| v.iter().all(|x| crate::mesh::overlay::painted(x.uv2)))
 }
 
 fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, vl: Option<VertexLight>, ov: Option<&Image>) -> Vec<u8> {
@@ -1075,11 +1075,11 @@ pub fn export_gltf(
                 }
                 let part = &parts[c.part];
                 for &t in &c.tris {
-                    for i in t * 3..t * 3 + 3 {
-                        let p = dv(part.verts[i].pos);
+                    for (uv, v) in uvs[c.part][t * 3..t * 3 + 3].iter_mut().zip(&part.verts[t * 3..t * 3 + 3]) {
+                        let p = dv(v.pos);
                         let q = (DVec2::new(p.dot(c.u), p.dot(c.w)) - c.lo) / texel
                             + DVec2::new((c.at.0 + PAD) as f64, (c.at.1 + PAD) as f64);
-                        uvs[c.part][i] = [(q.x / aw as f64) as f32, (q.y / ah as f64) as f32];
+                        *uv = [(q.x / aw as f64) as f32, (q.y / ah as f64) as f32];
                     }
                 }
             }

@@ -15,6 +15,11 @@ const CELL: f64 = 64.0;
 const MIN_ALPHA: f64 = 0.12;
 const NORM_PCT: f64 = 0.6;
 const NORM_FLOOR: f32 = 1e-3;
+pub const UNPAINTED: [f32; 2] = [0.0, 0.0];
+
+pub fn painted(uv2: [f32; 2]) -> bool {
+    uv2 != UNPAINTED
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Splat {
@@ -95,6 +100,7 @@ fn faces(mesh: &Mesh) -> Vec<Face> {
 }
 
 type Key = (i32, i32, i32);
+type Packing = (u32, u32, Vec<(u32, u32)>);
 
 fn cell(p: DVec3) -> Key {
     ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32)
@@ -121,7 +127,7 @@ fn grid(faces: &[Face], mesh: &Mesh, pad: f64) -> HashMap<Key, Vec<u32>> {
     g
 }
 
-fn pack(sizes: &[(u32, u32)], max_dim: u32) -> Option<(u32, u32, Vec<(u32, u32)>)> {
+fn pack(sizes: &[(u32, u32)], max_dim: u32) -> Option<Packing> {
     let mut order: Vec<usize> = (0..sizes.len()).collect();
     order.sort_by_key(|&i| (Reverse(sizes[i].1), i));
     let widest = sizes.iter().map(|s| s.0 + 4).max().unwrap_or(4);

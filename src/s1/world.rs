@@ -609,9 +609,9 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
     Built {
         mesh: Mesh {
             batches,
-            textures: images,
+            textures: images.into(),
             anim,
-            atlas,
+            atlas: atlas.into(),
             faces,
             missing: missing.into_iter().collect(),
             points,
