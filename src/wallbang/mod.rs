@@ -1,4 +1,5 @@
 pub mod draw2d;
+pub mod draw3d;
 pub mod export;
 pub mod hull0;
 pub mod shots;

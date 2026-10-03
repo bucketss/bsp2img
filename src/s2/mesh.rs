@@ -479,6 +479,8 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             caster_idx,
             point_cell: Some(POINT_CELL),
             compressed,
+            face_spans: Vec::new(),
+            overlay: None,
         },
         draws: entries.len(),
         dropped,

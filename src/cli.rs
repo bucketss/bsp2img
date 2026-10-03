@@ -328,6 +328,8 @@ pub struct WallbangArgs {
     pub csv: bool,
     #[arg(long, help = "add the pixelwalk layer")]
     pub pixelwalks: bool,
+    #[arg(long = "3d", help = "also write iso renders with the walls painted")]
+    pub three_d: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -350,6 +352,8 @@ pub struct PixelwalkArgs {
     pub size: u32,
     #[arg(long, help = "number each pixelwalk on the image to match the .txt")]
     pub labels: bool,
+    #[arg(long = "3d", help = "also write iso renders with pixelwalk markers")]
+    pub three_d: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -678,7 +682,11 @@ fn each_map(c: &Common, mut job: impl FnMut(&std::path::Path, &str) -> Result<()
 }
 
 fn in_run_dir<T>(c: &Common, bsp: &crate::bsp::Bsp, f: impl FnOnce(&std::path::Path) -> Result<T>) -> Result<T> {
-    let out = run_dir(&c.out, &run_name(bsp))?;
+    in_named_dir(c, &run_name(bsp), f)
+}
+
+fn in_named_dir<T>(c: &Common, name: &str, f: impl FnOnce(&std::path::Path) -> Result<T>) -> Result<T> {
+    let out = run_dir(&c.out, name)?;
     let res = f(&out);
     if res.is_err() {
         let _ = std::fs::remove_dir(&out);
@@ -753,14 +761,51 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
         pixelwalks: a.pixelwalks,
     };
     each_map(&a.c, |path, name| {
-        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
-        in_run_dir(&a.c, &scene.bsp, |out| {
+        let mut scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        let rn = run_name(&scene.bsp);
+        in_named_dir(&a.c, &rn, |out| {
             let cuts = scene.cuts(&co, &mut say);
+            let tag = co.tag(lo.hull);
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
-            reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, &scene.dirs, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+            let (_, sim, pws) =
+                reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, &scene.dirs, name, &tag, &cuts, &o, out, rep))?;
+            if a.three_d {
+                drop(r);
+                let mut splats = crate::wallbang::draw3d::splats(&sim);
+                splats.extend(crate::pixelwalk::draw3d::seam_splats(&pws));
+                let marks = crate::pixelwalk::draw3d::markers(&pws, crate::pixelwalk::present::world_z(&scene.bsp));
+                let stem = format!("{name}{tag}_wallbang_{}_3d", o.shots.weapon.name);
+                paint_iso(&gpu, &mut scene, a.f.nearest, &splats, marks, &stem, &cuts, a.c.ss, out)?;
+            }
+            Ok(())
         })
-        .map(drop)
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_iso(
+    gpu: &Gpu,
+    scene: &mut Scene,
+    nearest: bool,
+    splats: &[crate::mesh::overlay::Splat],
+    marks: crate::render::Markers,
+    stem: &str,
+    cuts: &crate::render::Cuts,
+    ss: u32,
+    out: &std::path::Path,
+) -> Result<Vec<PathBuf>> {
+    let colors = [crate::wallbang::draw2d::RED, crate::wallbang::draw2d::GREEN, crate::pixelwalk::draw3d::SEAM];
+    let p = crate::mesh::overlay::paint(&mut scene.mesh, splats, &colors, gpu.max_dim);
+    if p.splats > 0 {
+        say(format!(
+            "  3d: {} surface points, {} on no drawn face; {} faces painted ({}u texels, {}x{} atlas)",
+            p.splats, p.missed, p.faces, p.texel, p.w, p.h
+        ));
+    }
+    let (mut r, _) = scene.job_renderer(gpu, None, nearest, None, &mut say)?;
+    r.set_markers(Some(marks));
+    let o = IsoOpts { ss, ..Default::default() };
+    reported(|rep| export_iso(&mut r, &scene.bsp, stem, "", "", cuts, &o, out, rep))
 }
 
 pub fn run_pixelwalk(a: &PixelwalkArgs) -> Result<()> {
@@ -782,13 +827,22 @@ pub fn run_pixelwalk(a: &PixelwalkArgs) -> Result<()> {
     };
     let mut rows: Vec<String> = Vec::new();
     let res = each_map(&a.c, |path, name| {
-        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
-        let r = in_run_dir(&a.c, &scene.bsp, |out| {
+        let mut scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        let rn = run_name(&scene.bsp);
+        let r = in_named_dir(&a.c, &rn, |out| {
             let cuts = scene.cuts(&co, &mut say);
+            let tag = co.tag(lo.hull);
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
-            reported(|rep| {
-                crate::pixelwalk::present::export_pixelwalks(&mut r, &scene.bsp, &scene.dirs, name, &co.tag(lo.hull), &cuts, &o, out, rep)
-            })
+            let (files, s, pws) = reported(|rep| {
+                crate::pixelwalk::present::export_pixelwalks(&mut r, &scene.bsp, &scene.dirs, name, &tag, &cuts, &o, out, rep)
+            })?;
+            if a.three_d {
+                drop(r);
+                let splats = crate::pixelwalk::draw3d::seam_splats(&pws);
+                let marks = crate::pixelwalk::draw3d::markers(&pws, crate::pixelwalk::present::world_z(&scene.bsp));
+                paint_iso(&gpu, &mut scene, a.f.nearest, &splats, marks, &format!("{name}{tag}_pixelwalks_3d"), &cuts, a.c.ss, out)?;
+            }
+            Ok((files, s))
         });
         match &r {
             Ok((_, s)) => rows.push(format!("{},{},{},{:.1},", csv_quote(name), s.stand, s.duck, s.longest)),

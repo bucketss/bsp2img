@@ -622,6 +622,8 @@ pub fn build(fs: &Fs, w: &World, ents: &[Entity], o: Opts) -> Built {
             caster_idx: Vec::new(),
             point_cell: None,
             compressed,
+            face_spans: Vec::new(),
+            overlay: None,
         },
         materials: stats,
         faces,

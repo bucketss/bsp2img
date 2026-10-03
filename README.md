@@ -163,6 +163,7 @@ Also the spin output options.
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--others off\|faint` | Shots from other levels (off) |
 | `--pixelwalks` | Add the pixelwalk layer |
+| `--3d` | Also write iso renders with the walls painted (green made, red died) |
 | `--csv` | Write every shot |
 
 ### pixelwalk
@@ -175,6 +176,7 @@ Also the spin output options.
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--base render\|radar` | Backdrop (render) |
 | `--labels` | Number the pixelwalks |
+| `--3d` | Also write iso renders with player-box markers and the seam faces tinted |
 | `health --pixelwalks` | Adds a pixelwalk count to the health report |
 
 ### svg

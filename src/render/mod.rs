@@ -17,11 +17,13 @@ use crate::sun::{Sun, SunEnv, baked_sun, sun_at};
 pub use egui_wgpu::wgpu;
 
 mod gpu;
+mod markers;
 mod readback;
 mod shadow;
 
 use gpu::*;
 pub use gpu::{Gpu, attachment_view, ubuf_entry};
+pub use markers::{MarkLine, Markers};
 pub use readback::{composite_bg, downsample, parse_color, unpremultiply};
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -336,6 +338,7 @@ pub struct GpuScene {
     hdr: Option<HdrInfo>,
     casters: Option<(wgpu::Buffer, wgpu::Buffer, u32, wgpu::BindGroup)>,
     dummy_view: wgpu::TextureView,
+    overlay_view: wgpu::TextureView,
     linear_clamp: wgpu::Sampler,
     cmp_sampler: wgpu::Sampler,
     pipelines: Vec<wgpu::RenderPipeline>,
@@ -354,6 +357,7 @@ pub struct Renderer {
     pt_band: Vec<u16>,
     explode: Option<Explode>,
     guides: Option<Guides>,
+    markers: Option<markers::MarkerRes>,
     frame_stride: u64,
     band_slots: usize,
     frame_buf: wgpu::Buffer,
@@ -500,6 +504,7 @@ impl GpuScene {
                     count: None,
                 },
                 samp_entry(7),
+                tex_entry(8, wgpu::TextureViewDimension::D2),
             ],
         });
         let batch_layout = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -713,6 +718,37 @@ impl GpuScene {
             }
         }
 
+        for normals in [false, true] {
+            let targets = color_targets(Some(wgpu::BlendState { color: premul, alpha: premul }), normals, false);
+            pipelines.push(dev.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("xray"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(pos_layout.clone()), Some(attr_layout.clone())],
+                },
+                primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(if normals { "fs_n" } else { "fs" }),
+                    compilation_options: Default::default(),
+                    targets: &targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            }));
+        }
+
         let shadow_layout = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[Some(&frame_layout), Some(&batch_layout)],
@@ -783,6 +819,10 @@ impl GpuScene {
             None => st.texture(a.w, a.h, wgpu::TextureFormat::Rgba8Unorm, &[(a.w, a.h, &a.rgba)], 4),
         };
         let dummy_view = st.texture(1, 1, wgpu::TextureFormat::R8Unorm, &[(1, 1, &[255])], 1);
+        let overlay_view = match &mesh.overlay {
+            Some(o) => st.texture(o.w, o.h, wgpu::TextureFormat::Rgba8Unorm, &[(o.w, o.h, &o.rgba)], 4),
+            None => st.texture(1, 1, wgpu::TextureFormat::Rgba8Unorm, &[(1, 1, &[0; 4])], 4),
+        };
         let shmask_view = match mesh.hdr.as_ref().and_then(|h| h.shadows.as_ref()) {
             Some(m) => st.texture(m.w, m.h, wgpu::TextureFormat::Rgba8Unorm, &[(m.w, m.h, &m.rgba)], 4),
             None => st.texture(1, 1, wgpu::TextureFormat::Rgba8Unorm, &[(1, 1, &[255; 4])], 4),
@@ -828,6 +868,7 @@ impl GpuScene {
             hdr,
             casters,
             dummy_view,
+            overlay_view,
             linear_clamp: sampler(gpu, false, false, false),
             cmp_sampler: dev.create_sampler(&wgpu::SamplerDescriptor {
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -882,6 +923,7 @@ impl Renderer {
             pt_band: Vec::new(),
             explode: None,
             guides: None,
+            markers: None,
             frame_stride,
             band_slots: BAND_SLOTS,
             frame_buf,
@@ -961,6 +1003,7 @@ impl Renderer {
                 wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&sc.shmask_view) },
                 wgpu::BindGroupEntry { binding: 6, resource: sc.lamp_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&sc.samplers[nearest as usize]) },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(&sc.overlay_view) },
             ],
         })
     }
@@ -1469,6 +1512,20 @@ impl Renderer {
                 pass.set_vertex_buffer(0, g.vbuf.slice(..(*n as u64 * 12)));
                 pass.set_vertex_buffer(1, g.vbuf.slice((*n as u64 * 12)..));
                 pass.draw(0..*n, 0..1);
+            }
+        }
+        if let Some(mr) = &self.markers {
+            let n = self.write_markers(mr, view, guide_w / GUIDE_PX);
+            if n > 0 {
+                pass.set_bind_group(0, &self.frame_bind, &[0]);
+                pass.set_vertex_buffer(0, mr.vbuf.slice(..(n as u64 * 12)));
+                pass.set_vertex_buffer(1, mr.vbuf.slice((mr.cap as u64 * 12)..));
+                pass.set_pipeline(&self.sc.pipelines[24 + ni]);
+                pass.set_bind_group(1, &mr.xray, &[]);
+                pass.draw(0..n, 0..1);
+                pass.set_pipeline(&self.sc.pipelines[ni * 8 + 5]);
+                pass.set_bind_group(1, &mr.bind, &[]);
+                pass.draw(0..n, 0..1);
             }
         }
     }

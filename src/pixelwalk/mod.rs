@@ -1,3 +1,4 @@
+pub mod draw3d;
 pub mod finder;
 pub mod hull;
 pub mod output;

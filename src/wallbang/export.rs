@@ -13,6 +13,7 @@ use crate::bsp::{Bsp, Engine};
 use crate::grid::Backdrop;
 use crate::nav::Nav;
 use crate::paths::{Partial, free_name};
+use crate::pixelwalk::present::Pixelwalk;
 use crate::radar::Section;
 use crate::render::{Cuts, Renderer};
 use crate::scene::Report;
@@ -183,7 +184,7 @@ pub fn export_wallbang(
     o: &WallbangOpts,
     out: &Path,
     rep: &mut Report,
-) -> Result<Vec<PathBuf>> {
+) -> Result<(Vec<PathBuf>, Sim, Vec<Pixelwalk>)> {
     let t0 = std::time::Instant::now();
     rep.step(0.0)?;
     let sim = simulate(bsp, o, rep)?;
@@ -356,5 +357,5 @@ pub fn export_wallbang(
     }
     rep.step(1.0)?;
     rep.log(format!("  total {:.1}s", t0.elapsed().as_secs_f64()));
-    Ok(files.keep())
+    Ok((files.keep(), sim, pws))
 }

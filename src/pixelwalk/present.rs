@@ -289,7 +289,7 @@ pub fn export_pixelwalks(
     o: &PixelwalkOpts,
     out: &Path,
     rep: &mut Report,
-) -> Result<(Vec<PathBuf>, Summary)> {
+) -> Result<(Vec<PathBuf>, Summary, Vec<Pixelwalk>)> {
     let t0 = std::time::Instant::now();
     rep.step(0.0)?;
     let found = find(bsp, &o.finder)?;
@@ -340,5 +340,5 @@ pub fn export_pixelwalks(
     rep.log(format!("  {}", f.display()));
     rep.step(1.0)?;
     let longest = pws.iter().map(Pixelwalk::span).fold(0.0, f64::max);
-    Ok((files.keep(), Summary { stand, duck: pws.len() - stand, longest }))
+    Ok((files.keep(), Summary { stand, duck: pws.len() - stand, longest }, pws))
 }

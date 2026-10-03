@@ -1,5 +1,6 @@
 mod goldsrc;
 mod lightmap;
+pub mod overlay;
 
 use std::collections::HashMap;
 
@@ -183,6 +184,16 @@ pub struct Mesh {
     pub caster_idx: Vec<u32>,
     pub point_cell: Option<f64>,
     pub compressed: Vec<Option<crate::s2::texture::Compressed>>,
+    pub face_spans: Vec<FaceSpan>,
+    pub overlay: Option<Image>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct FaceSpan {
+    pub batch: u32,
+    pub first: u32,
+    pub count: u32,
+    pub model: u32,
 }
 
 impl Mesh {

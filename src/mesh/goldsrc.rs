@@ -5,7 +5,7 @@ use glam::{DVec2, DVec3};
 use rayon::prelude::*;
 
 use super::lightmap::{equalize_edges, merge_lightmaps};
-use super::{Batch, Image, Mesh, Mode, SKIP_TEXTURES, Vertex, skip_class};
+use super::{Batch, FaceSpan, Image, Mesh, Mode, SKIP_TEXTURES, Vertex, skip_class};
 use crate::bsp::{Bsp, TEX_SPECIAL};
 use crate::light::LightParams;
 use crate::reach::Reach;
@@ -334,6 +334,7 @@ pub fn build_mesh(
     let mut index: HashMap<(usize, Mode, u32, Option<[u32; 4]>), usize> = HashMap::new();
     let mut batches: Vec<Batch> = Vec::new();
     let mut points = Vec::new();
+    let mut face_spans = Vec::with_capacity(records.len());
     for (r, &level) in records.iter().zip(&levels) {
         let (bx, by) = atlas.pos[r.block];
         let (bx, by) = (bx as f64, by as f64);
@@ -372,6 +373,7 @@ pub fn build_mesh(
         });
         let b = &mut batches[bi];
         let base = b.verts.len() as u32;
+        face_spans.push(FaceSpan { batch: bi as u32, first: base, count: n as u32, model: r.model as u32 });
         b.verts.extend((0..n).map(vert));
         for i in 1..n as u32 - 1 {
             b.idx.extend([base, base + i, base + i + 1]);
@@ -396,6 +398,8 @@ pub fn build_mesh(
         caster_idx: Vec::new(),
         point_cell: None,
         compressed: Vec::new(),
+        face_spans,
+        overlay: None,
     })
 }
 

@@ -57,6 +57,7 @@ const LAMP_REF: f32 = 32.0;
 @group(0) @binding(5) var shmask: texture_2d<f32>;
 @group(0) @binding(6) var<storage, read> lamps: array<Lamp>;
 @group(0) @binding(7) var tsamp: sampler;
+@group(0) @binding(8) var ovl: texture_2d<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(2) var<uniform> bu: BatchU;
 @group(1) @binding(3) var tex2: texture_2d<f32>;
@@ -349,7 +350,8 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     if (lu.shadow0.w > 0.0 && lu.dir.w > 0.0 && !unlit) {
         t = vec4<f32>(mix(t.rgb, pow(max(t.rgb, vec3<f32>(0.0)), vec3<f32>(lu.shadow0.w)), clamp(lu.dir.w, 0.0, 1.0)), t.a);
     }
-    let c = t.rgb * tint * lr;
+    let ov = textureSampleLevel(ovl, lsamp, i.uv2, 0.0);
+    let c = t.rgb * tint * lr * (1.0 - ov.a) + ov.rgb;
     var a = 1.0;
     if (mode >= 2) {
         a = bu.a.y * t.a;
