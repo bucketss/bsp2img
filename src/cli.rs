@@ -320,7 +320,7 @@ pub struct WallbangArgs {
     pub base: String,
     #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
-    #[arg(long, default_value = "auto", value_name = "auto|none|Z,...", help = "per-level images")]
+    #[arg(long, default_value = "none", value_name = "auto|none|Z,...", help = "per-level images")]
     pub sections: String,
     #[arg(long, default_value = "off", value_parser = ["off", "faint"], help = "shots from other levels: dropped, or drawn faint")]
     pub others: String,

@@ -160,7 +160,7 @@ Also the spin output options.
 | `--style lines\|areas\|both` | 2D style (both) |
 | `--sigma PX` | Area smoothing (2) |
 | `--base render\|radar` | Backdrop, radar = the overview (render) |
-| `--sections auto\|none\|Z,...` | Per-level images (auto) |
+| `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--others off\|faint` | Shots from other levels (off) |
 | `--pixelwalks` | Add the pixelwalk layer |
 | `--csv` | Write every shot |
