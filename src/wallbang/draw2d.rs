@@ -69,30 +69,71 @@ fn percentile(v: &[f32], q: f64) -> f64 {
     a + (b - a) * fr
 }
 
-pub fn areas(base: &[u8], f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
-    let n = (f.w * f.h) as usize;
-    let mut out = base.to_vec();
-    for (made, col) in [(false, RED), (true, GREEN)] {
-        let mut acc = vec![0f32; n];
-        density(f, &layer.main, made, 1.0, &mut acc);
-        density(f, &layer.faint, made, FAINT, &mut acc);
-        if sigma > 0.0 {
-            crate::grid::blur(&mut acc, f.w as usize, f.h as usize, sigma);
+fn area_alpha(f: &Frame, layer: &Layer, sigma: f64, made: bool) -> Vec<f64> {
+    let mut acc = vec![0f32; (f.w * f.h) as usize];
+    density(f, &layer.main, made, 1.0, &mut acc);
+    density(f, &layer.faint, made, FAINT, &mut acc);
+    if sigma > 0.0 {
+        crate::grid::blur(&mut acc, f.w as usize, f.h as usize, sigma);
+    }
+    let r = percentile(&acc, REF_PCT);
+    acc.iter()
+        .map(|&m| {
+            let a = (m as f64 / r).clamp(0.0, 1.0).sqrt();
+            if a < ALPHA_CUT { 0.0 } else { a * ALPHA_MAX }
+        })
+        .collect()
+}
+
+fn blend(out: &mut [u8], col: [u8; 3], alpha: &[f64]) {
+    for (i, &a) in alpha.iter().enumerate() {
+        if a <= 0.0 {
+            continue;
         }
-        let r = percentile(&acc, REF_PCT);
-        for (i, &m) in acc.iter().enumerate() {
-            let mut a = (m as f64 / r).clamp(0.0, 1.0).sqrt();
-            if a < ALPHA_CUT {
-                continue;
-            }
-            a *= ALPHA_MAX;
-            let p = &mut out[i * 4..i * 4 + 3];
-            for k in 0..3 {
-                p[k] = (p[k] as f64 * (1.0 - a) + col[k] as f64 * a).round() as u8;
-            }
+        let p = &mut out[i * 4..i * 4 + 3];
+        for k in 0..3 {
+            p[k] = (p[k] as f64 * (1.0 - a) + col[k] as f64 * a).round() as u8;
         }
     }
+}
+
+fn over(acc: &mut [f64], col: [u8; 3], alpha: &[f64]) {
+    for (i, &a) in alpha.iter().enumerate() {
+        if a <= 0.0 {
+            continue;
+        }
+        let p = &mut acc[i * 4..i * 4 + 4];
+        for k in 0..3 {
+            p[k] = col[k] as f64 * a + p[k] * (1.0 - a);
+        }
+        p[3] = a + p[3] * (1.0 - a);
+    }
+}
+
+fn unpremultiply(acc: &[f64]) -> Vec<u8> {
+    acc.chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3];
+            let c = |v: f64| if a > 0.0 { (v / a).round().clamp(0.0, 255.0) as u8 } else { 0 };
+            [c(p[0]), c(p[1]), c(p[2]), (a * 255.0).round() as u8]
+        })
+        .collect()
+}
+
+pub fn areas(base: &[u8], f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
+    let mut out = base.to_vec();
+    for (made, col) in [(false, RED), (true, GREEN)] {
+        blend(&mut out, col, &area_alpha(f, layer, sigma, made));
+    }
     out
+}
+
+pub fn areas_rgba(f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
+    let mut acc = vec![0f64; (f.w * f.h) as usize * 4];
+    for (made, col) in [(false, RED), (true, GREEN)] {
+        over(&mut acc, col, &area_alpha(f, layer, sigma, made));
+    }
+    unpremultiply(&acc)
 }
 
 fn raster(mask: &mut [bool], w: i64, h: i64, a: (f32, f32), b: (f32, f32)) {
@@ -120,8 +161,9 @@ fn raster(mask: &mut [bool], w: i64, h: i64, a: (f32, f32), b: (f32, f32)) {
     }
 }
 
-pub fn lines(px: &mut [u8], f: &Frame, layer: &Layer) {
+fn line_alphas(f: &Frame, layer: &Layer) -> Vec<([u8; 3], Vec<f64>)> {
     let (w, h) = (f.w as i64, f.h as i64);
+    let mut out = Vec::new();
     for (made, (col, alpha)) in [(false, LINE_RED), (true, LINE_GREEN)] {
         for (set, k) in [(&layer.faint, FAINT), (&layer.main, 1.0)] {
             let mut mask = vec![false; (w * h) as usize];
@@ -130,14 +172,24 @@ pub fn lines(px: &mut [u8], f: &Frame, layer: &Layer) {
                 raster(&mut mask, w, h, f.px(a.x, a.y), f.px(b.x, b.y));
             }
             let a = (alpha * k) as f64;
-            for (i, _) in mask.iter().enumerate().filter(|m| *m.1) {
-                let p = &mut px[i * 4..i * 4 + 3];
-                for c in 0..3 {
-                    p[c] = (p[c] as f64 * (1.0 - a) + col[c] as f64 * a).round() as u8;
-                }
-            }
+            out.push((col, mask.iter().map(|&m| if m { a } else { 0.0 }).collect()));
         }
     }
+    out
+}
+
+pub fn lines(px: &mut [u8], f: &Frame, layer: &Layer) {
+    for (col, a) in line_alphas(f, layer) {
+        blend(px, col, &a);
+    }
+}
+
+pub fn lines_rgba(f: &Frame, layer: &Layer) -> Vec<u8> {
+    let mut acc = vec![0f64; (f.w * f.h) as usize * 4];
+    for (col, a) in line_alphas(f, layer) {
+        over(&mut acc, col, &a);
+    }
+    unpremultiply(&acc)
 }
 
 pub fn markers(pm: &mut Pixmap, bsp: &Bsp, f: &Frame) {

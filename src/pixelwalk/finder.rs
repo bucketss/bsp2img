@@ -114,6 +114,20 @@ fn sim_drive(map: &PwMap, phys: &[Physent], usehull: usize, start: &V3, md: &V3,
     SimOut { catch_frames: caught, catch_floor_ent: cfe, catch_wall_ent: cwe }
 }
 
+pub fn drive_path(map: &PwMap, wm: &WorldModels, usehull: usize, start: &V3, yaw: f32, nframes: usize) -> Vec<V3> {
+    let phys = select_physents(wm, &[f32::MIN; 3], &[f32::MAX; 3]);
+    let mut pm = Pm::new(map, &phys, usehull, PW_EPS);
+    pm.fmove = 400.0;
+    pm.angles = [0.0, yaw, 0.0];
+    pm.origin = *start;
+    let mut out = vec![pm.origin];
+    for _ in 0..nframes {
+        pm.player_move_frame();
+        out.push(pm.origin);
+    }
+    out
+}
+
 fn pos_key(p: &V3, usehull: usize) -> u64 {
     let x = lround(p[0] / 2.0) as u64;
     let y = lround(p[1] / 2.0) as u64;

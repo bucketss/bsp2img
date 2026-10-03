@@ -217,3 +217,52 @@ impl App {
         }
     }
 }
+
+pub enum BgMsg<T> {
+    Log(String),
+    Done(Result<T, String>),
+}
+
+pub struct Bg<T> {
+    pub key: String,
+    rx: Receiver<BgMsg<T>>,
+    stop: Arc<AtomicBool>,
+    pub started: std::time::Instant,
+}
+
+impl<T: Send + 'static> Bg<T> {
+    pub fn spawn(key: String, ctx: &egui::Context, f: impl FnOnce(&AtomicBool, &mut Report) -> Result<T> + Send + 'static) -> Bg<T> {
+        let (tx, rx) = channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let send = |m: BgMsg<T>| {
+                let _ = tx.send(m);
+                ctx.request_repaint();
+            };
+            let mut log = |s: String| send(BgMsg::Log(s));
+            let mut progress = |_: f32| !flag.load(Ordering::Relaxed);
+            let res = f(&flag, &mut Report { log: &mut log, progress: &mut progress });
+            send(BgMsg::Done(res.map_err(|e| format!("{e:#}"))));
+        });
+        Bg { key, rx, stop, started: std::time::Instant::now() }
+    }
+
+    pub fn poll(&self, log: &mut Vec<String>) -> Option<Result<T, String>> {
+        let mut done = None;
+        while let Ok(m) = self.rx.try_recv() {
+            match m {
+                BgMsg::Log(s) => log.push(s),
+                BgMsg::Done(r) => done = Some(r),
+            }
+        }
+        done
+    }
+}
+
+impl<T> Drop for Bg<T> {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}

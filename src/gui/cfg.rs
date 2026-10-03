@@ -534,6 +534,10 @@ impl App {
             format!("ov_objectives={}", self.ov_objectives),
             format!("radar_overlay={}", self.radar_overlay.key()),
             format!("radar_opacity={}", self.radar_opacity),
+            format!("bang_weapon={}", self.bang.weapon),
+            format!("bang_stance={}", self.bang.stance),
+            format!("bang_opacity={}", self.bang.opacity),
+            format!("bang_paint={}", self.bang.paint),
         ];
         lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
@@ -601,6 +605,10 @@ impl App {
                     "ov_objectives" => put(&mut self.ov_objectives, v),
                     "radar_overlay" => self.radar_overlay = super::Overlay::from_key(v).unwrap_or(self.radar_overlay),
                     "radar_opacity" => put(&mut self.radar_opacity, v),
+                    "bang_weapon" if crate::wallbang::sim::weapon(v).is_some() => self.bang.weapon = v.trim().to_ascii_lowercase(),
+                    "bang_stance" if super::bang::STANCES.contains(&v.trim()) => self.bang.stance = v.trim().to_string(),
+                    "bang_opacity" => put(&mut self.bang.opacity, v),
+                    "bang_paint" => put(&mut self.bang.paint, v),
                     "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },

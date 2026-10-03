@@ -122,9 +122,17 @@ pub struct Sim {
     pub mat_label: String,
     pub nav_cells: usize,
     pub reachable: usize,
+    pub nav: std::sync::Arc<Nav>,
+    pub reach: Vec<bool>,
 }
 
-pub fn simulate(bsp: &Bsp, o: &WallbangOpts, rep: &mut Report) -> Result<Sim> {
+impl Sim {
+    pub fn ctx<'a>(&'a self, opts: &'a ShotOpts) -> Ctx<'a> {
+        Ctx { world: &self.world, nav: &self.nav, reach: &self.reach, opts, stop: None }
+    }
+}
+
+pub fn simulate(bsp: &Bsp, o: &WallbangOpts, stop: Option<&std::sync::atomic::AtomicBool>, rep: &mut Report) -> Result<Sim> {
     if bsp.engine() != Engine::GoldSrc {
         bail!("wallbang supports GoldSrc maps only (CS 1.6 / CZ); Source and CS2 use a different penetration model");
     }
@@ -158,9 +166,12 @@ pub fn simulate(bsp: &Bsp, o: &WallbangOpts, rep: &mut Report) -> Result<Sim> {
     rep.step(0.1)?;
     let ts = std::time::Instant::now();
     let (shots, counts) = {
-        let ctx = Ctx { world: &world, nav: &nav, reach: &reach, opts: &o.shots };
+        let ctx = Ctx { world: &world, nav: &nav, reach: &reach, opts: &o.shots, stop };
         shots::simulate(&ctx, &spots, &|_| {})
     };
+    if stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+        return Err(crate::scene::Cancelled.into());
+    }
     rep.log(format!(
         "  {} shots fired, {} hit a wall within {} units: {} made it, {} died ({:.1}s)",
         counts.fired,
@@ -170,7 +181,7 @@ pub fn simulate(bsp: &Bsp, o: &WallbangOpts, rep: &mut Report) -> Result<Sim> {
         counts.died,
         ts.elapsed().as_secs_f64()
     ));
-    Ok(Sim { world, spots, shots, counts, mat_label, nav_cells: nav.len(), reachable: nreach })
+    Ok(Sim { world, spots, shots, counts, mat_label, nav_cells: nav.len(), reachable: nreach, nav, reach })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -187,7 +198,7 @@ pub fn export_wallbang(
 ) -> Result<(Vec<PathBuf>, Sim, Vec<Pixelwalk>)> {
     let t0 = std::time::Instant::now();
     rep.step(0.0)?;
-    let sim = simulate(bsp, o, rep)?;
+    let sim = simulate(bsp, o, None, rep)?;
     rep.step(0.7)?;
     let (shots, spots, c) = (&sim.shots, &sim.spots, &sim.counts);
 

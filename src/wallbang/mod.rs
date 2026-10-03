@@ -294,7 +294,7 @@ mod tests {
         let mut log = |s: String| println!("{s}");
         let mut prog = |_: f32| true;
         let mut rep = Report { log: &mut log, progress: &mut prog };
-        let sim = export::simulate(&bsp, &default_opts(), &mut rep).unwrap();
+        let sim = export::simulate(&bsp, &default_opts(), None, &mut rep).unwrap();
         Some((bsp, sim))
     }
 

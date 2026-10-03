@@ -1,3 +1,4 @@
+mod bang;
 mod cfg;
 mod export_ui;
 mod jobs;
@@ -206,6 +207,7 @@ struct App {
     status: String,
     last_out: Option<PathBuf>,
     cfg_saved: String,
+    bang: bang::Bang,
 }
 
 impl App {
@@ -293,6 +295,7 @@ impl App {
             status: String::new(),
             last_out: None,
             cfg_saved: String::new(),
+            bang: bang::Bang::default(),
         };
         app.load_cfg();
         app.refresh_maps();
@@ -413,6 +416,7 @@ impl App {
             }
         }
         self.poll_job();
+        self.bang_poll();
         self.poll_maps();
         self.log.extend(crate::prof::take_gpu_errors().into_iter().map(|e| format!("gpu error: {e}")));
     }
@@ -568,6 +572,7 @@ impl eframe::App for App {
         egui::Panel::left("side").resizable(true).default_size(340.0).show(ui, |ui| self.side(ui));
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
         self.health_window(&ui.ctx().clone());
+        self.bang_window(&ui.ctx().clone());
         if !ui.input(|i| i.pointer.any_down()) {
             self.save_cfg();
         }

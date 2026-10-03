@@ -137,9 +137,9 @@ pub struct Preview {
 }
 
 pub struct Frame {
-    rect: Rect,
-    view: View,
-    upp: f64,
+    pub rect: Rect,
+    pub view: View,
+    pub upp: f64,
 }
 
 pub struct ViewCache {
@@ -218,18 +218,24 @@ view_pan={} {} {}
         self.mode = mode;
     }
 
+    pub(super) fn pick_point(&self, pos: Pos2, ppp: f32) -> Option<(DVec3, f64)> {
+        let (Some(r), Some(pv), Some(f)) = (&self.renderer, &self.preview, &self.frame) else { return None };
+        let x = ((pos.x - f.rect.min.x) * ppp).max(0.0) as u32;
+        let y = ((pos.y - f.rect.min.y) * ppp).max(0.0) as u32;
+        r.read_depth(&pv.t, x, y).and_then(|d| r.unproject(&f.view, pv.size[0], pv.size[1], x as f64, y as f64, d))
+    }
+
     fn pick(&mut self, p: Pick, ppp: f32) {
-        let (Some(r), Some(pv), Some(f)) = (&self.renderer, &self.preview, &self.frame) else { return };
-        let x = ((p.pos.x - f.rect.min.x) * ppp).max(0.0) as u32;
-        let y = ((p.pos.y - f.rect.min.y) * ppp).max(0.0) as u32;
-        let hit = r.read_depth(&pv.t, x, y).and_then(|d| r.unproject(&f.view, pv.size[0], pv.size[1], x as f64, y as f64, d));
-        let Some((pt, z)) = hit else {
+        let Some(f) = &self.frame else { return };
+        let persp = f.view.persp.is_some();
+        let rect = f.rect;
+        let Some((pt, z)) = self.pick_point(p.pos, ppp) else {
             self.status = "no geometry under the cursor".into();
             return;
         };
         if p.focus {
-            self.look.focus_y = ((p.pos.y - f.rect.min.y) / f.rect.height()).clamp(0.0, 1.0) as f64;
-            if f.view.persp.is_some() {
+            self.look.focus_y = ((p.pos.y - rect.min.y) / rect.height()).clamp(0.0, 1.0) as f64;
+            if persp {
                 self.look.focus_dist = z.round();
             }
             self.status = format!("focus {:.0} units", z);
@@ -434,12 +440,17 @@ view_pan={} {} {}
         if self.mode == Mode::Overview && cs2 {
             self.radar_bar(ui);
         }
+        self.bang_bar(ui);
         let avail = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(avail, Sense::click_and_drag());
         let painter = ui.painter_at(avail);
         painter.rect_filled(avail, 0.0, Color32::from_gray(24));
         if self.renderer.is_none() {
             painter.text(avail.center(), Align2::CENTER_CENTER, "pick a map", FontId::proportional(18.0), Color32::GRAY);
+            return;
+        }
+        self.bang_sync(ui.ctx());
+        if self.renderer.is_none() {
             return;
         }
         self.sync_sky();
@@ -614,6 +625,7 @@ view_pan={} {} {}
             }
         }
         self.frame = Some(fr);
+        self.bang_draw(&painter, &rcuts, matches!(self.mode, Mode::Top | Mode::Overview));
         if self.band_drag && self.look.tilt != Tilt::Off {
             let h = rect.height() as f64;
             let (fy, b) = (self.look.focus_y, self.look.band);
@@ -658,6 +670,10 @@ view_pan={} {} {}
         let upp = self.frame.as_ref().map(|f| f.upp).unwrap_or(1.0);
         let d = resp.drag_delta();
         let shift = ui.input(|i| i.modifiers.shift);
+        let ctrl = ui.input(|i| i.modifiers.command);
+        if self.mode != Mode::Overview || !self.modern() {
+            self.bang_click(resp, shift, ctrl, ui.ctx().pixels_per_point());
+        }
         match self.mode {
             Mode::Iso => {
                 if resp.dragged_by(egui::PointerButton::Primary) {

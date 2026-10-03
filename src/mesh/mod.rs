@@ -120,6 +120,7 @@ pub struct FourWay {
     pub mul4: bool,
 }
 
+#[derive(Clone)]
 pub struct Batch {
     pub tex: usize,
     pub mode: Mode,
@@ -169,6 +170,7 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct Mesh {
     pub batches: Vec<Batch>,
     pub textures: Vec<Option<Image>>,
@@ -206,6 +208,7 @@ impl Mesh {
     }
 }
 
+#[derive(Clone)]
 pub struct PointLight {
     pub pos: [f32; 3],
     pub range: f32,
@@ -216,6 +219,7 @@ pub struct PointLight {
     pub cone: [f32; 2],
 }
 
+#[derive(Clone)]
 pub struct HdrLight {
     pub w: u32,
     pub h: u32,

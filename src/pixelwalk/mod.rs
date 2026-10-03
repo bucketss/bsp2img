@@ -28,6 +28,29 @@ impl Default for FinderOpts {
     }
 }
 
+pub struct Mover {
+    map: hull::PwMap,
+    wm: world::WorldModels,
+}
+
+impl Mover {
+    pub fn new(bsp: &Bsp) -> Mover {
+        let map = hull::PwMap::new(bsp);
+        let wm = world::build_world(bsp, &map);
+        Mover { map, wm }
+    }
+
+    pub fn drive(&self, p: &present::Pixelwalk, seconds: f64) -> Vec<glam::DVec3> {
+        let usehull = p.finds.first().map_or(0, |f| f.usehull);
+        let start = [p.from.x as f32, p.from.y as f32, p.from.z as f32];
+        let frames = (seconds * 100.0).round() as usize;
+        finder::drive_path(&self.map, &self.wm, usehull, &start, p.yaw, frames)
+            .iter()
+            .map(|v| glam::DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64))
+            .collect()
+    }
+}
+
 pub struct Found {
     pub finds: Vec<Find>,
     pub seams: usize,

@@ -24,6 +24,7 @@ pub struct Image {
     pub rgba: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct Compressed {
     pub format: u8,
     pub w: usize,

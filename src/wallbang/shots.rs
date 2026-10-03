@@ -43,6 +43,10 @@ pub struct ShotOpts {
 }
 
 impl ShotOpts {
+    pub fn new(weapon: &'static Weapon, stand: bool, duck: bool) -> ShotOpts {
+        ShotOpts { weapon, stand, duck, yaw_step: 2.0, pitch: (-20.0, 20.0, 4.0), spot_cell: 64.0, max_hit: 2000.0, min_thickness: 0.0, slab: 256.0 }
+    }
+
     pub fn yaws(&self) -> Vec<f64> {
         let n = (360.0 / self.yaw_step).round().max(1.0) as usize;
         (0..n).map(|k| k as f64 * self.yaw_step).collect()
@@ -170,6 +174,7 @@ pub struct Ctx<'a> {
     pub nav: &'a Nav,
     pub reach: &'a [bool],
     pub opts: &'a ShotOpts,
+    pub stop: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 fn v3(p: DVec3) -> V3 {
@@ -489,6 +494,9 @@ pub fn simulate(ctx: &Ctx, spots: &[Spot], progress: &(dyn Fn(f32) + Sync)) -> (
         .map(|(si, s)| {
             let mut c = Counts::default();
             let mut v = Vec::new();
+            if ctx.stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+                return (v, c);
+            }
             for (pi, &p) in pitches.iter().enumerate() {
                 for (yi, &y) in yaws.iter().enumerate() {
                     if let Some(sh) = ctx.shoot(si as u32, s, pi, yi, p, y, &mut c) {

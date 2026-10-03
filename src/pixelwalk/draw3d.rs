@@ -30,7 +30,7 @@ fn feet(p: DVec3, s: Stance) -> DVec3 {
     p - DVec3::Z * half_height(s)
 }
 
-fn ghost(m: &mut Markers, o: DVec3, s: Stance, c: [u8; 3]) {
+pub fn ghost(m: &mut Markers, o: DVec3, s: Stance, c: [u8; 3]) {
     let h = DVec3::new(HALF, HALF, half_height(s));
     let corner = |i: usize| o + DVec3::new(if i & 1 != 0 { h.x } else { -h.x }, if i & 2 != 0 { h.y } else { -h.y }, if i & 4 != 0 { h.z } else { -h.z });
     let fill = [c[0], c[1], c[2], GHOST_ALPHA];
