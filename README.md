@@ -20,6 +20,8 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) ma
 | `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2, CS:S and CS:GO radar `.png` per vertical section and `.txt`, on the official framing; CS:S also `.vtf`/`.vmt`, CS:GO `.dds` |
 | `timing` | Rush timing maps and `.txt` per team (experimental) |
 | `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV and CS2 demos |
+| `wallbang` | GoldSrc: which walls bullets get through, area and line maps per level, `.txt`, optional `.csv` |
+| `pixelwalk` | GoldSrc: pixelwalk map and `.txt` with `amx_setpos` lines; `pixelwalk_summary.csv` for several maps |
 | `health` | Asset, compile, engine limit, spawn, collision and overview report; `health_summary.csv` for several maps |
 | `svg` | Vector callout map of reachable floors, walls, objectives, spawns and nav place names |
 | `stl` | Watertight 3D-printable diorama |
@@ -139,6 +141,41 @@ Also the spin output options.
 | Option | Effect |
 |---|---|
 | `--base render\|radar` | CS2, Source: backdrop, the official radar gives one set per section (render) |
+
+### wallbang
+
+| Option | Effect |
+|---|---|
+| `--weapon NAME` | ak47, awp, m4a1, m4a1_sil, deagle, scout (ak47) |
+| `--stance stand\|duck\|both` | Shooter eye height (both) |
+| `--yaw-step D` | Degrees between shots (2) |
+| `--pitch A..B/S` | Pitch range and step (-20..20/4) |
+| `--spot-cell U` | Shooter spacing (64) |
+| `--max-hit U` | Ignore walls further away (2000) |
+| `--skip-translucent A` | Ignore brush entities with renderamt below A |
+| `--skip-doors` | Ignore doors |
+| `--min-thickness U` | Drop walls thinner than U (0) |
+| `--slab U` | Floors and ceilings thicker than this count as ground (256) |
+| `--materials FILE` | Override `materials.txt` |
+| `--style lines\|areas\|both` | 2D style (both) |
+| `--sigma PX` | Area smoothing (2) |
+| `--base render\|radar` | Backdrop, radar = the overview (render) |
+| `--sections auto\|none\|Z,...` | Per-level images (auto) |
+| `--others off\|faint` | Shots from other levels (off) |
+| `--pixelwalks` | Add the pixelwalk layer |
+| `--csv` | Write every shot |
+
+### pixelwalk
+
+| Option | Effect |
+|---|---|
+| `--stance stand\|duck\|both` | Stances to search (both) |
+| `--min-samples N` | Drop finds with fewer sub-pixel hits (2) |
+| `--merge-gap U` | Join finds on the same wall line (64) |
+| `--sections auto\|none\|Z,...` | Per-level images (none) |
+| `--base render\|radar` | Backdrop (render) |
+| `--labels` | Number the pixelwalks |
+| `health --pixelwalks` | Adds a pixelwalk count to the health report |
 
 ### svg
 
