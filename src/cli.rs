@@ -50,6 +50,8 @@ pub enum Cmd {
     Timing(TimingArgs),
     #[command(about = "Heatmaps of kills and player positions from HLTV and CS2 demos")]
     Kills(KillsArgs),
+    #[command(about = "GoldSrc: map which walls bullets get through and where they go")]
+    Wallbang(WallbangArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
     #[command(about = "Write editable SVG line art of the walkable floors, walls, objectives and spawns")]
@@ -280,6 +282,62 @@ pub struct TimingArgs {
     pub base: String,
     #[command(flatten)]
     pub f: FaceArgs,
+}
+
+#[derive(Args)]
+pub struct WallbangArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value = "ak47", value_parser = ["ak47", "awp", "m4a1", "m4a1_sil", "deagle", "scout"], help = "the one weapon to simulate and draw")]
+    pub weapon: String,
+    #[arg(long, default_value = "both", value_parser = ["stand", "duck", "both"], help = "shooter eye height")]
+    pub stance: String,
+    #[arg(long = "yaw-step", default_value_t = 2.0, value_parser = positive, value_name = "D", help = "degrees between shots")]
+    pub yaw_step: f64,
+    #[arg(long, default_value = "-20..20/4", allow_hyphen_values = true, value_parser = parse_pitch, value_name = "A..B/S", help = "pitch range and step in degrees (positive = down)")]
+    pub pitch: (f64, f64, f64),
+    #[arg(long = "spot-cell", default_value_t = 64.0, value_parser = at_least_one, value_name = "U", help = "shooter spacing in units")]
+    pub spot_cell: f64,
+    #[arg(long = "max-hit", default_value_t = 2000.0, value_parser = positive, value_name = "U", help = "ignore walls further away")]
+    pub max_hit: f64,
+    #[arg(long = "skip-translucent", value_name = "A", help = "ignore brush entities with a non-normal rendermode and renderamt below A (0-255)")]
+    pub skip_translucent: Option<u8>,
+    #[arg(long = "skip-doors", help = "ignore func_door, func_door_rotating and momentary_door")]
+    pub skip_doors: bool,
+    #[arg(long = "min-thickness", default_value_t = 0.0, value_parser = non_negative, value_name = "U", help = "drop walls thinner than U (measured along the face normal)")]
+    pub min_thickness: f64,
+    #[arg(long, default_value_t = 256.0, value_parser = positive, value_name = "U", help = "floors and ceilings thicker than this count as ground")]
+    pub slab: f64,
+    #[arg(long, value_name = "FILE", help = "materials.txt to use instead of the game's")]
+    pub materials: Option<PathBuf>,
+    #[arg(long, default_value = "both", value_parser = ["lines", "areas", "both"], help = "2D style")]
+    pub style: String,
+    #[arg(long, default_value_t = 2.0, value_parser = non_negative, value_name = "PX", help = "area smoothing radius in pixels")]
+    pub sigma: f64,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official overview framing")]
+    pub base: String,
+    #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
+    pub size: u32,
+    #[arg(long, default_value = "auto", value_name = "auto|none|Z,...", help = "per-level images")]
+    pub sections: String,
+    #[arg(long, default_value = "off", value_parser = ["off", "faint"], help = "shots from other levels: dropped, or drawn faint")]
+    pub others: String,
+    #[arg(long, help = "also write every shot to a .csv")]
+    pub csv: bool,
+    #[command(flatten)]
+    pub f: FaceArgs,
+}
+
+fn parse_pitch(s: &str) -> Result<(f64, f64, f64), String> {
+    let bad = || format!("expected A..B/S, e.g. -20..20/4, got {s}");
+    let (range, step) = s.split_once('/').ok_or_else(bad)?;
+    let (a, b) = range.split_once("..").ok_or_else(bad)?;
+    let p = |t: &str| t.trim().parse::<f64>().map_err(|_| bad());
+    let (a, b, st) = (p(a)?, p(b)?, p(step)?);
+    if st <= 0.0 || b < a || a < -89.0 || b > 89.0 {
+        return Err(format!("{s}: need -89 <= A <= B <= 89 and S > 0"));
+    }
+    Ok((a, b, st))
 }
 
 #[derive(Args)]
@@ -633,6 +691,44 @@ pub fn run_timing(a: &TimingArgs) -> Result<()> {
             let cuts = scene.cuts(&co, &mut say);
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
             reported(|rep| export_timing(&mut r, &scene.bsp, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+        })
+        .map(drop)
+    })
+}
+
+pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = crate::wallbang::WallbangOpts {
+        shots: crate::wallbang::shots::ShotOpts {
+            weapon: crate::wallbang::sim::weapon(&a.weapon).ok_or_else(|| anyhow::anyhow!("unknown weapon {}", a.weapon))?,
+            stand: a.stance != "duck",
+            duck: a.stance != "stand",
+            yaw_step: a.yaw_step,
+            pitch: a.pitch,
+            spot_cell: a.spot_cell,
+            max_hit: a.max_hit,
+            min_thickness: a.min_thickness,
+            slab: a.slab,
+        },
+        ents: crate::wallbang::EntOpts { skip_translucent: a.skip_translucent, skip_doors: a.skip_doors },
+        materials: a.materials.clone(),
+        areas: a.style != "lines",
+        lines: a.style != "areas",
+        sigma: a.sigma,
+        base: crate::grid::Backdrop::from_key(&a.base).unwrap_or_default(),
+        size: a.size,
+        split: crate::radar::Split::parse(&a.sections)?,
+        others_faint: a.others == "faint",
+        csv: a.csv,
+    };
+    each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
+            reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, name, &co.tag(lo.hull), &cuts, &o, out, rep))
         })
         .map(drop)
     })

@@ -45,8 +45,12 @@ pub struct Iter {
     pub tex: u8,
     pub model: u16,
     pub normal: V3,
+    pub dmg_in: i16,
+    pub own_dead: bool,
+    pub own_abort: Option<V3>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Missed,
@@ -61,6 +65,7 @@ pub struct Fired {
     pub it: [Iter; MAX_ITER],
 }
 
+#[cfg(test)]
 impl Fired {
     pub fn outcome(&self) -> Outcome {
         if self.it[0].flags & IT_HIT == 0 {
@@ -98,8 +103,9 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
     let mut damage = w.damage as i32;
     let mut end = add(&src, &scale(dir, dist));
     let mut dmg_mod: f32 = 0.5;
+    let mut prev_model = 0usize;
     while pen != 0 {
-        let (tr, model): (Trace, usize) = world.trace(&src, &end, ents);
+        let (tr, model, own): (Trace, usize, Trace) = world.trace_own(&src, &end, ents, prev_model);
         let n = out.n;
         out.n += 1;
         let it = if n < MAX_ITER { Some(n) } else { None };
@@ -107,6 +113,9 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
             let r = &mut out.it[i];
             r.src = src;
             r.dist = dist;
+            r.dmg_in = damage as i16;
+            r.own_dead = own.fraction == 1.0 && own.allsolid;
+            r.own_abort = own.aborted.then_some(own.abortpos);
             r.fraction = tr.fraction;
             r.endpos = tr.endpos;
             r.abortpos = tr.abortpos;
@@ -144,6 +153,7 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
             _ => {}
         }
         if tr.fraction != 1.0 {
+            prev_model = model;
             pen -= 1;
             let cur = tr.fraction * dist;
             damage = (f64::from(damage) * falloff(w.rangemod, cur / 500.0)) as i32;

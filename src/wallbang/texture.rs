@@ -224,7 +224,7 @@ impl Materials {
     }
 
     pub fn locate(bsp: &Path) -> Option<PathBuf> {
-        let game = bsp.canonicalize().ok()?.parent()?.parent()?.to_path_buf();
+        let game = std::path::absolute(bsp).ok()?.parent()?.parent()?.to_path_buf();
         let own = game.join("sound").join("materials.txt");
         if own.exists() {
             return Some(own);

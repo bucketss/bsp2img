@@ -1,12 +1,52 @@
+pub mod draw2d;
+pub mod export;
 pub mod hull0;
+pub mod shots;
 pub mod sim;
 pub mod texture;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use anyhow::Result;
 
 use crate::bsp::Bsp;
+use crate::grid::Backdrop;
+use crate::radar::{Section, Split};
+use crate::scene::Report;
+use draw2d::Frame;
 use hull0::{Hull0, Trace, V3};
+use shots::ShotOpts;
 use texture::{Materials, Textures};
+
+pub fn overview_bases(_bsp: &Bsp, _size: u32, _secs: &[Section], _rep: &mut Report) -> Result<Vec<DrawBase>> {
+    Ok(Vec::new())
+}
+
+pub const NAV_CELL: f64 = 8.0;
+
+#[derive(Clone, Debug)]
+pub struct WallbangOpts {
+    pub shots: ShotOpts,
+    pub ents: EntOpts,
+    pub materials: Option<PathBuf>,
+    pub areas: bool,
+    pub lines: bool,
+    pub sigma: f64,
+    pub base: Backdrop,
+    pub size: u32,
+    pub split: Split,
+    pub others_faint: bool,
+    pub csv: bool,
+}
+
+pub struct DrawBase {
+    pub tag: String,
+    pub title: String,
+    pub frame: Frame,
+    pub px: Vec<u8>,
+    pub section: Section,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntOpts {
@@ -113,38 +153,33 @@ impl World {
         w
     }
 
-    pub fn contents(&self, p: &V3) -> i32 {
-        self.hull.point_contents(self.world_head, p)
-    }
-
-    pub fn solid(&self, p: &V3, ents: bool) -> bool {
-        if self.contents(p) == hull0::CONTENTS_SOLID {
-            return true;
-        }
-        ents && self.ents.iter().any(|e| {
-            (0..3).all(|i| p[i] >= e.mins[i] - 1.0 && p[i] <= e.maxs[i] + 1.0)
-                && self.hull.point_contents(e.head, &sub(p, &e.origin)) == hull0::CONTENTS_SOLID
-        })
-    }
-
     pub fn trace(&self, src: &V3, end: &V3, ents: bool) -> (Trace, usize) {
+        let (t, m, _) = self.trace_own(src, end, ents, 0);
+        (t, m)
+    }
+
+    pub fn trace_own(&self, src: &V3, end: &V3, ents: bool, own: usize) -> (Trace, usize, Trace) {
         let mut best = self.hull.trace(self.world_head, src, end);
+        let mut own_tr = best;
         let mut model = 0;
         if ents {
             for e in &self.ents {
-                if (0..3).any(|i| src[i].min(end[i]) > e.maxs[i] + 1.0 || src[i].max(end[i]) < e.mins[i] - 1.0) {
+                if e.model != own && (0..3).any(|i| src[i].min(end[i]) > e.maxs[i] + 1.0 || src[i].max(end[i]) < e.mins[i] - 1.0) {
                     continue;
                 }
                 let mut t = self.hull.trace(e.head, &sub(src, &e.origin), &sub(end, &e.origin));
+                t.endpos = add(&t.endpos, &e.origin);
+                t.abortpos = add(&t.abortpos, &e.origin);
+                if e.model == own {
+                    own_tr = t;
+                }
                 if t.fraction < best.fraction {
-                    t.endpos = add(&t.endpos, &e.origin);
-                    t.abortpos = add(&t.abortpos, &e.origin);
                     best = t;
                     model = e.model;
                 }
             }
         }
-        (best, model)
+        (best, model, own_tr)
     }
 
     fn placed(&self, model: usize) -> Option<&Placed> {
@@ -179,6 +214,140 @@ mod tests {
     use super::sim::{self, Fired, WEAPONS};
     use super::*;
     use std::path::Path;
+
+    pub fn default_opts() -> WallbangOpts {
+        WallbangOpts {
+            shots: ShotOpts {
+                weapon: sim::weapon("ak47").unwrap(),
+                stand: true,
+                duck: true,
+                yaw_step: 2.0,
+                pitch: (-20.0, 20.0, 4.0),
+                spot_cell: 64.0,
+                max_hit: 2000.0,
+                min_thickness: 0.0,
+                slab: 256.0,
+            },
+            ents: EntOpts::default(),
+            materials: None,
+            areas: true,
+            lines: true,
+            sigma: 2.0,
+            base: Backdrop::Render,
+            size: 1600,
+            split: Split::None,
+            others_faint: false,
+            csv: false,
+        }
+    }
+
+    fn sim_map(path: &str) -> Option<(Bsp, export::Sim)> {
+        let path = Path::new(path);
+        if !path.exists() {
+            return None;
+        }
+        let bsp = Bsp::load(path).unwrap();
+        let mut log = |s: String| println!("{s}");
+        let mut prog = |_: f32| true;
+        let mut rep = Report { log: &mut log, progress: &mut prog };
+        let sim = export::simulate(&bsp, &default_opts(), &mut rep).unwrap();
+        Some((bsp, sim))
+    }
+
+    #[test]
+    #[ignore]
+    fn inferno_pocket() {
+        let path = Path::new(r"F:\servers\cs-coftest\cstrike\maps\de_inferno.bsp");
+        if !path.exists() {
+            return;
+        }
+        let bsp = Bsp::load(path).unwrap();
+        let nav = crate::nav::Nav::build(&bsp, NAV_CELL, 250.0).unwrap();
+        let reach = shots::reachable(&bsp, &nav);
+        let n = nav
+            .nodes_in(glam::DVec3::new(96.0, 1824.0, -130.0), glam::DVec3::new(928.0, 2592.0, -60.0))
+            .into_iter()
+            .filter(|&n| reach[n])
+            .count();
+        println!("reachable nodes in the pocket: {n}");
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn truths() {
+        for path in [r"F:\servers\cs-coftest\cstrike\maps\de_dust2.bsp", r"F:\servers\cs-cz\czero\maps\de_dust2_cz.bsp"] {
+            let Some((bsp, sim)) = sim_map(path) else { continue };
+            println!("== {}", bsp.name());
+            let ts: Vec<glam::DVec3> = bsp.entities.iter().filter(|e| e.class() == "info_player_deathmatch").filter_map(|e| e.origin()).collect();
+            let tc = ts.iter().copied().sum::<glam::DVec3>() / ts.len().max(1) as f64;
+            println!("T spawn centre {tc:?}");
+            let mut thick: Vec<&shots::Shot> = sim
+                .shots
+                .iter()
+                .filter(|s| s.made() && s.crossings[0].path > 300.0 && sim.spots[s.shooter as usize].feet.distance(tc) < 1200.0)
+                .collect();
+            thick.sort_by(|a, b| b.path().total_cmp(&a.path()));
+            println!("thick made shots near T spawn: {}", thick.len());
+            for s in thick.iter().take(8) {
+                let c = &s.crossings[0];
+                println!("  path {:.0} entry {:.0?} exit {:.0?} shooter {:.0?}", c.path, c.entry, c.exit, sim.spots[s.shooter as usize].feet);
+            }
+            for e in bsp.entities.iter().filter(|e| e.class() == "func_bomb_target") {
+                let Some(m) = e.model().and_then(|m| bsp.models.get(m)) else { continue };
+                let (lo, hi) = (m.mins - glam::DVec3::splat(64.0), m.maxs + glam::DVec3::splat(64.0));
+                let pitches = sim.spots.len();
+                let _ = pitches;
+                let from: Vec<&shots::Shot> = sim
+                    .shots
+                    .iter()
+                    .filter(|s| {
+                        let f = sim.spots[s.shooter as usize].feet;
+                        f.x >= lo.x && f.y >= lo.y && f.x <= hi.x && f.y <= hi.y && f.z >= lo.z - 64.0 && f.z <= hi.z
+                    })
+                    .collect();
+                let made_down: Vec<&&shots::Shot> = from.iter().filter(|s| s.made() && s.dir.z < -0.12 && s.dir.z > -0.28).collect();
+                println!("bomb target {:.0?}..{:.0?}: {} shots, {} made, {} made at 8-16 deg down", m.mins, m.maxs, from.len(), from.iter().filter(|s| s.made()).count(), made_down.len());
+                let mut cells: BTreeMap<(i64, i64, i64), usize> = BTreeMap::new();
+                for s in &made_down {
+                    let x = s.crossings.last().unwrap().exit;
+                    *cells.entry(((x.x / 128.0).floor() as i64 * 128, (x.y / 128.0).floor() as i64 * 128, (x.z / 64.0).floor() as i64 * 64)).or_default() += 1;
+                }
+                println!("  exit cells (x, y, z) -> count: {cells:?}");
+                if m.mins.x >= 0.0 {
+                    continue;
+                }
+                let nav = crate::nav::Nav::build(&bsp, NAV_CELL, 250.0).unwrap();
+                let (lo, hi) = bsp.world_bounds();
+                let sc = 0.25;
+                let (w, h) = (((hi.x - lo.x) * sc) as u32 + 1, ((hi.y - lo.y) * sc) as u32 + 1);
+                let mut img = image::RgbImage::new(w, h);
+                for n in 0..nav.len() {
+                    let (x, y) = nav.cell_xy(nav.col[n] as usize);
+                    let z = nav.nodes[n].z as f64;
+                    let px = ((x - lo.x) * sc) as u32;
+                    let py = ((hi.y - y) * sc) as u32;
+                    let g = (((z + 200.0) / 500.0).clamp(0.0, 1.0) * 180.0) as u8 + 40;
+                    if px < w && py < h {
+                        img.put_pixel(px, py, image::Rgb([g, g, g]));
+                    }
+                }
+                for s in &made_down {
+                    let (a, b) = (s.start(), s.end());
+                    for i in 0..=200 {
+                        let p = a + (b - a) * (i as f64 / 200.0);
+                        let px = ((p.x - lo.x) * sc) as u32;
+                        let py = ((hi.y - p.y) * sc) as u32;
+                        if px < w && py < h {
+                            img.put_pixel(px, py, image::Rgb([60, 240, 70]));
+                        }
+                    }
+                }
+                let dir = std::env::var("WALLBANG_DEBUG_DIR").unwrap_or_else(|_| ".".into());
+                img.save(Path::new(&dir).join(format!("b_{}.png", bsp.name()))).unwrap();
+            }
+        }
+    }
 
     const MAPS: [(&str, &str); 5] = [
         ("de_dust2", r"F:\servers\cs-coftest\cstrike\maps\de_dust2.bsp"),

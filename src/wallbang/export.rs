@@ -1,0 +1,328 @@
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use tiny_skia::Pixmap;
+
+use super::draw2d::{self, Frame, GREEN, Layer, RED};
+use super::shots::{self, Ctx, DUCK, STAND, Shot, ShotOpts, Spot};
+use super::texture::Materials;
+use super::{DrawBase, NAV_CELL, WallbangOpts, World};
+use crate::bsp::{Bsp, Engine};
+use crate::grid::Backdrop;
+use crate::nav::Nav;
+use crate::paths::{Partial, free_name};
+use crate::radar::Section;
+use crate::render::{Cuts, Renderer};
+use crate::scene::Report;
+
+fn stances(o: &ShotOpts) -> &'static str {
+    match (o.stand, o.duck) {
+        (true, true) => "standing + crouched",
+        (true, false) => "standing",
+        _ => "crouched",
+    }
+}
+
+pub fn render_bases(r: &mut Renderer, bsp: &Bsp, cuts: &Cuts, size: u32, base: Backdrop, secs: &[Section], rep: &mut Report) -> Result<Vec<DrawBase>> {
+    if base == Backdrop::Radar {
+        match super::overview_bases(bsp, size, secs, rep) {
+            Ok(v) if !v.is_empty() => return Ok(v),
+            Ok(_) => rep.log("  no overview for this map; using the rendered backdrop".into()),
+            Err(e) => rep.log(format!("  overview: {e:#}; using the rendered backdrop")),
+        }
+    }
+    let mut out = Vec::new();
+    for s in secs {
+        let (g, px) = crate::grid::dark_base(r, &s.cuts(cuts), size)?;
+        let default = secs.len() == 1 || s.name.eq_ignore_ascii_case(crate::radar::DEFAULT);
+        out.push(DrawBase {
+            tag: if default { String::new() } else { format!("_{}", s.name) },
+            title: if default { String::new() } else { format!(" {} ({})", s.name, s.range()) },
+            frame: Frame::from_grid(&g),
+            px,
+            section: s.clone(),
+        });
+    }
+    Ok(out)
+}
+
+fn csv_header() -> String {
+    let mut h = String::from("shooter,stance,pitch,yaw,eye_x,eye_y,eye_z,made,walls");
+    for k in 1..=2 {
+        for f in
+            ["model", "face", "entry_x", "entry_y", "entry_z", "exit_x", "exit_y", "exit_z", "made", "death_x", "death_y", "death_z", "damage", "material", "thickness", "path"]
+        {
+            write!(h, ",w{k}_{f}").unwrap();
+        }
+    }
+    h
+}
+
+fn csv_row(s: &Shot, spot: &Spot, pitch: f64, yaw: f64) -> String {
+    let e = spot.eye();
+    let mut r = format!(
+        "{},{},{},{},{:.2},{:.2},{:.2},{},{}",
+        s.shooter,
+        if s.stance == STAND { "stand" } else { "duck" },
+        pitch,
+        yaw,
+        e.x,
+        e.y,
+        e.z,
+        u8::from(s.made()),
+        s.crossings.len()
+    );
+    for k in 0..2 {
+        match s.crossings.get(k) {
+            Some(c) => {
+                let d = c.death.map_or(",,".to_string(), |d| format!("{:.2},{:.2},{:.2}", d.x, d.y, d.z));
+                let m = if c.material == 0 { String::new() } else { (c.material as char).to_string() };
+                write!(
+                    r,
+                    ",{},{},{:.2},{:.2},{:.2},{:.2},{:.2},{:.2},{},{d},{},{m},{:.1},{:.1}",
+                    c.model,
+                    c.entry_face.map_or(String::new(), |f| f.to_string()),
+                    c.entry.x,
+                    c.entry.y,
+                    c.entry.z,
+                    c.exit.x,
+                    c.exit.y,
+                    c.exit.z,
+                    u8::from(c.made),
+                    c.damage,
+                    c.thickness,
+                    c.path
+                )
+                .unwrap();
+            }
+            None => r.push_str(",,,,,,,,,,,,,,,,"),
+        }
+    }
+    r
+}
+
+pub struct Sim {
+    pub world: World,
+    pub spots: Vec<Spot>,
+    pub shots: Vec<Shot>,
+    pub counts: shots::Counts,
+    pub mat_label: String,
+    pub nav_cells: usize,
+    pub reachable: usize,
+}
+
+pub fn simulate(bsp: &Bsp, o: &WallbangOpts, rep: &mut Report) -> Result<Sim> {
+    if bsp.engine() != Engine::GoldSrc {
+        bail!("wallbang supports GoldSrc maps only (CS 1.6 / CZ); Source and CS2 use a different penetration model");
+    }
+    let mat_path = o.materials.clone().or_else(|| Materials::locate(&bsp.path));
+    let mats = match &mat_path {
+        Some(p) => Materials::load(p).with_context(|| format!("reading {}", p.display()))?,
+        None => Materials::empty(),
+    };
+    let mat_label = mat_path.as_ref().map_or("none found (every texture counts as concrete)".to_string(), |p| p.display().to_string());
+    rep.log(format!("  materials: {mat_label}"));
+    let world = World::new(bsp, mats, Some(o.ents));
+    rep.log(format!("  brush entities traced: {}", world.ents.len()));
+    if !world.rotated.is_empty() {
+        let list: Vec<String> = world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect();
+        rep.log(format!("  warning: skipped rotated brush entities: {}", list.join(", ")));
+    }
+    let nav = Nav::build(bsp, NAV_CELL, 250.0)?;
+    let reach = shots::reachable(bsp, &nav);
+    let nreach = reach.iter().filter(|&&b| b).count();
+    let spots = shots::spots(&nav, &reach, &o.shots);
+    rep.log(format!(
+        "  nav: {} floor cells, {nreach} reachable; {} shooter spots ({} standing, {} crouched)",
+        nav.len(),
+        spots.len(),
+        spots.iter().filter(|s| s.stance == STAND).count(),
+        spots.iter().filter(|s| s.stance == DUCK).count()
+    ));
+    if spots.is_empty() {
+        bail!("no reachable shooter positions (no spawns on walkable ground?)");
+    }
+    rep.step(0.1)?;
+    let ts = std::time::Instant::now();
+    let (shots, counts) = {
+        let ctx = Ctx { world: &world, nav: &nav, reach: &reach, opts: &o.shots };
+        shots::simulate(&ctx, &spots, &|_| {})
+    };
+    rep.log(format!(
+        "  {} shots fired, {} hit a wall within {} units: {} made it, {} died ({:.1}s)",
+        counts.fired,
+        counts.hits - counts.far,
+        o.shots.max_hit,
+        counts.made,
+        counts.died,
+        ts.elapsed().as_secs_f64()
+    ));
+    Ok(Sim { world, spots, shots, counts, mat_label, nav_cells: nav.len(), reachable: nreach })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn export_wallbang(
+    r: &mut Renderer,
+    bsp: &Bsp,
+    name: &str,
+    cut_tag: &str,
+    cuts: &Cuts,
+    o: &WallbangOpts,
+    out: &Path,
+    rep: &mut Report,
+) -> Result<Vec<PathBuf>> {
+    let t0 = std::time::Instant::now();
+    rep.step(0.0)?;
+    let sim = simulate(bsp, o, rep)?;
+    rep.step(0.7)?;
+    let (shots, spots, c) = (&sim.shots, &sim.spots, &sim.counts);
+
+    let (secs, why) = o.split.sections(None, bsp, cuts);
+    if let Some(w) = why {
+        rep.log(format!("  sections: {w}"));
+    }
+    let bases = render_bases(r, bsp, cuts, o.size, o.base, &secs, rep)?;
+    let w = o.shots.weapon;
+    let pitches = o.shots.pitches();
+    let yaws = o.shots.yaws();
+    let (pa, pb, ps) = o.shots.pitch;
+    let settings = format!("{}, pitch {pa}..{pb} step {ps}, yaw step {}", stances(&o.shots), o.shots.yaw_step);
+    let mut files = Partial::default();
+    for (bi, b) in bases.iter().enumerate() {
+        rep.step(0.7 + 0.25 * bi as f32 / bases.len() as f32)?;
+        let mut layer = Layer { main: Vec::new(), faint: Vec::new() };
+        for s in shots {
+            if b.section.contains(spots[s.shooter as usize].feet.z) {
+                layer.main.push(s);
+            } else if o.others_faint {
+                layer.faint.push(s);
+            }
+        }
+        let made = layer.main.iter().filter(|s| s.made()).count();
+        let legend = [
+            (GREEN, format!("made it through ({made})")),
+            (RED, format!("died in the wall ({})", layer.main.len() - made)),
+        ];
+        let mut styles = Vec::new();
+        if o.areas {
+            styles.push(("", "wallbang areas"));
+        }
+        if o.lines {
+            styles.push(("_lines", "wallbang shots"));
+        }
+        for (suffix, what) in styles {
+            let size = tiny_skia::IntSize::from_wh(b.frame.w, b.frame.h).context("bad size")?;
+            let px = if suffix.is_empty() {
+                draw2d::areas(&b.px, &b.frame, &layer, o.sigma)
+            } else {
+                let mut px = b.px.clone();
+                draw2d::lines(&mut px, &b.frame, &layer);
+                px
+            };
+            let mut pm = Pixmap::from_vec(px, size).context("pixmap")?;
+            draw2d::markers(&mut pm, bsp, &b.frame);
+            draw2d::title(&mut pm, &format!("{name}{}  {what}  {}  ({settings})", b.title, w.name));
+            draw2d::legend(&mut pm, &legend);
+            draw2d::scale_bar(&mut pm, &b.frame);
+            let f = free_name(out, &format!("{name}{cut_tag}_wallbang_{}{suffix}{}", w.name, b.tag), ".png");
+            files.add(f.clone());
+            draw2d::save_png(&pm, &f)?;
+            rep.log(format!("  {}", f.display()));
+        }
+    }
+
+    let mut txt = String::new();
+    writeln!(txt, "{name} wallbang, {}", w.name)?;
+    writeln!(txt, "materials: {}", sim.mat_label)?;
+    writeln!(
+        txt,
+        "settings: {settings}, spot cell {}, max first hit {}, slab {}, min thickness {}, nav cell {NAV_CELL}",
+        o.shots.spot_cell, o.shots.max_hit, o.shots.slab, o.shots.min_thickness
+    )?;
+    writeln!(
+        txt,
+        "brush entities: {} traced{}{}{}",
+        sim.world.ents.len(),
+        if o.ents.skip_doors { ", doors skipped" } else { "" },
+        o.ents.skip_translucent.map_or(String::new(), |a| format!(", translucent below renderamt {a} skipped")),
+        if sim.world.rotated.is_empty() {
+            String::new()
+        } else {
+            format!(", rotated skipped: {}", sim.world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect::<Vec<_>>().join(", "))
+        }
+    )?;
+    writeln!(txt, "nav: {} floor cells, {} reachable", sim.nav_cells, sim.reachable)?;
+    writeln!(txt)?;
+    writeln!(txt, "shooter spots            {:>10}", spots.len())?;
+    writeln!(txt, "shots fired              {:>10}", c.fired)?;
+    writeln!(txt, "hit a wall               {:>10}", c.hits)?;
+    writeln!(txt, "dropped:")?;
+    for (k, v) in [
+        ("first hit too far", c.far),
+        ("no exit found", c.no_exit),
+        ("nothing playable behind", c.behind),
+        ("floor or ceiling slab", c.slab),
+        ("path under floor/ceiling", c.column),
+        ("died outside play", c.void),
+        ("corner clip", c.corner),
+        ("thinner than minimum", c.thin),
+    ] {
+        writeln!(txt, "  {k:<23}{v:>10}")?;
+    }
+    writeln!(txt, "second wall cut by filter{:>10}", c.cut)?;
+    writeln!(txt, "made it through          {:>10}", c.made)?;
+    writeln!(txt, "died in the wall         {:>10}", c.died)?;
+    writeln!(txt)?;
+    writeln!(txt, "strongest bangs, one per spot (unarmoured chest damage just past the last wall; x4 for a headshot):")?;
+    let mut best: BTreeMap<u32, &Shot> = BTreeMap::new();
+    for s in shots.iter().filter(|s| s.made()) {
+        let e = best.entry(s.shooter).or_insert(s);
+        if (s.damage(), s.path()) > (e.damage(), e.path()) {
+            *e = s;
+        }
+    }
+    let mut top: Vec<&Shot> = best.into_values().collect();
+    top.sort_by(|a, b| b.damage().cmp(&a.damage()).then(b.path().total_cmp(&a.path())).then(a.shooter.cmp(&b.shooter)));
+    for s in top.iter().take(25) {
+        let sp = &spots[s.shooter as usize];
+        let org = sp.origin();
+        let th: Vec<String> = s
+            .crossings
+            .iter()
+            .map(|c| format!("{:.0}u {}", c.path, if c.material == 0 { '-' } else { c.material as char }))
+            .collect();
+        writeln!(
+            txt,
+            "{:>4} dmg  {}  walls {}  setpos {:.1} {:.1} {:.1}; setang {} {} 0",
+            s.damage(),
+            if sp.stance == STAND { "stand" } else { "duck " },
+            th.join(" + "),
+            org.x,
+            org.y,
+            org.z,
+            pitches[s.pitch_idx as usize],
+            yaws[s.yaw_idx as usize]
+        )?;
+    }
+    let f = free_name(out, &format!("{name}{cut_tag}_wallbang_{}", w.name), ".txt");
+    files.add(f.clone());
+    std::fs::write(&f, txt)?;
+    rep.log(format!("  {}", f.display()));
+    if o.csv {
+        let mut csv = csv_header();
+        csv.push('\n');
+        for s in shots {
+            csv.push_str(&csv_row(s, &spots[s.shooter as usize], pitches[s.pitch_idx as usize], yaws[s.yaw_idx as usize]));
+            csv.push('\n');
+        }
+        let f = free_name(out, &format!("{name}{cut_tag}_wallbang_{}", w.name), ".csv");
+        files.add(f.clone());
+        std::fs::write(&f, csv)?;
+        rep.log(format!("  {}", f.display()));
+    }
+    rep.step(1.0)?;
+    rep.log(format!("  total {:.1}s", t0.elapsed().as_secs_f64()));
+    Ok(files.keep())
+}

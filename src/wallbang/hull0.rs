@@ -1,3 +1,5 @@
+use glam::DVec3;
+
 use crate::bsp::Bsp;
 
 pub const CONTENTS_EMPTY: i32 = -1;
@@ -190,5 +192,43 @@ impl Hull0 {
             tr.startsolid = true;
         }
         true
+    }
+
+    fn plane_dist64(&self, pl: &HPlane, p: DVec3) -> f64 {
+        DVec3::new(f(pl.n[0]), f(pl.n[1]), f(pl.n[2])).dot(p) - f(pl.d)
+    }
+
+    pub fn contents64(&self, mut num: i32, p: DVec3) -> i32 {
+        while num >= 0 {
+            let node = &self.nodes[num as usize];
+            let d = self.plane_dist64(&self.planes[node.plane as usize], p);
+            num = node.children[usize::from(d < 0.0)] as i32;
+        }
+        num
+    }
+
+    pub fn first_open(&self, head: i32, p1: DVec3, p2: DVec3) -> Option<f64> {
+        self.fo(head, p1, p2, 0.0, 1.0)
+    }
+
+    fn fo(&self, num: i32, p1: DVec3, p2: DVec3, f1: f64, f2: f64) -> Option<f64> {
+        if num < 0 {
+            return (num != CONTENTS_SOLID).then_some(f1);
+        }
+        let node = &self.nodes[num as usize];
+        let pl = &self.planes[node.plane as usize];
+        let t1 = self.plane_dist64(pl, p1);
+        let t2 = self.plane_dist64(pl, p2);
+        if t1 >= 0.0 && t2 >= 0.0 {
+            return self.fo(node.children[0] as i32, p1, p2, f1, f2);
+        }
+        if t1 < 0.0 && t2 < 0.0 {
+            return self.fo(node.children[1] as i32, p1, p2, f1, f2);
+        }
+        let frac = t1 / (t1 - t2);
+        let mid = p1 + (p2 - p1) * frac;
+        let fm = f1 + (f2 - f1) * frac;
+        let (near, far) = if t1 < 0.0 { (node.children[1], node.children[0]) } else { (node.children[0], node.children[1]) };
+        self.fo(near as i32, p1, mid, f1, fm).or_else(|| self.fo(far as i32, mid, p2, fm, f2))
     }
 }

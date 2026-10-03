@@ -11,7 +11,7 @@ use tiny_skia::{PathBuilder, Pixmap, Stroke, Transform};
 use crate::bsp::Bsp;
 use crate::timing::lerp3;
 use crate::demo::{self, Death, Event, Kind, Team};
-use crate::grid::{Backdrop, CT, GridFrame, T, Text, line, outline, paint, rect, spawn_dots};
+use crate::grid::{Backdrop, CT, GridFrame, T, Text, blur, line, outline, paint, rect, spawn_dots};
 use crate::health::csv_quote;
 use crate::nav::{NONE, Nav, STAND_OFS, STEP, zones};
 use crate::paths::{Partial, free_name};
@@ -353,41 +353,6 @@ struct Heat {
     h: usize,
     t: Vec<f32>,
     ct: Vec<f32>,
-}
-
-fn blur(v: &mut [f32], w: usize, h: usize, sigma: f64) {
-    let r = (sigma * 3.0).ceil().max(1.0) as isize;
-    let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f64 / (2.0 * sigma * sigma)).exp() as f32).collect();
-    let rows: Vec<f32> = v
-        .par_chunks(w)
-        .flat_map_iter(|row| {
-            (0..w as isize).map(|x| {
-                let mut s = 0.0;
-                for (ki, i) in (-r..=r).enumerate() {
-                    let xx = x + i;
-                    if xx >= 0 && xx < w as isize {
-                        s += row[xx as usize] * k[ki];
-                    }
-                }
-                s
-            })
-        })
-        .collect();
-    let cols: Vec<f32> = (0..w * h)
-        .into_par_iter()
-        .map(|p| {
-            let (x, y) = ((p % w) as isize, (p / w) as isize);
-            let mut s = 0.0;
-            for (ki, i) in (-r..=r).enumerate() {
-                let yy = y + i;
-                if yy >= 0 && yy < h as isize {
-                    s += rows[yy as usize * w + x as usize] * k[ki];
-                }
-            }
-            s
-        })
-        .collect();
-    v.copy_from_slice(&cols);
 }
 
 impl Heat {
