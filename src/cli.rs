@@ -294,7 +294,7 @@ pub struct WallbangArgs {
     pub weapon: String,
     #[arg(long, default_value = "both", value_parser = ["stand", "duck", "both"], help = "shooter eye height")]
     pub stance: String,
-    #[arg(long = "yaw-step", default_value_t = 2.0, value_parser = positive, value_name = "D", help = "degrees between shots")]
+    #[arg(long = "yaw-step", default_value_t = 2.0, value_parser = parse_yaw_step, value_name = "D", help = "degrees between shots")]
     pub yaw_step: f64,
     #[arg(long, default_value = "-20..20/4", allow_hyphen_values = true, value_parser = parse_pitch, value_name = "A..B/S", help = "pitch range and step in degrees (positive = down)")]
     pub pitch: (f64, f64, f64),
@@ -377,7 +377,20 @@ fn parse_pitch(s: &str) -> Result<(f64, f64, f64), String> {
     if st <= 0.0 || b < a || a < -89.0 || b > 89.0 {
         return Err(format!("{s}: need -89 <= A <= B <= 89 and S > 0"));
     }
+    let max = crate::wallbang::shots::MAX_PITCHES;
+    if crate::wallbang::shots::pitch_list(a, b, st, max + 1).len() > max {
+        return Err(format!("{s}: more than {max} pitches"));
+    }
     Ok((a, b, st))
+}
+
+fn parse_yaw_step(s: &str) -> Result<f64, String> {
+    let v = positive(s)?;
+    let max = crate::wallbang::shots::MAX_YAWS;
+    if crate::wallbang::shots::yaw_count(v) > max as f64 {
+        return Err(format!("{s}: more than {max} directions"));
+    }
+    Ok(v)
 }
 
 #[derive(Args)]

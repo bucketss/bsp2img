@@ -223,15 +223,15 @@ pub enum BgMsg<T> {
     Done(Result<T, String>),
 }
 
-pub struct Bg<T> {
-    pub key: String,
+pub struct Bg<T, K> {
+    pub key: K,
     rx: Receiver<BgMsg<T>>,
     stop: Arc<AtomicBool>,
     pub started: std::time::Instant,
 }
 
-impl<T: Send + 'static> Bg<T> {
-    pub fn spawn(key: String, ctx: &egui::Context, f: impl FnOnce(&AtomicBool, &mut Report) -> Result<T> + Send + 'static) -> Bg<T> {
+impl<T: Send + 'static, K> Bg<T, K> {
+    pub fn spawn(key: K, ctx: &egui::Context, f: impl FnOnce(&AtomicBool, &mut Report) -> Result<T> + Send + 'static) -> Bg<T, K> {
         let (tx, rx) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
@@ -261,7 +261,7 @@ impl<T: Send + 'static> Bg<T> {
     }
 }
 
-impl<T> Drop for Bg<T> {
+impl<T, K> Drop for Bg<T, K> {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
     }

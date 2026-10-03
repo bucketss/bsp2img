@@ -543,7 +543,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
 }
 
 fn add_tex(mesh: &mut Mesh, tex_ids: &mut HashMap<String, usize>, key: String, im: Image, bc: Option<Compressed>, label: String) -> usize {
-    mesh.textures.push(Some(im));
+    std::sync::Arc::make_mut(&mut mesh.textures).push(Some(im));
     mesh.compressed.push(bc);
     mesh.anim.push(None);
     mesh.names.push(label);

@@ -146,6 +146,7 @@ struct App {
     xy_val: [f64; 4],
     explode: ExplodeOpts,
     scene: Option<Arc<Scene>>,
+    scene_gen: u64,
     renderer: Option<Renderer>,
     load_rx: Option<Receiver<Msg>>,
     load_cancel: crate::scene::Cancel,
@@ -234,6 +235,7 @@ impl App {
             xy_val: [0.0; 4],
             explode: ExplodeOpts::default(),
             scene: None,
+            scene_gen: 0,
             renderer: None,
             load_rx: None,
             load_cancel: crate::scene::Cancel::default(),
@@ -342,6 +344,7 @@ impl App {
         let Some(path) = self.current.clone() else { return };
         self.renderer = None;
         self.scene = None;
+        self.scene_gen += 1;
         self.last_key.clear();
         let (tx, rx) = channel();
         self.load_rx = Some(rx);
@@ -408,6 +411,7 @@ impl App {
                             Err(e) => self.log.push(format!("error: {e}")),
                         }
                         self.scene = Some(Arc::new(scene));
+                        self.scene_gen += 1;
                         self.sky_loaded = None;
                         self.last_key.clear();
                     }

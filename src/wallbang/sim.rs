@@ -1,5 +1,5 @@
-use super::World;
-use super::hull0::{Trace, V3};
+use super::hull0::V3;
+use super::{World, add};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Weapon {
@@ -46,8 +46,16 @@ pub struct Iter {
     pub model: u16,
     pub normal: V3,
     pub dmg_in: i16,
-    pub own_dead: bool,
-    pub own_abort: Option<V3>,
+}
+
+impl Iter {
+    pub fn dead(&self) -> bool {
+        self.fraction == 1.0 && self.flags & IT_ALLSOLID != 0
+    }
+
+    pub fn death(&self) -> V3 {
+        if self.flags & IT_ABORTED != 0 { self.abortpos } else { self.src }
+    }
 }
 
 #[cfg(test)]
@@ -72,17 +80,12 @@ impl Fired {
             Outcome::Missed
         } else if self.n < 2 {
             Outcome::Stopped
-        } else if self.it[1].fraction == 1.0 && self.it[1].flags & IT_ALLSOLID != 0 {
+        } else if self.it[1].dead() {
             Outcome::Died
         } else {
             Outcome::Made
         }
     }
-}
-
-#[inline]
-fn add(a: &V3, b: &V3) -> V3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 #[inline]
@@ -94,7 +97,7 @@ fn falloff(a: f32, b: f32) -> f64 {
     f64::from(a).powf(f64::from(b))
 }
 
-pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired {
+pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool, record: bool) -> Fired {
     let mut out = Fired::default();
     let mut src = *src;
     let mut dist = w.distance;
@@ -103,9 +106,8 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
     let mut damage = w.damage as i32;
     let mut end = add(&src, &scale(dir, dist));
     let mut dmg_mod: f32 = 0.5;
-    let mut prev_model = 0usize;
     while pen != 0 {
-        let (tr, model, own): (Trace, usize, Trace) = world.trace_own(&src, &end, ents, prev_model);
+        let (tr, model) = world.trace(&src, &end, ents);
         let n = out.n;
         out.n += 1;
         let it = if n < MAX_ITER { Some(n) } else { None };
@@ -114,8 +116,6 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
             r.src = src;
             r.dist = dist;
             r.dmg_in = damage as i16;
-            r.own_dead = own.fraction == 1.0 && own.allsolid;
-            r.own_abort = own.aborted.then_some(own.abortpos);
             r.fraction = tr.fraction;
             r.endpos = tr.endpos;
             r.abortpos = tr.abortpos;
@@ -126,7 +126,7 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
                 | if tr.aborted { IT_ABORTED } else { 0 }
                 | if tr.fraction != 1.0 { IT_HIT } else { 0 };
         }
-        let (face, tex) = world.texture_hit(model, &src, &end);
+        let (face, tex) = if record || tr.fraction != 1.0 { world.texture_hit(model, &src, &end) } else { (None, 0) };
         match tex {
             b'M' => {
                 power = (f64::from(power) * 0.15) as i32;
@@ -153,14 +153,13 @@ pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool) -> Fired 
             _ => {}
         }
         if tr.fraction != 1.0 {
-            prev_model = model;
             pen -= 1;
             let cur = tr.fraction * dist;
             damage = (f64::from(damage) * falloff(w.rangemod, cur / 500.0)) as i32;
             if cur > w.pen_dist {
                 pen = 0;
             }
-            let dist_mod: f32 = if pen == 0 {
+            let dist_mod: f32 = if pen == 0 || !world.bsp_solid(model) {
                 power = 42;
                 dmg_mod = 0.75;
                 0.75

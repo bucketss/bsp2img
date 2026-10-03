@@ -239,15 +239,7 @@ pub struct PwInfo {
 
 fn pixelwalk_info(bsp: &Bsp) -> Result<PwInfo, String> {
     use crate::pixelwalk::present::{PixelwalkOpts, Stance, find_pixelwalks, setpos};
-    let o = PixelwalkOpts {
-        finder: Default::default(),
-        merge_gap: 64.0,
-        split: crate::radar::Split::None,
-        base: Default::default(),
-        size: 0,
-        labels: false,
-    };
-    let pws = find_pixelwalks(bsp, &o).map_err(|e| format!("{e:#}"))?;
+    let pws = find_pixelwalks(bsp, &PixelwalkOpts::default()).map_err(|e| format!("{e:#}"))?;
     let stand = pws.iter().filter(|p| p.stance == Stance::Stand).count();
     let worst = pws
         .iter()

@@ -26,6 +26,42 @@ pub const STAND_OFS: f64 = 36.0;
 const DZ: f64 = 8.0;
 pub const NONE: u32 = u32::MAX;
 pub const BLOCKERS: &[&str] = &["func_wall", "func_wall_toggle", "func_pushable"];
+const STAND_EYE: f64 = 53.0;
+const CROUCH_EYE: f64 = 30.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stance {
+    #[default]
+    Stand,
+    Duck,
+}
+
+impl Stance {
+    pub fn label(self) -> &'static str {
+        match self {
+            Stance::Stand => "stand",
+            Stance::Duck => "duck",
+        }
+    }
+
+    pub fn feet(self) -> f64 {
+        match self {
+            Stance::Stand => STAND_OFS,
+            Stance::Duck => CROUCH_OFS,
+        }
+    }
+
+    pub fn eye(self) -> f64 {
+        match self {
+            Stance::Stand => STAND_EYE,
+            Stance::Duck => CROUCH_EYE,
+        }
+    }
+
+    pub fn from_hull(h: usize) -> Stance {
+        if h == 0 { Stance::Stand } else { Stance::Duck }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Node {

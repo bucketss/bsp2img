@@ -35,7 +35,6 @@ pub struct CNode {
 pub struct BModel {
     pub mins: V3,
     pub maxs: V3,
-    pub origin: V3,
     pub headnode: [i32; 4],
 }
 
@@ -52,18 +51,6 @@ pub struct PwMap {
     pub models: Vec<BModel>,
 }
 
-fn model_origins(bsp: &Bsp) -> Vec<V3> {
-    let Ok(data) = std::fs::read(&bsp.path) else { return Vec::new() };
-    let rd = |o: usize| data.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-    let (Some(ofs), Some(len)) = (rd(4 + 14 * 8), rd(8 + 14 * 8)) else { return Vec::new() };
-    (0..len as usize / 64)
-        .map(|i| {
-            let o = ofs as usize + i * 64 + 24;
-            std::array::from_fn(|k| rd(o + 4 * k).map_or(0.0, f32::from_bits))
-        })
-        .collect()
-}
-
 impl PwMap {
     pub fn new(bsp: &Bsp) -> PwMap {
         let planes = bsp
@@ -73,7 +60,6 @@ impl PwMap {
             .collect();
         let clipnodes: Vec<CNode> = bsp.clipnodes.iter().map(|n| CNode { plane: n.plane, children: n.children }).collect();
         let nclip = clipnodes.len() as i32;
-        let origins = model_origins(bsp);
         let models = bsp
             .models
             .iter()
@@ -90,7 +76,6 @@ impl PwMap {
                 BModel {
                     mins: [m.mins.x as f32, m.mins.y as f32, m.mins.z as f32],
                     maxs: [m.maxs.x as f32, m.maxs.y as f32, m.maxs.z as f32],
-                    origin: origins.get(mi).copied().unwrap_or([0.0; 3]),
                     headnode,
                 }
             })

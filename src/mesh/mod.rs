@@ -173,9 +173,9 @@ pub struct Image {
 #[derive(Clone)]
 pub struct Mesh {
     pub batches: Vec<Batch>,
-    pub textures: Vec<Option<Image>>,
+    pub textures: std::sync::Arc<Vec<Option<Image>>>,
     pub anim: Vec<Option<Vec<usize>>>,
-    pub atlas: Image,
+    pub atlas: std::sync::Arc<Image>,
     pub faces: usize,
     pub missing: Vec<String>,
     pub points: std::sync::Arc<[DVec3]>,

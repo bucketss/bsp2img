@@ -9,6 +9,8 @@ pub mod trace;
 pub mod vec;
 pub mod world;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Result, bail};
 
 use crate::bsp::{Bsp, Engine};
@@ -41,13 +43,32 @@ impl Mover {
     }
 
     pub fn drive(&self, p: &present::Pixelwalk, seconds: f64) -> Vec<glam::DVec3> {
-        let usehull = p.finds.first().map_or(0, |f| f.usehull);
+        let Some(f) = p.finds.first() else { return Vec::new() };
         let start = [p.from.x as f32, p.from.y as f32, p.from.z as f32];
         let frames = (seconds * 100.0).round() as usize;
-        finder::drive_path(&self.map, &self.wm, usehull, &start, p.yaw, frames)
+        finder::drive_path(&self.map, &self.wm, f.usehull, &start, finder::drive_yaw(&f.approach), frames)
             .iter()
-            .map(|v| glam::DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64))
+            .map(crate::wallbang::dv)
             .collect()
+    }
+
+    pub fn find(&self, opts: &FinderOpts, stop: Option<&AtomicBool>) -> Result<Found> {
+        let run = || {
+            let seams = seams::enumerate_seams(&self.map, &self.wm);
+            let cfg = FinderConfig { standing: opts.standing, duck: opts.duck, min_samples: opts.min_samples, ..Default::default() };
+            let finds = finder::run_finder(&self.map, &self.wm, &seams, &cfg, stop);
+            Found { finds, seams: seams.len() }
+        };
+        let found = if opts.threads > 0 {
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build()?;
+            pool.install(run)
+        } else {
+            run()
+        };
+        if stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
+            return Err(crate::scene::Cancelled.into());
+        }
+        Ok(found)
     }
 }
 
@@ -56,24 +77,16 @@ pub struct Found {
     pub seams: usize,
 }
 
-pub fn find(bsp: &Bsp, opts: &FinderOpts) -> Result<Found> {
-    if bsp.engine != Engine::GoldSrc {
+pub fn check(bsp: &Bsp) -> Result<()> {
+    if bsp.engine() != Engine::GoldSrc {
         bail!("pixelwalks are only supported for GoldSrc maps");
     }
-    let run = || {
-        let map = hull::PwMap::new(bsp);
-        let wm = world::build_world(bsp, &map);
-        let seams = seams::enumerate_seams(&map, &wm);
-        let cfg = FinderConfig { standing: opts.standing, duck: opts.duck, min_samples: opts.min_samples, ..Default::default() };
-        let finds = finder::run_finder(&map, &wm, &seams, &cfg);
-        Found { finds, seams: seams.len() }
-    };
-    if opts.threads > 0 {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build()?;
-        Ok(pool.install(run))
-    } else {
-        Ok(run())
-    }
+    Ok(())
+}
+
+pub fn find(bsp: &Bsp, opts: &FinderOpts) -> Result<Found> {
+    check(bsp)?;
+    Mover::new(bsp).find(opts, None)
 }
 
 #[cfg(test)]

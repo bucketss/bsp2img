@@ -385,9 +385,9 @@ pub fn build_mesh(
 
     Ok(Mesh {
         batches,
-        textures: tex_images,
+        textures: tex_images.into(),
         anim,
-        atlas: atlas_img,
+        atlas: atlas_img.into(),
         faces: records.len(),
         missing: missing.into_iter().collect(),
         points: points.into(),

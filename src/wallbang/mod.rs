@@ -42,8 +42,8 @@ pub fn overview_bases(bsp: &Bsp, dirs: &[PathBuf], size: u32, secs: &[Section], 
     let mut px = img.into_raw();
     for p in px.chunks_exact_mut(4) {
         let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
-        for k in 0..3 {
-            p[k] = ((p[k] as f64 * 0.4 + l * 0.6) * 0.75) as u8;
+        for c in &mut p[..3] {
+            *c = ((*c as f64 * 0.4 + l * 0.6) * 0.75) as u8;
         }
         p[3] = 255;
     }
@@ -105,16 +105,20 @@ pub struct Placed {
     pub origin: V3,
     pub mins: V3,
     pub maxs: V3,
+    pub bsp: bool,
 }
 
 pub struct World {
     pub hull: Hull0,
     pub tex: Textures,
-    pub mats: Materials,
     pub world_head: i32,
     pub ents: Vec<Placed>,
     pub rotated: BTreeMap<String, usize>,
+    mat: Vec<u8>,
+    slot: Vec<u32>,
 }
+
+const ENT_PAD: f32 = 2.0;
 
 fn flag(e: &crate::bsp::Entity, k: &str) -> i64 {
     e.get(k).and_then(|v| v.trim().parse::<f64>().ok()).map_or(0, |v| v as i64)
@@ -149,14 +153,17 @@ fn parse_v3(s: Option<&str>) -> V3 {
 }
 
 impl World {
-    pub fn new(bsp: &Bsp, mats: Materials, eo: Option<EntOpts>) -> World {
+    pub fn new(bsp: &Bsp, mats: &Materials, eo: Option<EntOpts>) -> World {
+        let tex = Textures::new(bsp);
+        let mat = tex.names().map(|n| mats.material(n)).collect();
         let mut w = World {
             hull: Hull0::new(bsp),
-            tex: Textures::new(bsp),
-            mats,
+            tex,
             world_head: bsp.models[0].headnode[0],
             ents: Vec::new(),
             rotated: BTreeMap::new(),
+            mat,
+            slot: vec![u32::MAX; bsp.models.len()],
         };
         let Some(eo) = eo else { return w };
         for e in &bsp.entities {
@@ -191,55 +198,62 @@ impl World {
                 origin,
                 mins: [lo.x as f32 + origin[0], lo.y as f32 + origin[1], lo.z as f32 + origin[2]],
                 maxs: [hi.x as f32 + origin[0], hi.y as f32 + origin[1], hi.z as f32 + origin[2]],
+                bsp: class != "func_pushable",
             });
         }
         w.ents.sort_by_key(|p| p.model);
+        for (i, e) in w.ents.iter().enumerate() {
+            w.slot[e.model] = i as u32;
+        }
         w
     }
 
     pub fn trace(&self, src: &V3, end: &V3, ents: bool) -> (Trace, usize) {
-        let (t, m, _) = self.trace_own(src, end, ents, 0);
-        (t, m)
-    }
-
-    pub fn trace_own(&self, src: &V3, end: &V3, ents: bool, own: usize) -> (Trace, usize, Trace) {
         let mut best = self.hull.trace(self.world_head, src, end);
-        let mut own_tr = best;
         let mut model = 0;
-        if ents {
-            for e in &self.ents {
-                if e.model != own && (0..3).any(|i| src[i].min(end[i]) > e.maxs[i] + 1.0 || src[i].max(end[i]) < e.mins[i] - 1.0) {
-                    continue;
-                }
-                let mut t = self.hull.trace(e.head, &sub(src, &e.origin), &sub(end, &e.origin));
-                t.endpos = add(&t.endpos, &e.origin);
-                t.abortpos = add(&t.abortpos, &e.origin);
-                if e.model == own {
-                    own_tr = t;
-                }
-                if t.fraction < best.fraction {
-                    best = t;
-                    model = e.model;
-                }
+        if !ents {
+            return (best, model);
+        }
+        for e in &self.ents {
+            if best.allsolid {
+                break;
+            }
+            if (0..3).any(|i| src[i].min(end[i]) > e.maxs[i] + ENT_PAD || src[i].max(end[i]) < e.mins[i] - ENT_PAD) {
+                continue;
+            }
+            let mut t = self.hull.trace(e.head, &sub(src, &e.origin), &sub(end, &e.origin));
+            t.endpos = add(&t.endpos, &e.origin);
+            t.abortpos = add(&t.abortpos, &e.origin);
+            if t.allsolid || t.startsolid || t.fraction < best.fraction {
+                t.startsolid |= best.startsolid;
+                best = t;
+                model = e.model;
             }
         }
-        (best, model, own_tr)
+        (best, model)
     }
 
-    fn placed(&self, model: usize) -> Option<&Placed> {
-        self.ents.iter().find(|e| e.model == model)
+    pub fn placed(&self, model: usize) -> Option<&Placed> {
+        let i = *self.slot.get(model).filter(|_| model != 0)?;
+        self.ents.get(i as usize)
+    }
+
+    pub fn model_ref(&self, model: usize) -> (i32, V3) {
+        self.placed(model).map_or((self.world_head, [0.0; 3]), |e| (e.head, e.origin))
+    }
+
+    pub fn bsp_solid(&self, model: usize) -> bool {
+        self.placed(model).is_none_or(|e| e.bsp)
     }
 
     pub fn surface_at(&self, model: usize, src: &V3, end: &V3) -> Option<u32> {
-        match self.placed(model).filter(|_| model != 0) {
-            Some(e) => self.tex.surface_at(&self.hull.planes, e.head, &sub(src, &e.origin), &sub(end, &e.origin)),
-            None => self.tex.surface_at(&self.hull.planes, self.world_head, src, end),
-        }
+        let (head, o) = self.model_ref(model);
+        self.tex.surface_at(&self.hull.planes, head, &sub(src, &o), &sub(end, &o))
     }
 
     pub fn texture_hit(&self, model: usize, src: &V3, end: &V3) -> (Option<u32>, u8) {
         match self.surface_at(model, src, end) {
-            Some(s) => (Some(s), self.mats.material(self.tex.name(s))),
+            Some(s) => (Some(s), self.mat[self.tex.surfs[s as usize].texinfo as usize]),
             None => (None, 0),
         }
     }
@@ -251,6 +265,14 @@ pub fn sub(a: &V3, b: &V3) -> V3 {
 
 pub fn add(a: &V3, b: &V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+pub fn dv(p: &[f32; 3]) -> glam::DVec3 {
+    glam::DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)
+}
+
+pub fn v3(p: glam::DVec3) -> V3 {
+    [p.x as f32, p.y as f32, p.z as f32]
 }
 
 #[cfg(test)]
@@ -296,7 +318,7 @@ mod tests {
         let mut log = |s: String| println!("{s}");
         let mut prog = |_: f32| true;
         let mut rep = Report { log: &mut log, progress: &mut prog };
-        let sim = export::simulate(&bsp, &default_opts(), None, &mut rep).unwrap();
+        let sim = export::simulate(&bsp, &[], &default_opts(), None, None, &mut rep).unwrap();
         Some((bsp, sim))
     }
 
@@ -331,19 +353,17 @@ mod tests {
             let mut thick: Vec<&shots::Shot> = sim
                 .shots
                 .iter()
-                .filter(|s| s.made() && s.crossings[0].path > 300.0 && sim.spots[s.shooter as usize].feet.distance(tc) < 1200.0)
+                .filter(|s| s.made() && s.crossings()[0].path > 300.0 && sim.spots[s.shooter as usize].feet.distance(tc) < 1200.0)
                 .collect();
             thick.sort_by(|a, b| b.path().total_cmp(&a.path()));
             println!("thick made shots near T spawn: {}", thick.len());
             for s in thick.iter().take(8) {
-                let c = &s.crossings[0];
-                println!("  path {:.0} entry {:.0?} exit {:.0?} shooter {:.0?}", c.path, c.entry, c.exit, sim.spots[s.shooter as usize].feet);
+                let c = &s.crossings()[0];
+                println!("  path {:.0} entry {:.0?} exit {:.0?} shooter {:.0?}", c.path, c.entry(), s.exit(c), sim.spots[s.shooter as usize].feet);
             }
             for e in bsp.entities.iter().filter(|e| e.class() == "func_bomb_target") {
                 let Some(m) = e.model().and_then(|m| bsp.models.get(m)) else { continue };
                 let (lo, hi) = (m.mins - glam::DVec3::splat(64.0), m.maxs + glam::DVec3::splat(64.0));
-                let pitches = sim.spots.len();
-                let _ = pitches;
                 let from: Vec<&shots::Shot> = sim
                     .shots
                     .iter()
@@ -356,7 +376,7 @@ mod tests {
                 println!("bomb target {:.0?}..{:.0?}: {} shots, {} made, {} made at 8-16 deg down", m.mins, m.maxs, from.len(), from.iter().filter(|s| s.made()).count(), made_down.len());
                 let mut cells: BTreeMap<(i64, i64, i64), usize> = BTreeMap::new();
                 for s in &made_down {
-                    let x = s.crossings.last().unwrap().exit;
+                    let x = s.exit(s.last());
                     *cells.entry(((x.x / 128.0).floor() as i64 * 128, (x.y / 128.0).floor() as i64 * 128, (x.z / 64.0).floor() as i64 * 64)).or_default() += 1;
                 }
                 println!("  exit cells (x, y, z) -> count: {cells:?}");
@@ -393,6 +413,34 @@ mod tests {
                 img.save(Path::new(&dir).join(format!("b_{}.png", bsp.name()))).unwrap();
             }
         }
+    }
+
+    #[test]
+    #[ignore]
+    fn exits_in_solid() {
+        let (Ok(csv), Ok(map)) = (std::env::var("WALLBANG_CSV"), std::env::var("WALLBANG_BSP")) else { return };
+        let bsp = Bsp::load(Path::new(&map)).unwrap();
+        let world = World::new(&bsp, &Materials::empty(), Some(EntOpts::default()));
+        let text = std::fs::read_to_string(csv).unwrap();
+        let (mut made, mut solid) = (0usize, 0usize);
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            for k in 0..2 {
+                let o = 9 + k * 16;
+                if f.get(o + 8) != Some(&"1") {
+                    continue;
+                }
+                let x: Vec<f64> = (5..8).map(|i| f[o + i].parse().unwrap()).collect();
+                made += 1;
+                if world.hull.contents64(world.world_head, glam::DVec3::new(x[0], x[1], x[2])) == hull0::CONTENTS_SOLID {
+                    solid += 1;
+                    if solid <= 12 {
+                        println!("  {line}");
+                    }
+                }
+            }
+        }
+        println!("made crossings {made}, exit inside world solid {solid}");
     }
 
     const MAPS: [(&str, &str); 5] = [
@@ -469,8 +517,8 @@ mod tests {
                 continue;
             }
             let bsp = Bsp::load(path).unwrap();
-            let mats = Materials::locate(path).map(|p| Materials::load(&p).unwrap()).unwrap_or_else(Materials::empty);
-            let world = World::new(&bsp, mats, None);
+            let mats = Materials::locate(path, &[]).map(|p| Materials::load(&p).unwrap()).unwrap_or_else(Materials::empty);
+            let world = World::new(&bsp, &mats, None);
             for wname in ["ak47", "awp", "m4a1", "deagle", "scout"] {
                 let Ok(shots) = std::fs::read(dir.join(format!("{name}_{wname}_shots.bin"))) else { continue };
                 let res = std::fs::read(dir.join(format!("{name}_{wname}.bin"))).unwrap();
@@ -484,7 +532,7 @@ mod tests {
                 for i in 0..count {
                     let s = &shots[8 + i * 25..8 + (i + 1) * 25];
                     let w = &WEAPONS[s[24] as usize];
-                    let f = sim::fire(&world, w, &rd_v3(s, 0), &rd_v3(s, 12), false);
+                    let f = sim::fire(&world, w, &rd_v3(s, 0), &rd_v3(s, 12), false, true);
                     let rec = &res[16 + i * rsize..16 + (i + 1) * rsize];
                     if let Some(m) = compare(&f, rec, maxit) {
                         mism += 1;

@@ -1,18 +1,15 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use glam::DVec3;
+use anyhow::{Result, bail};
+use glam::{DVec3, Vec3};
 use rayon::prelude::*;
 
-use super::World;
-use super::hull0::{CONTENTS_SOLID, V3};
-use super::sim::{self, IT_HIT, Weapon};
-use crate::nav::{Nav, STAND_OFS};
+use super::hull0::CONTENTS_SOLID;
+use super::sim::{self, IT_HIT, Iter, Weapon};
+use super::{World, dv, v3};
+use crate::nav::{Nav, STAND_OFS, Stance};
 
-pub const STAND: u8 = 0;
-pub const DUCK: u8 = 1;
-const STAND_EYE: f64 = 53.0;
-const DUCK_EYE: f64 = 30.0;
-const DUCK_ORIGIN: f64 = 18.0;
 const LEVEL_GAP: f32 = 72.0;
 const CAP: f64 = 4096.0;
 const BEHIND: f64 = 512.0;
@@ -28,6 +25,11 @@ const DEATH_DZ: f64 = 160.0;
 const CORNER_PATH: f64 = 4.0;
 const CORNER_NORMAL: f64 = 8.0;
 const GRAZE: f64 = 0.01;
+const EXIT_PAD: f64 = 0.1;
+const EXIT_HOPS: usize = 8;
+const MAX_WALLS: usize = 2;
+pub const MAX_PITCHES: usize = 256;
+pub const MAX_YAWS: usize = 65536;
 pub const LETHAL_HEAD: u16 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -62,101 +64,137 @@ pub struct ShotOpts {
     pub slab: f64,
 }
 
+pub fn pitch_list(a: f64, b: f64, step: f64, max: usize) -> Vec<f64> {
+    (0..).map(|i| a + i as f64 * step).take_while(|&p| p <= b + 1e-9).take(max).collect()
+}
+
+pub fn yaw_count(step: f64) -> f64 {
+    (360.0 / step).round().max(1.0)
+}
+
 impl ShotOpts {
     pub fn new(weapon: &'static Weapon, stand: bool, duck: bool) -> ShotOpts {
         ShotOpts { weapon, stand, duck, yaw_step: 2.0, pitch: (-20.0, 20.0, 4.0), spot_cell: 64.0, max_hit: 2000.0, min_thickness: 0.0, slab: 256.0 }
     }
 
+    pub fn check(&self) -> Result<()> {
+        let ny = yaw_count(self.yaw_step);
+        if !ny.is_finite() || ny > MAX_YAWS as f64 {
+            bail!("yaw step {} gives {ny} directions; at most {MAX_YAWS}", self.yaw_step);
+        }
+        let (a, b, s) = self.pitch;
+        if pitch_list(a, b, s, MAX_PITCHES + 1).len() > MAX_PITCHES {
+            bail!("pitch {a}..{b}/{s} gives more than {MAX_PITCHES} pitches");
+        }
+        Ok(())
+    }
+
     pub fn yaws(&self) -> Vec<f64> {
-        let n = (360.0 / self.yaw_step).round().max(1.0) as usize;
+        let n = yaw_count(self.yaw_step) as usize;
         (0..n).map(|k| k as f64 * self.yaw_step).collect()
     }
 
     pub fn pitches(&self) -> Vec<f64> {
         let (a, b, s) = self.pitch;
-        let mut out = Vec::new();
-        let mut i = 0;
-        loop {
-            let p = a + i as f64 * s;
-            if p > b + 1e-9 || out.len() > 1000 {
-                break;
-            }
-            out.push(p);
-            i += 1;
-        }
-        out
+        pitch_list(a, b, s, MAX_PITCHES)
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Spot {
     pub feet: DVec3,
-    pub stance: u8,
+    pub stance: Stance,
 }
 
 impl Spot {
     pub fn eye(&self) -> DVec3 {
-        self.feet + DVec3::Z * if self.stance == STAND { STAND_EYE } else { DUCK_EYE }
+        self.feet + DVec3::Z * self.stance.eye()
     }
 
     pub fn origin(&self) -> DVec3 {
-        self.feet + DVec3::Z * if self.stance == STAND { STAND_OFS } else { DUCK_ORIGIN }
+        self.feet + DVec3::Z * self.stance.feet()
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Crossing {
-    pub model: u16,
-    pub entry: DVec3,
-    pub entry_face: Option<u32>,
-    pub exit: DVec3,
-    pub made: bool,
-    pub death: Option<DVec3>,
-    pub damage: u16,
-    pub material: u8,
+    pub entry: Vec3,
+    pub entry_face: i32,
     pub thickness: f32,
     pub path: f32,
+    pub death_at: f32,
+    pub model: u16,
+    pub damage: u16,
+    pub material: u8,
+    pub made: bool,
 }
 
 impl Crossing {
     pub fn kind(&self, by_damage: bool) -> Kind {
         Kind::of(self.made, self.damage, by_damage)
     }
+
+    pub fn entry(&self) -> DVec3 {
+        self.entry.as_dvec3()
+    }
+
+    pub fn face(&self) -> Option<u32> {
+        u32::try_from(self.entry_face).ok()
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Shot {
+    pub dir: Vec3,
     pub shooter: u32,
-    pub stance: u8,
-    pub pitch_idx: u8,
     pub yaw_idx: u16,
-    pub dir: DVec3,
-    pub crossings: Vec<Crossing>,
+    pub pitch_idx: u8,
+    pub stance: Stance,
+    walls: u8,
+    cross: [Crossing; MAX_WALLS],
 }
 
 impl Shot {
+    pub fn crossings(&self) -> &[Crossing] {
+        &self.cross[..self.walls as usize]
+    }
+
+    pub fn last(&self) -> &Crossing {
+        &self.cross[self.walls as usize - 1]
+    }
+
+    pub fn dir(&self) -> DVec3 {
+        self.dir.as_dvec3()
+    }
+
+    pub fn exit(&self, c: &Crossing) -> DVec3 {
+        c.entry() + self.dir() * (c.path as f64 + EXIT_PAD)
+    }
+
+    pub fn death(&self, c: &Crossing) -> Option<DVec3> {
+        (!c.made).then(|| c.entry() + self.dir() * c.death_at as f64)
+    }
+
     pub fn made(&self) -> bool {
-        self.crossings.iter().all(|c| c.made)
+        self.crossings().iter().all(|c| c.made)
     }
 
     pub fn start(&self) -> DVec3 {
-        self.crossings[0].entry - self.dir * 24.0
+        self.cross[0].entry() - self.dir() * 24.0
     }
 
     pub fn end(&self) -> DVec3 {
-        let last = self.crossings.last().unwrap();
-        match last.death {
-            Some(d) if !last.made => d,
-            _ => last.exit + self.dir * 48.0,
-        }
+        let last = self.last();
+        self.death(last).unwrap_or_else(|| self.exit(last) + self.dir() * 48.0)
     }
 
     pub fn path(&self) -> f32 {
-        self.crossings.iter().map(|c| c.path).sum()
+        self.crossings().iter().map(|c| c.path).sum()
     }
 
     pub fn damage(&self) -> u16 {
-        self.crossings.last().map_or(0, |c| if c.made { c.damage } else { 0 })
+        let c = self.last();
+        if c.made { c.damage } else { 0 }
     }
 
     pub fn kind(&self, by_damage: bool) -> Kind {
@@ -174,6 +212,7 @@ pub struct Counts {
     pub slab: u64,
     pub column: u64,
     pub void: u64,
+    pub graze: u64,
     pub corner: u64,
     pub thin: u64,
     pub cut: u64,
@@ -191,11 +230,25 @@ impl Counts {
         self.slab += o.slab;
         self.column += o.column;
         self.void += o.void;
+        self.graze += o.graze;
         self.corner += o.corner;
         self.thin += o.thin;
         self.cut += o.cut;
         self.made += o.made;
         self.died += o.died;
+    }
+
+    fn slot(&mut self, d: Drop) -> &mut u64 {
+        match d {
+            Drop::NoExit => &mut self.no_exit,
+            Drop::Behind => &mut self.behind,
+            Drop::Slab => &mut self.slab,
+            Drop::Column => &mut self.column,
+            Drop::Void => &mut self.void,
+            Drop::Graze => &mut self.graze,
+            Drop::Corner => &mut self.corner,
+            Drop::Thin => &mut self.thin,
+        }
     }
 }
 
@@ -204,35 +257,34 @@ pub struct Ctx<'a> {
     pub nav: &'a Nav,
     pub reach: &'a [bool],
     pub opts: &'a ShotOpts,
-    pub stop: Option<&'a std::sync::atomic::AtomicBool>,
+    pub stop: Option<&'a AtomicBool>,
 }
 
-fn v3(p: DVec3) -> V3 {
-    [p.x as f32, p.y as f32, p.z as f32]
-}
-
-fn dv(p: &V3) -> DVec3 {
-    DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)
-}
-
+#[derive(Clone, Copy)]
 enum Drop {
     NoExit,
     Behind,
     Slab,
     Column,
     Void,
+    Graze,
     Corner,
     Thin,
 }
 
+struct Geom {
+    hp: DVec3,
+    n: DVec3,
+    q: DVec3,
+    path: f64,
+    exit: DVec3,
+    normal_thick: f64,
+}
+
 impl Ctx<'_> {
     fn model_ref(&self, model: u16) -> (i32, DVec3) {
-        if model != 0
-            && let Some(e) = self.world.ents.iter().find(|e| e.model == model as usize)
-        {
-            return (e.head, dv(&e.origin));
-        }
-        (self.world.world_head, DVec3::ZERO)
+        let (head, o) = self.world.model_ref(model as usize);
+        (head, dv(&o))
     }
 
     fn open_dist(&self, model: u16, p: DVec3, d: DVec3, cap: f64) -> Option<f64> {
@@ -243,6 +295,29 @@ impl Ctx<'_> {
     fn solid_at(&self, model: u16, p: DVec3) -> bool {
         let (head, o) = self.model_ref(model);
         self.world.hull.contents64(head, p - o) == CONTENTS_SOLID
+    }
+
+    fn solid_other(&self, model: u16, p: DVec3) -> Option<u16> {
+        if model != 0 && self.solid_at(0, p) {
+            return Some(0);
+        }
+        let q = v3(p);
+        self.world
+            .ents
+            .iter()
+            .filter(|e| e.model != model as usize && (0..3).all(|i| q[i] >= e.mins[i] && q[i] <= e.maxs[i]))
+            .map(|e| e.model as u16)
+            .find(|&m| self.solid_at(m, p))
+    }
+
+    fn exit_dist(&self, model: u16, p: DVec3, d: DVec3) -> Option<f64> {
+        let mut t = self.open_dist(model, p, d, CAP)?;
+        for _ in 0..EXIT_HOPS {
+            let q = p + d * (t + EXIT_PAD);
+            let Some(m) = self.solid_other(model, q) else { return Some(t) };
+            t += EXIT_PAD + self.open_dist(m, q, d, CAP)?;
+        }
+        None
     }
 
     fn trace_frac(&self, a: DVec3, b: DVec3) -> (f32, DVec3, bool) {
@@ -259,20 +334,23 @@ impl Ctx<'_> {
 
     fn node_origin_z(&self, n: usize) -> f64 {
         let nd = &self.nav.nodes[n];
-        nd.z as f64 + if nd.stand { STAND_OFS } else { DUCK_ORIGIN }
+        nd.z as f64 + if nd.stand { STAND_OFS } else { Stance::Duck.feet() }
     }
 
     fn playable(&self, p: DVec3) -> bool {
-        let mut c: Vec<(f64, usize)> = self
-            .nodes_near(p, PLAY_R)
-            .filter_map(|n| {
-                let (x, y) = self.nav.cell_xy(self.nav.col[n] as usize);
-                let d = (x - p.x).hypot(y - p.y);
-                (d <= PLAY_R && (self.node_origin_z(n) - p.z).abs() <= PLAY_DZ).then_some((d, n))
-            })
-            .collect();
-        c.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        c.iter().take(PLAY_TRACES).any(|&(_, n)| {
+        let mut best = [(f64::INFINITY, usize::MAX); PLAY_TRACES];
+        for n in self.nodes_near(p, PLAY_R) {
+            let (x, y) = self.nav.cell_xy(self.nav.col[n] as usize);
+            let d = (x - p.x).hypot(y - p.y);
+            if d > PLAY_R || (self.node_origin_z(n) - p.z).abs() > PLAY_DZ {
+                continue;
+            }
+            if let Some(i) = best.iter().position(|b| d.total_cmp(&b.0).then(n.cmp(&b.1)).is_lt()) {
+                best.copy_within(i..PLAY_TRACES - 1, i + 1);
+                best[i] = (d, n);
+            }
+        }
+        best.iter().take_while(|b| b.1 != usize::MAX).any(|&(_, n)| {
             let (x, y) = self.nav.cell_xy(self.nav.col[n] as usize);
             let (f, _, ss) = self.trace_frac(p, DVec3::new(x, y, p.z));
             f == 1.0 && !ss
@@ -308,11 +386,7 @@ impl Ctx<'_> {
         false
     }
 
-    fn crossing(&self, f: &sim::Fired, k: usize, dir: DVec3) -> Result<Crossing, Drop> {
-        let it = &f.it[k - 1];
-        let next = &f.it[k];
-        let made = !next.own_dead;
-        let model = it.model;
+    fn geometry(&self, it: &Iter, next: &Iter, made: bool, dir: DVec3) -> Result<Geom, Drop> {
         let hp = dv(&it.endpos);
         let mut n = dv(&it.normal);
         if n.length_squared() < 0.5 {
@@ -324,92 +398,89 @@ impl Ctx<'_> {
             dn = -dn;
         }
         if -dn < GRAZE {
-            return Err(Drop::Corner);
+            return Err(Drop::Graze);
         }
         let step = (0.25 / (-dn).max(1e-3)).min(64.0);
-        let inside = hp + dir * step;
-        let solid = self.open_dist(model, inside, dir, CAP).ok_or(Drop::NoExit)?;
-        let exit = inside + dir * (solid + 0.1);
+        let solid = self.exit_dist(it.model, hp + dir * step, dir).ok_or(Drop::NoExit)?;
+        let path = step + solid;
+        let exit = hp + dir * (path + EXIT_PAD);
         if made && (exit - hp).dot(dir) > (dv(&next.endpos) - hp).dot(dir) + 1.0 {
             return Err(Drop::NoExit);
         }
         let q = hp - n * 0.5;
-        let normal_thick = self.open_dist(model, q, -n, CAP).map_or(CAP, |t| t + 0.5);
-        let path = step + solid;
-        if path < CORNER_PATH && normal_thick > CORNER_NORMAL {
+        let normal_thick = self.open_dist(it.model, q, -n, CAP).map_or(CAP, |t| t + 0.5);
+        Ok(Geom { hp, n, q, path, exit, normal_thick })
+    }
+
+    fn filters(&self, g: &Geom, model: u16, death: Option<DVec3>, dir: DVec3) -> Result<(), Drop> {
+        if g.path < CORNER_PATH && g.normal_thick > CORNER_NORMAL {
             return Err(Drop::Corner);
         }
-        if self.opts.min_thickness > 0.0 && normal_thick < self.opts.min_thickness {
+        if self.opts.min_thickness > 0.0 && g.normal_thick < self.opts.min_thickness {
             return Err(Drop::Thin);
         }
-        if n.z.abs() > 0.3 {
-            let v = self.open_dist(model, q, DVec3::new(0.0, 0.0, if n.z > 0.0 { -1.0 } else { 1.0 }), CAP);
+        if g.n.z.abs() > 0.3 {
+            let v = self.open_dist(model, g.q, DVec3::new(0.0, 0.0, if g.n.z > 0.0 { -1.0 } else { 1.0 }), CAP);
             if v.is_none_or(|v| v > self.opts.slab) {
                 return Err(Drop::Slab);
             }
         }
-        let mut death = None;
-        if made {
-            let (fr, _, _) = self.trace_frac(exit, exit + dir * BEHIND);
+        let Some(d) = death else {
+            let (fr, _, _) = self.trace_frac(g.exit, g.exit + dir * BEHIND);
             let room = fr as f64 * BEHIND;
             let mut t = 8.0;
-            let mut ok = false;
             while t < room {
-                if self.playable(exit + dir * t) {
-                    ok = true;
-                    break;
+                if self.playable(g.exit + dir * t) {
+                    return Ok(());
                 }
                 t += 16.0;
             }
-            if !ok {
-                return Err(Drop::Behind);
-            }
-        } else {
-            let d = next.own_abort.map_or(dv(&next.src), |a| dv(&a));
-            if !self.in_play(d) {
-                return Err(Drop::Void);
-            }
-            let span = hp.distance(d).min(solid);
-            let mut t = COLUMN_STEP / 2.0;
-            while t < span {
-                let p = hp + dir * t;
-                if self.solid_at(model, p) && self.ground_or_ceiling(model, p) {
-                    return Err(Drop::Column);
-                }
-                t += COLUMN_STEP;
-            }
-            death = Some(d);
-        }
-        let w = self.opts.weapon;
-        let src = dv(&next.src);
-        let to_target = ((exit - src).dot(dir)).max(0.0);
-        let damage = if made {
-            (next.dmg_in as f64 * (w.rangemod as f64).powf(to_target / 500.0)).max(0.0) as u16
-        } else {
-            0
+            return Err(Drop::Behind);
         };
+        if !self.in_play(d) {
+            return Err(Drop::Void);
+        }
+        let span = g.hp.distance(d).min(g.path);
+        let mut t = COLUMN_STEP / 2.0;
+        while t < span {
+            let p = g.hp + dir * t;
+            if self.solid_at(model, p) && self.ground_or_ceiling(model, p) {
+                return Err(Drop::Column);
+            }
+            t += COLUMN_STEP;
+        }
+        Ok(())
+    }
+
+    fn crossing(&self, f: &sim::Fired, k: usize, dir: DVec3) -> Result<Crossing, Drop> {
+        let (it, next) = (&f.it[k - 1], &f.it[k]);
+        let made = !next.dead();
+        let g = self.geometry(it, next, made, dir)?;
+        let death = (!made).then(|| dv(&next.death()));
+        self.filters(&g, it.model, death, dir)?;
+        let w = self.opts.weapon;
+        let to_target = ((g.exit - dv(&next.src)).dot(dir)).max(0.0);
+        let damage = if made { (next.dmg_in as f64 * (w.rangemod as f64).powf(to_target / 500.0)).max(0.0) as u16 } else { 0 };
         Ok(Crossing {
-            model,
-            entry: hp,
-            entry_face: u32::try_from(it.face).ok(),
-            exit,
-            made,
-            death,
+            entry: g.hp.as_vec3(),
+            entry_face: it.face,
+            thickness: g.normal_thick as f32,
+            path: g.path as f32,
+            death_at: death.map_or(0.0, |d| (d - g.hp).dot(dir) as f32),
+            model: it.model,
             damage,
             material: it.tex,
-            thickness: normal_thick as f32,
-            path: path as f32,
+            made,
         })
     }
 
-    fn shoot(&self, si: u32, spot: &Spot, pi: usize, yi: usize, pitch: f64, yaw: f64, c: &mut Counts) -> Option<Shot> {
+    fn shoot(&self, si: u32, spot: &Spot, (pi, pitch): (usize, f64), (yi, yaw): (usize, f64), c: &mut Counts) -> Option<Shot> {
         let (p, y) = (pitch.to_radians(), yaw.to_radians());
-        let dir = DVec3::new(p.cos() * y.cos(), p.cos() * y.sin(), -p.sin());
-        let d32 = v3(dir);
+        let d32 = v3(DVec3::new(p.cos() * y.cos(), p.cos() * y.sin(), -p.sin()));
         let dir = dv(&d32);
         let eye = v3(spot.eye());
         c.fired += 1;
-        let f = sim::fire(self.world, self.opts.weapon, &eye, &d32, true);
+        let f = sim::fire(self.world, self.opts.weapon, &eye, &d32, true, false);
         let w = self.opts.weapon;
         if f.it[0].flags & IT_HIT == 0 {
             return None;
@@ -419,31 +490,30 @@ impl Ctx<'_> {
             c.far += 1;
             return None;
         }
-        let mut crossings = Vec::new();
-        let walls = (w.penetration - 1) as usize;
+        let mut shot = Shot {
+            dir: dir.as_vec3(),
+            shooter: si,
+            yaw_idx: yi as u16,
+            pitch_idx: pi as u8,
+            stance: spot.stance,
+            walls: 0,
+            cross: [Crossing::default(); MAX_WALLS],
+        };
+        let walls = ((w.penetration - 1).max(0) as usize).min(MAX_WALLS);
         for k in 1..=walls {
             if f.it[k - 1].flags & IT_HIT == 0 || f.n <= k {
                 break;
             }
             match self.crossing(&f, k, dir) {
                 Ok(x) => {
-                    let made = x.made;
-                    crossings.push(x);
-                    if !made {
+                    shot.cross[shot.walls as usize] = x;
+                    shot.walls += 1;
+                    if !x.made {
                         break;
                     }
                 }
                 Err(e) => {
-                    let slot = match e {
-                        Drop::NoExit => &mut c.no_exit,
-                        Drop::Behind => &mut c.behind,
-                        Drop::Slab => &mut c.slab,
-                        Drop::Column => &mut c.column,
-                        Drop::Void => &mut c.void,
-                        Drop::Corner => &mut c.corner,
-                        Drop::Thin => &mut c.thin,
-                    };
-                    *slot += 1;
+                    *c.slot(e) += 1;
                     if k > 1 {
                         c.cut += 1;
                     }
@@ -451,10 +521,9 @@ impl Ctx<'_> {
                 }
             }
         }
-        if crossings.is_empty() {
+        if shot.walls == 0 {
             return None;
         }
-        let shot = Shot { shooter: si, stance: spot.stance, pitch_idx: pi as u8, yaw_idx: yi as u16, dir, crossings };
         if shot.made() {
             c.made += 1;
         } else {
@@ -471,13 +540,13 @@ pub fn reachable(bsp: &crate::bsp::Bsp, nav: &Nav) -> Vec<bool> {
 
 pub fn spots(nav: &Nav, reach: &[bool], o: &ShotOpts) -> Vec<Spot> {
     let mut out = Vec::new();
-    for stance in [STAND, DUCK] {
-        if (stance == STAND && !o.stand) || (stance == DUCK && !o.duck) {
+    for stance in [Stance::Stand, Stance::Duck] {
+        if (stance == Stance::Stand && !o.stand) || (stance == Stance::Duck && !o.duck) {
             continue;
         }
         let mut cells: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
-        for n in 0..nav.len() {
-            if !reach[n] || (stance == STAND && !nav.nodes[n].stand) {
+        for (n, _) in reach.iter().enumerate().take(nav.len()).filter(|r| *r.1) {
+            if stance == Stance::Stand && !nav.nodes[n].stand {
                 continue;
             }
             let (x, y) = nav.cell_xy(nav.col[n] as usize);
@@ -517,32 +586,32 @@ pub fn spots(nav: &Nav, reach: &[bool], o: &ShotOpts) -> Vec<Spot> {
 pub fn simulate(ctx: &Ctx, spots: &[Spot], progress: &(dyn Fn(f32) + Sync)) -> (Vec<Shot>, Counts) {
     let yaws = ctx.opts.yaws();
     let pitches = ctx.opts.pitches();
-    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
     let per: Vec<(Vec<Shot>, Counts)> = spots
         .par_iter()
         .enumerate()
         .map(|(si, s)| {
             let mut c = Counts::default();
             let mut v = Vec::new();
-            if ctx.stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed)) {
+            if ctx.stop.is_some_and(|s| s.load(Ordering::Relaxed)) {
                 return (v, c);
             }
             for (pi, &p) in pitches.iter().enumerate() {
                 for (yi, &y) in yaws.iter().enumerate() {
-                    if let Some(sh) = ctx.shoot(si as u32, s, pi, yi, p, y, &mut c) {
+                    if let Some(sh) = ctx.shoot(si as u32, s, (pi, p), (yi, y), &mut c) {
                         v.push(sh);
                     }
                 }
             }
-            let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if d % 64 == 0 {
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if d.is_multiple_of(64) {
                 progress(d as f32 / spots.len().max(1) as f32);
             }
             (v, c)
         })
         .collect();
     let mut counts = Counts::default();
-    let mut shots = Vec::new();
+    let mut shots = Vec::with_capacity(per.iter().map(|p| p.0.len()).sum());
     for (v, c) in per {
         counts.add(&c);
         shots.extend(v);

@@ -125,7 +125,7 @@ mod x87 {
 
 pub use x87::{atan2, atan2f, cos, sin};
 
-const D2R: f64 = 3.14159265358979323846 * 2.0 / 360.0;
+const D2R: f64 = std::f64::consts::PI * 2.0 / 360.0;
 
 pub fn angle_vectors(angles: &V3) -> (V3, V3, V3) {
     let a = (angles[1] as f64 * D2R) as f32;
@@ -141,7 +141,7 @@ pub fn angle_vectors(angles: &V3) -> (V3, V3, V3) {
 }
 
 pub fn angle_vectors_transpose(angles: &V3) -> (V3, V3, V3) {
-    const DEG2RAD: f32 = 3.14159265358979323846f32 * 2.0f32 / 360.0f32;
+    const DEG2RAD: f32 = std::f32::consts::PI * 2.0f32 / 360.0f32;
     let a = angles[1] * DEG2RAD;
     let (sy, cy) = (sin(a), cos(a));
     let a = angles[0] * DEG2RAD;

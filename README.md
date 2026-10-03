@@ -156,6 +156,7 @@ Also the spin output options.
 | `--style lines\|areas\|both` | 2D style (both) |
 | `--sigma PX` | Area smoothing (2) |
 | `--base render\|radar` | Backdrop (render) |
+| `--size N` | Longest side (1600) |
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--others off\|faint` | Other levels (off) |
 | `--pixelwalks` | Pixelwalk layer |
@@ -173,6 +174,7 @@ Also the spin output options.
 | `--merge-gap U` | Merge distance (64) |
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--base render\|radar` | Backdrop (render) |
+| `--size N` | Longest side (1600) |
 | `--labels` | Number the pixelwalks |
 | `--3d` | Also write iso renders |
 | `--gltf`, `--obj` | Also write a model |

@@ -63,22 +63,33 @@ fn line_color(k: Kind) -> ([u8; 3], f32) {
     }
 }
 
-fn density(f: &Frame, shots: &[&Shot], kind: Kind, damage: bool, weight: f32, acc: &mut [f32]) {
+fn plot(f: &Frame, s: &Shot, weight: f32, acc: &mut [f32]) {
     let (w, h) = (f.w as i64, f.h as i64);
-    for s in shots.iter().filter(|s| s.kind(damage) == kind) {
-        let (a, b) = (s.start(), s.end());
-        let (ax, ay) = f.px(a.x, a.y);
-        let (bx, by) = f.px(b.x, b.y);
-        let n = ((bx - ax).hypot(by - ay).ceil() as i64).max(1) + 1;
-        for i in 0..n {
-            let t = i as f32 / (n - 1).max(1) as f32;
-            let x = (ax + t * (bx - ax)).round() as i64;
-            let y = (ay + t * (by - ay)).round() as i64;
-            if x >= 0 && y >= 0 && x < w && y < h {
-                acc[(y * w + x) as usize] += weight;
+    let (a, b) = (s.start(), s.end());
+    let (ax, ay) = f.px(a.x, a.y);
+    let (bx, by) = f.px(b.x, b.y);
+    let n = ((bx - ax).hypot(by - ay).ceil() as i64).max(1) + 1;
+    for i in 0..n {
+        let t = i as f32 / (n - 1).max(1) as f32;
+        let x = (ax + t * (bx - ax)).round() as i64;
+        let y = (ay + t * (by - ay)).round() as i64;
+        if x >= 0 && y >= 0 && x < w && y < h {
+            acc[(y * w + x) as usize] += weight;
+        }
+    }
+}
+
+fn densities(f: &Frame, layer: &Layer) -> Vec<(Kind, Vec<f32>)> {
+    let mut out: Vec<(Kind, Vec<f32>)> = layer.kinds().map(|k| (k, vec![0f32; (f.w * f.h) as usize])).collect();
+    for (set, weight) in [(&layer.main, 1.0), (&layer.faint, FAINT)] {
+        for s in set.iter() {
+            let k = s.kind(layer.damage);
+            if let Some((_, acc)) = out.iter_mut().find(|(x, _)| *x == k) {
+                plot(f, s, weight, acc);
             }
         }
     }
+    out
 }
 
 fn percentile(v: &[f32], q: f64) -> f64 {
@@ -86,18 +97,15 @@ fn percentile(v: &[f32], q: f64) -> f64 {
     if nz.is_empty() {
         return 1.0;
     }
-    nz.sort_by(f32::total_cmp);
     let pos = (nz.len() - 1) as f64 * q;
     let (i, fr) = (pos.floor() as usize, pos - pos.floor());
-    let a = nz[i] as f64;
-    let b = nz[(i + 1).min(nz.len() - 1)] as f64;
+    let (_, a, rest) = nz.select_nth_unstable_by(i, f32::total_cmp);
+    let a = *a as f64;
+    let b = rest.iter().copied().min_by(f32::total_cmp).map_or(a, f64::from);
     a + (b - a) * fr
 }
 
-fn area_alpha(f: &Frame, layer: &Layer, sigma: f64, kind: Kind) -> Vec<f64> {
-    let mut acc = vec![0f32; (f.w * f.h) as usize];
-    density(f, &layer.main, kind, layer.damage, 1.0, &mut acc);
-    density(f, &layer.faint, kind, layer.damage, FAINT, &mut acc);
+fn area_alpha(f: &Frame, mut acc: Vec<f32>, sigma: f64) -> Vec<f64> {
     if sigma > 0.0 {
         crate::grid::blur(&mut acc, f.w as usize, f.h as usize, sigma);
     }
@@ -110,28 +118,32 @@ fn area_alpha(f: &Frame, layer: &Layer, sigma: f64, kind: Kind) -> Vec<f64> {
         .collect()
 }
 
+fn mix(p: &mut [u8], col: [u8; 3], a: f64) {
+    for k in 0..3 {
+        p[k] = (p[k] as f64 * (1.0 - a) + col[k] as f64 * a).round() as u8;
+    }
+}
+
 fn blend(out: &mut [u8], col: [u8; 3], alpha: &[f64]) {
     for (i, &a) in alpha.iter().enumerate() {
-        if a <= 0.0 {
-            continue;
-        }
-        let p = &mut out[i * 4..i * 4 + 3];
-        for k in 0..3 {
-            p[k] = (p[k] as f64 * (1.0 - a) + col[k] as f64 * a).round() as u8;
+        if a > 0.0 {
+            mix(&mut out[i * 4..i * 4 + 3], col, a);
         }
     }
 }
 
+fn mix_over(p: &mut [f64], col: [u8; 3], a: f64) {
+    for k in 0..3 {
+        p[k] = col[k] as f64 * a + p[k] * (1.0 - a);
+    }
+    p[3] = a + p[3] * (1.0 - a);
+}
+
 fn over(acc: &mut [f64], col: [u8; 3], alpha: &[f64]) {
     for (i, &a) in alpha.iter().enumerate() {
-        if a <= 0.0 {
-            continue;
+        if a > 0.0 {
+            mix_over(&mut acc[i * 4..i * 4 + 4], col, a);
         }
-        let p = &mut acc[i * 4..i * 4 + 4];
-        for k in 0..3 {
-            p[k] = col[k] as f64 * a + p[k] * (1.0 - a);
-        }
-        p[3] = a + p[3] * (1.0 - a);
     }
 }
 
@@ -147,16 +159,16 @@ fn unpremultiply(acc: &[f64]) -> Vec<u8> {
 
 pub fn areas(base: &[u8], f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
     let mut out = base.to_vec();
-    for k in layer.kinds() {
-        blend(&mut out, color(k), &area_alpha(f, layer, sigma, k));
+    for (k, acc) in densities(f, layer) {
+        blend(&mut out, color(k), &area_alpha(f, acc, sigma));
     }
     out
 }
 
 pub fn areas_rgba(f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
     let mut acc = vec![0f64; (f.w * f.h) as usize * 4];
-    for k in layer.kinds() {
-        over(&mut acc, color(k), &area_alpha(f, layer, sigma, k));
+    for (k, d) in densities(f, layer) {
+        over(&mut acc, color(k), &area_alpha(f, d, sigma));
     }
     unpremultiply(&acc)
 }
@@ -186,35 +198,37 @@ fn raster(mask: &mut [bool], w: i64, h: i64, a: (f32, f32), b: (f32, f32)) {
     }
 }
 
-fn line_alphas(f: &Frame, layer: &Layer) -> Vec<([u8; 3], Vec<f64>)> {
+fn line_masks(f: &Frame, layer: &Layer, mut each: impl FnMut([u8; 3], f64, &[bool])) {
     let (w, h) = (f.w as i64, f.h as i64);
-    let mut out = Vec::new();
+    let mut mask = vec![false; (w * h) as usize];
     for kind in layer.kinds() {
         let (col, alpha) = line_color(kind);
         for (set, k) in [(&layer.faint, FAINT), (&layer.main, 1.0)] {
-            let mut mask = vec![false; (w * h) as usize];
+            mask.fill(false);
             for s in set.iter().filter(|s| s.kind(layer.damage) == kind) {
                 let (a, b) = (s.start(), s.end());
                 raster(&mut mask, w, h, f.px(a.x, a.y), f.px(b.x, b.y));
             }
-            let a = (alpha * k) as f64;
-            out.push((col, mask.iter().map(|&m| if m { a } else { 0.0 }).collect()));
+            each(col, (alpha * k) as f64, &mask);
         }
     }
-    out
 }
 
 pub fn lines(px: &mut [u8], f: &Frame, layer: &Layer) {
-    for (col, a) in line_alphas(f, layer) {
-        blend(px, col, &a);
-    }
+    line_masks(f, layer, |col, a, mask| {
+        for (i, _) in mask.iter().enumerate().filter(|m| *m.1) {
+            mix(&mut px[i * 4..i * 4 + 3], col, a);
+        }
+    });
 }
 
 pub fn lines_rgba(f: &Frame, layer: &Layer) -> Vec<u8> {
     let mut acc = vec![0f64; (f.w * f.h) as usize * 4];
-    for (col, a) in line_alphas(f, layer) {
-        over(&mut acc, col, &a);
-    }
+    line_masks(f, layer, |col, a, mask| {
+        for (i, _) in mask.iter().enumerate().filter(|m| *m.1) {
+            mix_over(&mut acc[i * 4..i * 4 + 4], col, a);
+        }
+    });
     unpremultiply(&acc)
 }
 
@@ -273,4 +287,35 @@ pub fn save_png(pm: &Pixmap, path: &std::path::Path) -> Result<()> {
     let rgb: Vec<u8> = pm.data().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     image::RgbImage::from_raw(pm.width(), pm.height(), rgb).context("image")?.save(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn percentile_matches_sort() {
+        let mut x = 0x2545_f491u32;
+        for n in [0usize, 1, 2, 3, 10, 257, 4000] {
+            let v: Vec<f32> = (0..n)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    if x % 4 == 0 { 0.0 } else { (x % 1000) as f32 / 7.0 }
+                })
+                .collect();
+            for q in [0.0, 0.3, 0.6, 1.0] {
+                let mut nz: Vec<f32> = v.iter().copied().filter(|&x| x > 1e-3).collect();
+                nz.sort_by(f32::total_cmp);
+                let want = if nz.is_empty() {
+                    1.0
+                } else {
+                    let pos = (nz.len() - 1) as f64 * q;
+                    let (i, fr) = (pos.floor() as usize, pos - pos.floor());
+                    let (a, b) = (nz[i] as f64, nz[(i + 1).min(nz.len() - 1)] as f64);
+                    a + (b - a) * fr
+                };
+                assert_eq!(super::percentile(&v, q).to_bits(), want.to_bits());
+            }
+        }
+    }
 }
