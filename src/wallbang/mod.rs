@@ -8,7 +8,7 @@ pub mod texture;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::bsp::Bsp;
 use crate::grid::Backdrop;
@@ -19,8 +19,49 @@ use hull0::{Hull0, Trace, V3};
 use shots::ShotOpts;
 use texture::{Materials, Textures};
 
-pub fn overview_bases(_bsp: &Bsp, _size: u32, _secs: &[Section], _rep: &mut Report) -> Result<Vec<DrawBase>> {
-    Ok(Vec::new())
+pub fn overview_bases(bsp: &Bsp, dirs: &[PathBuf], size: u32, secs: &[Section], rep: &mut Report) -> Result<Vec<DrawBase>> {
+    let name = bsp.name();
+    let mut search: Vec<PathBuf> = dirs.to_vec();
+    if let Some(g) = std::path::absolute(&bsp.path).ok().and_then(|p| p.parent()?.parent().map(|g| g.to_path_buf())) {
+        search.push(g);
+    }
+    let find = |ext: &str| search.iter().map(|d| d.join("overviews").join(format!("{name}.{ext}"))).find(|p| p.is_file());
+    let Some(txt) = find("txt") else { return Ok(Vec::new()) };
+    let ov = crate::overview::read_txt(&txt)?;
+    let Some(img_path) = find("bmp").or_else(|| find("tga")) else { anyhow::bail!("{} has no .bmp or .tga image", txt.display()) };
+    let mut img = image::open(&img_path).with_context(|| format!("reading {}", img_path.display()))?.to_rgba8();
+    for p in img.pixels_mut() {
+        if p[0] < 40 && p[1] > 215 && p[2] < 40 {
+            *p = image::Rgba([0x25, 0x25, 0x25, 255]);
+        }
+    }
+    let s = size as f64 / img.width().max(img.height()) as f64;
+    let (w, h) = ((img.width() as f64 * s).round() as u32, (img.height() as f64 * s).round() as u32);
+    let img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+    let mut px = img.into_raw();
+    for p in px.chunks_exact_mut(4) {
+        let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
+        for k in 0..3 {
+            p[k] = ((p[k] as f64 * 0.4 + l * 0.6) * 0.75) as u8;
+        }
+        p[3] = 255;
+    }
+    let k = ov.zoom / 8.0 * (w as f64 / 1024.0);
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    let (ox, oy) = (ov.origin[0], ov.origin[1]);
+    let m = if ov.rotated != 0 { [k, 0.0, cx - ox * k, 0.0, -k, cy + oy * k] } else { [0.0, -k, cx + oy * k, -k, 0.0, cy + ox * k] };
+    rep.log(format!("  backdrop: {} (zoom {}, rotated {})", img_path.display(), ov.zoom, ov.rotated));
+    let one = secs.len() == 1;
+    Ok(secs
+        .iter()
+        .map(|sec| DrawBase {
+            tag: if one || sec.name.eq_ignore_ascii_case(crate::radar::DEFAULT) { String::new() } else { format!("_{}", sec.name) },
+            title: if one { String::new() } else { format!(" {} ({})", sec.name, sec.range()) },
+            frame: Frame { w, h, m, upp: 1.0 / k },
+            px: px.clone(),
+            section: sec.clone(),
+        })
+        .collect())
 }
 
 pub const NAV_CELL: f64 = 8.0;
@@ -38,6 +79,7 @@ pub struct WallbangOpts {
     pub split: Split,
     pub others_faint: bool,
     pub csv: bool,
+    pub pixelwalks: bool,
 }
 
 pub struct DrawBase {
@@ -238,6 +280,7 @@ mod tests {
             split: Split::None,
             others_faint: false,
             csv: false,
+            pixelwalks: false,
         }
     }
 

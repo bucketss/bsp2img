@@ -256,13 +256,14 @@ impl Cfg for KillOpts {
 
 impl Cfg for HealthOpts {
     fn kv(&self) -> Vec<(String, String)> {
-        kvs(&[("cell", self.cell.to_string()), ("size", self.size.to_string())])
+        kvs(&[("cell", self.cell.to_string()), ("size", self.size.to_string()), ("pixelwalks", self.pixelwalks.to_string())])
     }
 
     fn set(&mut self, k: &str, v: &str) {
         match k {
             "cell" => put(&mut self.cell, v),
             "size" => put(&mut self.size, v),
+            "pixelwalks" => put(&mut self.pixelwalks, v),
             _ => {}
         }
     }

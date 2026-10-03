@@ -221,6 +221,11 @@ pub(super) fn gold_facts(h: &Health, g: &GoldHealth) -> Vec<(String, [u8; 3])> {
         },
         if g.ov[1].is_none() || g.res_lists[1] { white } else { AMBER },
     ));
+    match &g.pixelwalks {
+        Some(Ok(p)) => v.push((format!("pixelwalks: {} ({} standing, {} duck)", p.stand + p.duck, p.stand, p.duck), ok(p.stand + p.duck == 0))),
+        Some(Err(e)) => v.push((format!("pixelwalks: {e}"), AMBER)),
+        None => {}
+    }
     match &h.nav {
         Ok(n) => {
             v.push((format!("walkable area: {:.0} m2", n.walkable_m2), white));
@@ -371,6 +376,18 @@ impl Health {
                 writeln!(s, "  .res           {} lists {}", p.display(), if listed.is_empty() { "no overview files".into() } else { listed.join(" ") })?;
             }
             None => writeln!(s, "  .res           missing")?,
+        }
+        if let Some(pw) = &g.pixelwalks {
+            writeln!(s)?;
+            match pw {
+                Ok(p) => {
+                    writeln!(s, "Pixelwalks       {} ({} standing, {} duck)", p.stand + p.duck, p.stand, p.duck)?;
+                    if let Some(w) = &p.worst {
+                        writeln!(s, "  longest        {w}")?;
+                    }
+                }
+                Err(e) => writeln!(s, "Pixelwalks       {e}")?,
+            }
         }
         writeln!(s)?;
         self.write_open(s)?;

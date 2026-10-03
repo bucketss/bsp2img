@@ -2,6 +2,7 @@ pub mod finder;
 pub mod hull;
 pub mod output;
 pub mod pmove;
+pub mod present;
 pub mod seams;
 pub mod trace;
 pub mod vec;

@@ -76,11 +76,12 @@ const RED: [u8; 3] = [230, 60, 50];
 pub struct HealthOpts {
     pub cell: f64,
     pub size: u32,
+    pub pixelwalks: bool,
 }
 
 impl Default for HealthOpts {
     fn default() -> Self {
-        HealthOpts { cell: 8.0, size: 600 }
+        HealthOpts { cell: 8.0, size: 600, pixelwalks: false }
     }
 }
 
@@ -227,6 +228,32 @@ pub struct GoldHealth {
     pub bmp: Option<Result<Bmp8, String>>,
     pub res: Option<PathBuf>,
     pub res_lists: [bool; 3],
+    pub pixelwalks: Option<Result<PwInfo, String>>,
+}
+
+pub struct PwInfo {
+    pub stand: usize,
+    pub duck: usize,
+    pub worst: Option<String>,
+}
+
+fn pixelwalk_info(bsp: &Bsp) -> Result<PwInfo, String> {
+    use crate::pixelwalk::present::{PixelwalkOpts, Stance, find_pixelwalks, setpos};
+    let o = PixelwalkOpts {
+        finder: Default::default(),
+        merge_gap: 64.0,
+        split: crate::radar::Split::None,
+        base: Default::default(),
+        size: 0,
+        labels: false,
+    };
+    let pws = find_pixelwalks(bsp, &o).map_err(|e| format!("{e:#}"))?;
+    let stand = pws.iter().filter(|p| p.stance == Stance::Stand).count();
+    let worst = pws
+        .iter()
+        .max_by(|a, b| a.span().total_cmp(&b.span()).then((b.stance as u8).cmp(&(a.stance as u8))))
+        .map(|p| format!("{} {:.0}u span, {}", p.stance.label(), p.span(), setpos(p.from, p.yaw)));
+    Ok(PwInfo { stand, duck: pws.len() - stand, worst })
 }
 
 pub struct SrcLimit {
@@ -437,6 +464,7 @@ pub fn gather(scene: &Scene, name: &str, o: &HealthOpts) -> Health {
             bmp,
             res,
             res_lists,
+            pixelwalks: o.pixelwalks.then(|| pixelwalk_info(bsp)),
         })),
     }
 }

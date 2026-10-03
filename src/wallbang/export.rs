@@ -25,9 +25,19 @@ fn stances(o: &ShotOpts) -> &'static str {
     }
 }
 
-pub fn render_bases(r: &mut Renderer, bsp: &Bsp, cuts: &Cuts, size: u32, base: Backdrop, secs: &[Section], rep: &mut Report) -> Result<Vec<DrawBase>> {
+#[allow(clippy::too_many_arguments)]
+pub fn render_bases(
+    r: &mut Renderer,
+    bsp: &Bsp,
+    dirs: &[PathBuf],
+    cuts: &Cuts,
+    size: u32,
+    base: Backdrop,
+    secs: &[Section],
+    rep: &mut Report,
+) -> Result<Vec<DrawBase>> {
     if base == Backdrop::Radar {
-        match super::overview_bases(bsp, size, secs, rep) {
+        match super::overview_bases(bsp, dirs, size, secs, rep) {
             Ok(v) if !v.is_empty() => return Ok(v),
             Ok(_) => rep.log("  no overview for this map; using the rendered backdrop".into()),
             Err(e) => rep.log(format!("  overview: {e:#}; using the rendered backdrop")),
@@ -166,6 +176,7 @@ pub fn simulate(bsp: &Bsp, o: &WallbangOpts, rep: &mut Report) -> Result<Sim> {
 pub fn export_wallbang(
     r: &mut Renderer,
     bsp: &Bsp,
+    dirs: &[PathBuf],
     name: &str,
     cut_tag: &str,
     cuts: &Cuts,
@@ -183,12 +194,28 @@ pub fn export_wallbang(
     if let Some(w) = why {
         rep.log(format!("  sections: {w}"));
     }
-    let bases = render_bases(r, bsp, cuts, o.size, o.base, &secs, rep)?;
+    let bases = render_bases(r, bsp, dirs, cuts, o.size, o.base, &secs, rep)?;
     let w = o.shots.weapon;
     let pitches = o.shots.pitches();
     let yaws = o.shots.yaws();
     let (pa, pb, ps) = o.shots.pitch;
     let settings = format!("{}, pitch {pa}..{pb} step {ps}, yaw step {}", stances(&o.shots), o.shots.yaw_step);
+    let pws = if o.pixelwalks {
+        let po = crate::pixelwalk::present::PixelwalkOpts {
+            finder: Default::default(),
+            merge_gap: 64.0,
+            split: crate::radar::Split::None,
+            base: Backdrop::Render,
+            size: o.size,
+            labels: false,
+        };
+        let v = crate::pixelwalk::present::find_pixelwalks(bsp, &po)?;
+        rep.log(format!("  pixelwalk layer: {} pixelwalks", v.len()));
+        v
+    } else {
+        Vec::new()
+    };
+    let zr = crate::pixelwalk::present::world_z(bsp);
     let mut files = Partial::default();
     for (bi, b) in bases.iter().enumerate() {
         rep.step(0.7 + 0.25 * bi as f32 / bases.len() as f32)?;
@@ -223,6 +250,11 @@ pub fn export_wallbang(
             };
             let mut pm = Pixmap::from_vec(px, size).context("pixmap")?;
             draw2d::markers(&mut pm, bsp, &b.frame);
+            if !pws.is_empty() {
+                let sel: Vec<(usize, &crate::pixelwalk::present::Pixelwalk)> =
+                    pws.iter().enumerate().filter(|(_, p)| b.section.contains(p.from.z.min(p.to.z) - p.stance.feet())).collect();
+                crate::pixelwalk::present::draw(&mut pm, &b.frame, &sel, zr, false);
+            }
             draw2d::title(&mut pm, &format!("{name}{}  {what}  {}  ({settings})", b.title, w.name));
             draw2d::legend(&mut pm, &legend);
             draw2d::scale_bar(&mut pm, &b.frame);

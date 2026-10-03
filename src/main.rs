@@ -75,6 +75,7 @@ fn main() {
         Some(cli::Cmd::Timing(a)) => cli::run_timing(a),
         Some(cli::Cmd::Kills(a)) => cli::run_kills(a),
         Some(cli::Cmd::Wallbang(a)) => cli::run_wallbang(a),
+        Some(cli::Cmd::Pixelwalk(a)) => cli::run_pixelwalk(a),
         Some(cli::Cmd::Health(a)) => cli::run_health(a),
         Some(cli::Cmd::Svg(a)) => cli::run_svg(a),
         Some(cli::Cmd::Stl(a)) => cli::run_stl(a),

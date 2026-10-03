@@ -52,6 +52,8 @@ pub enum Cmd {
     Kills(KillsArgs),
     #[command(about = "GoldSrc: map which walls bullets get through and where they go")]
     Wallbang(WallbangArgs),
+    #[command(about = "GoldSrc: find pixelwalks (spots where the player catches on a sub-unit seam over the void)")]
+    Pixelwalk(PixelwalkArgs),
     #[command(about = "Report missing assets, compile problems, engine limits, spawns and overview readiness")]
     Health(HealthArgs),
     #[command(about = "Write editable SVG line art of the walkable floors, walls, objectives and spawns")]
@@ -324,6 +326,30 @@ pub struct WallbangArgs {
     pub others: String,
     #[arg(long, help = "also write every shot to a .csv")]
     pub csv: bool,
+    #[arg(long, help = "add the pixelwalk layer")]
+    pub pixelwalks: bool,
+    #[command(flatten)]
+    pub f: FaceArgs,
+}
+
+#[derive(Args)]
+pub struct PixelwalkArgs {
+    #[command(flatten)]
+    pub c: Common,
+    #[arg(long, default_value = "both", value_parser = ["stand", "duck", "both"], help = "stances to search")]
+    pub stance: String,
+    #[arg(long = "min-samples", default_value_t = 2, value_parser = clap::value_parser!(i32).range(1..), help = "drop finds with fewer sub-pixel hits")]
+    pub min_samples: i32,
+    #[arg(long = "merge-gap", default_value_t = 64.0, value_parser = non_negative, value_name = "U", help = "join finds on the same wall line within U units")]
+    pub merge_gap: f64,
+    #[arg(long, default_value = "none", value_name = "auto|none|Z,...", help = "per-level images")]
+    pub sections: String,
+    #[arg(long, default_value = "render", value_parser = ["render", "radar"], help = "backdrop: our render, or the official overview framing")]
+    pub base: String,
+    #[arg(long, default_value_t = 1600, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
+    pub size: u32,
+    #[arg(long, help = "number each pixelwalk on the image to match the .txt")]
+    pub labels: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -377,6 +403,8 @@ pub struct HealthArgs {
     pub cell: f64,
     #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u32).range(64..), help = "longest side of the map thumbnail in pixels")]
     pub size: u32,
+    #[arg(long, help = "GoldSrc: also search for pixelwalks (adds seconds per map)")]
+    pub pixelwalks: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -722,16 +750,64 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
         split: crate::radar::Split::parse(&a.sections)?,
         others_faint: a.others == "faint",
         csv: a.csv,
+        pixelwalks: a.pixelwalks,
     };
     each_map(&a.c, |path, name| {
         let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
         in_run_dir(&a.c, &scene.bsp, |out| {
             let cuts = scene.cuts(&co, &mut say);
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
-            reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+            reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, &scene.dirs, name, &co.tag(lo.hull), &cuts, &o, out, rep))
         })
         .map(drop)
     })
+}
+
+pub fn run_pixelwalk(a: &PixelwalkArgs) -> Result<()> {
+    let gpu = Gpu::headless()?;
+    let lo = a.c.load_opts();
+    let co = a.c.cut_opts();
+    let o = crate::pixelwalk::present::PixelwalkOpts {
+        finder: crate::pixelwalk::FinderOpts {
+            standing: a.stance != "duck",
+            duck: a.stance != "stand",
+            min_samples: a.min_samples,
+            threads: 0,
+        },
+        merge_gap: a.merge_gap,
+        split: crate::radar::Split::parse(&a.sections)?,
+        base: crate::grid::Backdrop::from_key(&a.base).unwrap_or_default(),
+        size: a.size,
+        labels: a.labels,
+    };
+    let mut rows: Vec<String> = Vec::new();
+    let res = each_map(&a.c, |path, name| {
+        let scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
+        let r = in_run_dir(&a.c, &scene.bsp, |out| {
+            let cuts = scene.cuts(&co, &mut say);
+            let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
+            reported(|rep| {
+                crate::pixelwalk::present::export_pixelwalks(&mut r, &scene.bsp, &scene.dirs, name, &co.tag(lo.hull), &cuts, &o, out, rep)
+            })
+        });
+        match &r {
+            Ok((_, s)) => rows.push(format!("{},{},{},{:.1},", csv_quote(name), s.stand, s.duck, s.longest)),
+            Err(e) => rows.push(format!("{},,,,{}", csv_quote(name), csv_quote(&format!("error: {e:#}")))),
+        }
+        r.map(drop)
+    });
+    if rows.len() > 1 {
+        std::fs::create_dir_all(&a.c.out)?;
+        let f = free_name(&a.c.out, "pixelwalk_summary", ".csv");
+        let mut text = String::from("map,standing,duck,longest_span,error\n");
+        for r in &rows {
+            text.push_str(r);
+            text.push('\n');
+        }
+        std::fs::write(&f, text)?;
+        println!("summary: {}", f.display());
+    }
+    res
 }
 
 fn kill_map(
@@ -1047,7 +1123,7 @@ pub fn run_health(a: &HealthArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
     let lo = a.c.load_opts();
     let co = a.c.cut_opts();
-    let o = HealthOpts { cell: a.cell, size: a.size };
+    let o = HealthOpts { cell: a.cell, size: a.size, pixelwalks: a.pixelwalks };
     let maps = expand_maps(&a.c.maps, a.c.game.as_deref());
     if maps.is_empty() {
         anyhow::bail!("no maps match");

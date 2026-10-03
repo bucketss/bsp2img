@@ -1,5 +1,7 @@
+#[cfg(test)]
 use std::fmt::Write as _;
 
+#[cfg(test)]
 use super::finder::Find;
 use super::vec::atan2f;
 
@@ -11,6 +13,7 @@ pub fn yaw_of(a: &[f32; 3]) -> f32 {
     y
 }
 
+#[cfg(test)]
 pub fn raw_line(f: &Find) -> String {
     let st = if f.usehull == 0 { "stand" } else { "duck " };
     let p = |v: f32| format!("{:.7}", v as f64);
@@ -45,6 +48,7 @@ pub fn raw_line(f: &Find) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn raw_block(path: &str, finds: &[Find]) -> String {
     let mut s = String::new();
     let n = finds.len();
