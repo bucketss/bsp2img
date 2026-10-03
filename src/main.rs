@@ -21,6 +21,7 @@ mod navmesh;
 mod overview;
 mod paths;
 mod phys;
+mod pixelwalk;
 mod post;
 mod poster;
 mod prof;
