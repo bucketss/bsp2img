@@ -1,33 +1,29 @@
 # bsp2img
 
-Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) maps from the `.bsp` and CS2 maps from the map `.vpk`. Needs OpenGL, DX12 or Vulkan.
-
-## GUI
-
-`bsp2img` or `bsp2img gui <map>`. Settings are saved to `%APPDATA%\bsp2img\gui.cfg` on Windows, or `$XDG_CONFIG_HOME/bsp2img/gui.cfg` (default `~/.config/bsp2img/gui.cfg`) elsewhere.
+Renders GoldSrc, Source and CS2 maps.
 
 ## Commands
 
-`bsp2img <command> <map...> [options]`. Maps may be `*`/`?` globs; with several maps a failed map is reported and the rest continue.
+`bsp2img <command> <map...> [options]` (maps may be globs)
 
 | Command | Output |
 |---|---|
-| `iso` | Isometric PNGs, one per yaw |
-| `spin` | Looping turntable MP4 (needs `ffmpeg`), optional GIF/APNG |
-| `peel` | Animation lifting roof levels off one by one |
-| `slice` | Animation raising a height cut from floor to sky |
-| `poster` | Print-size tiled PNG with title block, legend and scale bar |
-| `overview` | CS overview `.bmp`, `.tga` and `.txt`; CS2, CS:S and CS:GO radar `.png` per vertical section and `.txt`, on the official framing; CS:S also `.vtf`/`.vmt`, CS:GO `.dds` |
-| `timing` | Rush timing maps and `.txt` per team (experimental) |
-| `kills` | Kill and presence heatmaps, `.csv` and `.txt` from HLTV and CS2 demos |
-| `wallbang` | GoldSrc: which walls bullets get through, area and line maps per level, `.txt`, optional `.csv` |
-| `pixelwalk` | GoldSrc: pixelwalk map and `.txt` with `amx_setpos` lines; `pixelwalk_summary.csv` for several maps |
-| `health` | Asset, compile, engine limit, spawn, collision and overview report; `health_summary.csv` for several maps |
-| `svg` | Vector callout map of reachable floors, walls, objectives, spawns and nav place names |
-| `stl` | Watertight 3D-printable diorama |
-| `gltf` | `.glb` with textures and lighting, Y up, metres |
-| `obj` | `.obj`, `.mtl` and PNGs, same options as `gltf` (no `separate` lighting) |
-| `gui` | Open the GUI |
+| `gui` | GUI (also `bsp2img` alone) |
+| `iso` | Isometric PNGs |
+| `spin` | Turntable MP4, GIF, APNG |
+| `peel` | Roof levels lifting off |
+| `slice` | Rising height cut |
+| `poster` | Print-size poster PNG |
+| `overview` | Overview / radar images and `.txt` |
+| `timing` | Rush timing maps |
+| `kills` | Kill heatmaps from demos |
+| `wallbang` | GoldSrc wallbang maps |
+| `pixelwalk` | GoldSrc pixelwalk maps |
+| `health` | Map health report |
+| `svg` | Vector callout map |
+| `stl` | 3D-printable diorama |
+| `gltf` | `.glb` model |
+| `obj` | `.obj` model |
 
 ## Options
 
@@ -35,25 +31,25 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) ma
 
 | Option | Effect |
 |---|---|
-| `--game DIR` | Game or mod folder, allows map names |
+| `--game DIR` | Game or mod folder |
 | `--wad-dir DIR` | Extra WAD folder |
-| `-o DIR` | Output folder (default `renders`) |
+| `-o DIR` | Output folder (renders) |
 | `--roofs N` | Remove the N highest roof levels |
 | `--zmin/--zmax Z` | Height cuts |
 | `--xmin/--xmax/--ymin/--ymax V` | XY cuts |
-| `--crop X0 Y0 X1 Y1` | Keep only this XY rectangle |
-| `--hull [1\|3]` | Remove areas players can't reach |
-| `--hull-pad U` | Units kept around walkable area (64) |
+| `--crop X0 Y0 X1 Y1` | XY rectangle |
+| `--hull [1\|3]` | Remove unreachable areas |
+| `--hull-pad U` | Padding around walkable area (64) |
 | `--no-auto-crop` | Keep sealed rooms |
-| `--grid` | Also write a top-down grid PNG (iso, overview) |
+| `--grid` | Also write a grid PNG |
 | `--ss N` | Supersampling (3) |
 | `--brightness`, `--light-scale` | Brighten lighting |
 | `--gamma`, `--texgamma`, `--lightgamma` | Gamma (2.5, 2, 2.5) |
 | `--all-styles` | Include switchable lights |
-| `--tex-max N` | CS2 and Source texture size limit (512) |
+| `--tex-max N` | CS2 and Source texture limit (512) |
 | `--nearest` | Pixelated textures |
 | `--no-cull` | Draw back faces |
-| `--timings` | Log phase times (or `BSP2IMG_TIMINGS=1`) |
+| `--timings` | Log phase times |
 
 ### iso
 
@@ -62,7 +58,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) ma
 | `--yaw A...` | View angles (45 135 225 315) |
 | `--pitch P` | Degrees down (35.264) |
 | `--size N` | Longest side (2048) |
-| `--sky [NAME]` | Skybox backdrop; `--sky-fov`, `--sky-pitch` |
+| `--sky [NAME]` | Skybox; `--sky-fov`, `--sky-pitch` |
 | `--bg #RRGGBB` | Background colour |
 
 ### spin
@@ -75,7 +71,7 @@ Renders GoldSrc (Half-Life / CS 1.6) and Source (CS:S, CS:GO, TF2, L4D, L4D2) ma
 | `--ccw` | Reverse direction |
 | `--size N` | Longest side (720) |
 | `--gif`, `--apng`, `--no-mp4` | Output formats |
-| `--day-cycle` | Sweep time of day; `--day-from`, `--day-to`, `--no-turn` |
+| `--day-cycle` | Time of day sweep; `--day-from`, `--day-to`, `--no-turn` |
 
 Also `--pitch`, `--sky`, `--bg`.
 
@@ -83,12 +79,12 @@ Also `--pitch`, `--sky`, `--bg`.
 
 | Option | Effect |
 |---|---|
-| `--count N` | Roof levels (peel) or steps (slice); 0 = all / continuous |
+| `--count N` | Levels or steps (0 = all) |
 | `--hold S` | Pause per step |
 | `--seconds-per S` | peel: seconds per level (1.5) |
-| `--reverse` | peel: roofs drop into place |
+| `--reverse` | peel: roofs drop in |
 | `--seconds S` | slice: sweep length (6) |
-| `--then-spin` | Follow with a full turn; `--spin-seconds`, `--ccw` |
+| `--then-spin` | Then a full turn; `--spin-seconds`, `--ccw` |
 
 Also the spin output options.
 
@@ -96,24 +92,24 @@ Also the spin output options.
 
 | Option | Effect |
 |---|---|
-| `--animate-textures` | Texture sequences and water warp |
+| `--animate-textures` | Animated textures and water |
 | `--ao` | Ambient occlusion; `--ao-strength`, `--ao-radius` |
 | `--ink` | Outlines; `--ink-width`, `--ink-color` |
 | `--saturation F`, `--contrast F` | Colour grade |
 | `--tint #RRGGBB`, `--tint-amount F` | Colour tint |
 | `--style blueprint\|comic` | Presets |
-| `--tilt-shift` | Blur outside a band; `--focus-y`, `--band`, `--blur` |
-| `--dof` | Depth of field (perspective); `--focus-dist` |
-| `--miniature` | Tilt-shift with extra saturation and contrast |
+| `--tilt-shift` | Tilt-shift blur; `--focus-y`, `--band`, `--blur` |
+| `--dof` | Depth of field; `--focus-dist` |
+| `--miniature` | Tilt-shift preset |
 
 ### Relighting (iso, spin, peel, slice, poster)
 
 | Option | Effect |
 |---|---|
-| `--relight [A]` | Sun and shadows from `light_environment`; A blends with baked (1) |
+| `--relight [A]` | Sun and shadows (1) |
 | `--time HH:MM` | Time of day |
 | `--sun-az D`, `--sun-el D` | Sun direction |
-| `--keep-lights` | Keep baked lamps in shadow (artistic) |
+| `--keep-lights` | Keep baked lamps in shadow |
 | `--shadow-res N` | Shadow map size (4096) |
 
 ### Camera (iso, spin, peel, slice, poster)
@@ -121,63 +117,67 @@ Also the spin output options.
 | Option | Effect |
 |---|---|
 | `--persp FOV` | Perspective |
-| `--camera FILE` | `.cam` saved from the GUI |
+| `--camera FILE` | `.cam` from the GUI |
 
 ### overview
 
 | Option | Effect |
 |---|---|
-| `--from-txt FILE` | Reuse framing from a `.txt` |
+| `--from-txt FILE` | Reuse framing |
 | `--margin F` | Border (0.04) |
 | `--png` | Also write a PNG |
-| `--fit` | CS2, Source: fit to the geometry, not the official framing |
-| `--sections auto\|none\|Z,...` | CS2, Source: radar sections (the overview's) |
-| `--tga` | CS2: also write 32-bit TGAs |
-| `--official` | CS2, Source: also write the official radar images |
-| `--compile ADDON` | CS2: write the radar into an existing `csgo_addons` addon and compile it |
+| `--fit` | Fit to geometry |
+| `--sections auto\|none\|Z,...` | Radar sections |
+| `--tga` | CS2: also write TGAs |
+| `--official` | Also write official radars |
+| `--compile ADDON` | CS2: compile into an addon |
 
 ### timing, kills
 
 | Option | Effect |
 |---|---|
-| `--base render\|radar` | CS2, Source: backdrop, the official radar gives one set per section (render) |
+| `--base render\|radar` | Backdrop (render) |
 
 ### wallbang
 
 | Option | Effect |
 |---|---|
 | `--weapon NAME` | ak47, awp, m4a1, m4a1_sil, deagle, scout (ak47) |
-| `--stance stand\|duck\|both` | Shooter eye height (both) |
-| `--yaw-step D` | Degrees between shots (2) |
+| `--stance stand\|duck\|both` | Shooter stance (both) |
+| `--yaw-step D` | Yaw step (2) |
 | `--pitch A..B/S` | Pitch range and step (-20..20/4) |
 | `--spot-cell U` | Shooter spacing (64) |
-| `--max-hit U` | Ignore walls further away (2000) |
-| `--skip-translucent A` | Ignore brush entities with renderamt below A |
+| `--max-hit U` | Max wall distance (2000) |
+| `--skip-translucent A` | Ignore translucent brush entities |
 | `--skip-doors` | Ignore doors |
-| `--min-thickness U` | Drop walls thinner than U (0) |
-| `--slab U` | Floors and ceilings thicker than this count as ground (256) |
+| `--min-thickness U` | Min wall thickness (0) |
+| `--slab U` | Ground thickness (256) |
 | `--materials FILE` | Override `materials.txt` |
 | `--style lines\|areas\|both` | 2D style (both) |
 | `--sigma PX` | Area smoothing (2) |
-| `--base render\|radar` | Backdrop, radar = the overview (render) |
+| `--base render\|radar` | Backdrop (render) |
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
-| `--others off\|faint` | Shots from other levels (off) |
-| `--pixelwalks` | Add the pixelwalk layer |
-| `--3d` | Also write iso renders with the walls painted (green made, red died) |
+| `--others off\|faint` | Other levels (off) |
+| `--pixelwalks` | Pixelwalk layer |
+| `--damage` | Colour by headshot kill |
+| `--3d` | Also write iso renders |
+| `--gltf`, `--obj` | Also write a model |
 | `--csv` | Write every shot |
 
 ### pixelwalk
 
 | Option | Effect |
 |---|---|
-| `--stance stand\|duck\|both` | Stances to search (both) |
-| `--min-samples N` | Drop finds with fewer sub-pixel hits (2) |
-| `--merge-gap U` | Join finds on the same wall line (64) |
+| `--stance stand\|duck\|both` | Stances (both) |
+| `--min-samples N` | Min sub-pixel hits (2) |
+| `--merge-gap U` | Merge distance (64) |
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--base render\|radar` | Backdrop (render) |
 | `--labels` | Number the pixelwalks |
-| `--3d` | Also write iso renders with player-box markers and the seam faces tinted |
-| `health --pixelwalks` | Adds a pixelwalk count to the health report |
+| `--3d` | Also write iso renders |
+| `--gltf`, `--obj` | Also write a model |
+
+`health --pixelwalks` adds a pixelwalk count.
 
 ### svg
 
@@ -203,9 +203,9 @@ Also the spin output options.
 
 | Option | Effect |
 |---|---|
-| `--lighting baked\|separate\|none` | Lighting mode (baked; CS2 and Source separate for gltf, none for obj) |
-| `--texel U` | Units per atlas texel (2) |
+| `--lighting baked\|separate\|none` | Lighting (baked) |
+| `--texel U` | Units per texel (2) |
 
 ## Build
 
-Rust 1.88+, MSVC Build Tools on Windows. `cargo build --release`
+`cargo build --release`

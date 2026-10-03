@@ -538,6 +538,8 @@ impl App {
             format!("bang_stance={}", self.bang.stance),
             format!("bang_opacity={}", self.bang.opacity),
             format!("bang_paint={}", self.bang.paint),
+            format!("bang_damage={}", self.bang.damage),
+            format!("bang_paths={}", self.bang.paths),
         ];
         lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
@@ -609,6 +611,8 @@ impl App {
                     "bang_stance" if super::bang::STANCES.contains(&v.trim()) => self.bang.stance = v.trim().to_string(),
                     "bang_opacity" => put(&mut self.bang.opacity, v),
                     "bang_paint" => put(&mut self.bang.paint, v),
+                    "bang_damage" => put(&mut self.bang.damage, v),
+                    "bang_paths" => put(&mut self.bang.paths, v),
                     "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },

@@ -9,7 +9,7 @@ use eframe::egui;
 use super::{App, Msg};
 use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts, export_iso, export_overview};
-use crate::gltf::{GltfOpts, export_gltf};
+use crate::gltf::{GltfOpts, Layers, export_gltf};
 use crate::health::{HealthOpts, export_health};
 use crate::kills::{KillOpts, export_kills, load_demos};
 use crate::paths::run_dir;
@@ -30,7 +30,7 @@ pub enum Job {
     Health(HealthOpts),
     Svg(SvgOpts),
     Stl(StlOpts),
-    Gltf(GltfOpts),
+    Gltf(GltfOpts, Option<Arc<Layers>>),
     Poster(PosterOpts),
 }
 
@@ -54,7 +54,7 @@ impl Job {
             Job::Health(_) => "health report",
             Job::Svg(_) => "SVG callouts",
             Job::Stl(_) => "STL diorama",
-            Job::Gltf(o) => if o.obj { "OBJ" } else { "glTF" },
+            Job::Gltf(o, _) => if o.obj { "OBJ" } else { "glTF" },
             Job::Poster(_) => "poster",
         }
     }
@@ -109,7 +109,7 @@ fn work(spec: &JobSpec, rep: &mut Report, out: &Path, sky_tag: &str, r: &mut cra
         Job::Health(o) => export_health(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Svg(o) => export_svg(r, s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Stl(o) => export_stl(&s.bsp, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
-        Job::Gltf(o) => export_gltf(s, &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
+        Job::Gltf(o, l) => export_gltf(s, l.as_deref(), &name, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
         Job::Poster(o) => export_poster(r, &s.bsp, &name, sky_tag, &spec.cut_tag, &spec.cuts, o, out, rep).map(drop),
     }
 }

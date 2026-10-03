@@ -8,11 +8,13 @@ use super::App;
 use super::jobs::Bg;
 use super::preview::{Frame, Mode};
 use crate::bsp::Engine;
+use crate::gltf::Layers;
 use crate::grid::Backdrop;
+use crate::mesh::Mesh;
 use crate::pixelwalk::present::{Pixelwalk, PixelwalkOpts, Stance};
 use crate::radar::Split;
 use crate::render::{Cuts, GpuScene, MarkLine, Markers, Renderer};
-use crate::wallbang::draw2d::{self, GREEN, Layer, RED};
+use crate::wallbang::draw2d::{self, GREEN, Layer};
 use crate::wallbang::export::Sim;
 use crate::wallbang::shots::{self, DUCK, STAND, Shot, ShotOpts, Spot};
 use crate::wallbang::sim::{WEAPONS, weapon};
@@ -81,6 +83,8 @@ pub struct Bang {
     pub stance: String,
     pub opacity: f32,
     pub paint: bool,
+    pub damage: bool,
+    pub paths: bool,
     inspect: bool,
     pixelwalks: bool,
     pw_window: bool,
@@ -95,9 +99,10 @@ pub struct Bang {
     raster: Option<(String, egui::TextureHandle, draw2d::Frame, DVec3)>,
     look: Option<Inspect>,
     look_gen: u64,
-    paint_job: Option<Bg<Arc<GpuScene>>>,
+    paint_job: Option<Bg<(Arc<GpuScene>, Arc<Mesh>)>>,
     painted: String,
-    paint_cache: Option<(String, Arc<GpuScene>)>,
+    paint_cache: Option<(String, Arc<GpuScene>, Arc<Mesh>)>,
+    path_cache: Option<(String, Arc<Markers>)>,
     marks: String,
     replay: Option<Replay>,
     selected: Option<usize>,
@@ -111,6 +116,8 @@ impl Default for Bang {
             stance: "both".into(),
             opacity: 0.8,
             paint: true,
+            damage: false,
+            paths: false,
             inspect: false,
             pixelwalks: false,
             pw_window: true,
@@ -128,6 +135,7 @@ impl Default for Bang {
             paint_job: None,
             painted: String::new(),
             paint_cache: None,
+            path_cache: None,
             marks: String::new(),
             replay: None,
             selected: None,
@@ -215,9 +223,11 @@ impl App {
         if self.bang.scene != id {
             let keep = (self.bang.style, self.bang.weapon.clone(), self.bang.stance.clone(), self.bang.opacity, self.bang.paint);
             let (inspect, pixelwalks, pw_window) = (self.bang.inspect, self.bang.pixelwalks, self.bang.pw_window);
+            let (damage, paths) = (self.bang.damage, self.bang.paths);
             self.bang = Bang::default();
             (self.bang.style, self.bang.weapon, self.bang.stance, self.bang.opacity, self.bang.paint) = keep;
             (self.bang.inspect, self.bang.pixelwalks, self.bang.pw_window) = (inspect, pixelwalks, pw_window);
+            (self.bang.damage, self.bang.paths) = (damage, paths);
             self.bang.scene = id;
             self.bang.base = self.renderer.as_ref().map(|r| r.scene().clone());
         }
@@ -250,8 +260,8 @@ impl App {
         if let Some(r) = self.bang.paint_job.as_ref().and_then(|j| j.poll(&mut self.log)) {
             let j = self.bang.paint_job.take().unwrap();
             match r {
-                Ok(gs) => {
-                    self.bang.paint_cache = Some((j.key.clone(), gs));
+                Ok((gs, mesh)) => {
+                    self.bang.paint_cache = Some((j.key.clone(), gs, mesh));
                 }
                 Err(e) => self.log.push(format!("paint: {e}")),
             }
@@ -268,10 +278,11 @@ impl App {
             return (String::new(), None, None);
         }
         let k = format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}",
             self.scene_id(),
             sim.as_ref().map_or(0, |s| Arc::as_ptr(s) as usize),
-            pw.as_ref().map_or(0, |p| Arc::as_ptr(p) as usize)
+            pw.as_ref().map_or(0, |p| Arc::as_ptr(p) as usize),
+            self.bang.damage
         );
         (k, sim, pw)
     }
@@ -302,6 +313,7 @@ impl App {
                 others_faint: false,
                 csv: false,
                 pixelwalks: false,
+                damage: false,
             };
             self.log.push(format!("== wallbang {} {} ({})", scene.bsp.name(), self.bang.weapon, self.bang.stance));
             self.bang.sim_job = Some(Bg::spawn(key, ctx, move |stop, rep| crate::wallbang::export::simulate(&scene.bsp, &o, Some(stop), rep)));
@@ -340,16 +352,16 @@ impl App {
                 && let Some(scene) = self.scene.clone()
             {
                 let gpu = self.gpu.clone();
+                let damage = self.bang.damage;
                 self.bang.paint_job = Some(Bg::spawn(want, ctx, move |_, rep| {
-                    let mut splats = sim.map(|s| crate::wallbang::draw3d::splats(&s)).unwrap_or_default();
+                    let mut splats = sim.map(|s| crate::wallbang::draw3d::splats(&s, damage)).unwrap_or_default();
                     if let Some(p) = &pw {
                         splats.extend(crate::pixelwalk::draw3d::seam_splats(&p.list));
                     }
                     let mut mesh = scene.mesh.clone();
-                    let colors = [RED, GREEN, crate::pixelwalk::draw3d::SEAM];
-                    let p = crate::mesh::overlay::paint(&mut mesh, &splats, &colors, gpu.max_dim);
+                    let p = crate::mesh::overlay::paint(&mut mesh, &splats, &crate::wallbang::draw3d::COLORS, gpu.max_dim);
                     rep.log(format!("paint: {} surface points, {} on no drawn face; {} faces painted ({}u texels)", p.splats, p.missed, p.faces, p.texel));
-                    GpuScene::new(&gpu, &mesh)
+                    Ok((GpuScene::new(&gpu, &mesh)?, Arc::new(mesh)))
                 }));
             }
         }
@@ -359,13 +371,23 @@ impl App {
             let k = ((now - r.t0) * 100.0) as usize % (r.path.len() + REPLAY_HOLD);
             k.min(r.path.len() - 1)
         });
+        if let Some(sim) = self.current_sim().filter(|_| self.bang.paths && self.bang.style != Style::Off) {
+            let k = format!("{}|{}", Arc::as_ptr(&sim) as usize, self.bang.damage);
+            if self.bang.path_cache.as_ref().is_none_or(|c| c.0 != k) {
+                let bs = crate::wallbang::draw3d::bundles(&sim.shots, self.bang.damage);
+                self.log.push(format!("paths: {} shots in {} bundles", sim.shots.len(), bs.len()));
+                self.bang.path_cache = Some((k, Arc::new(crate::wallbang::draw3d::path_markers(&bs))));
+            }
+        }
         let mk = format!(
-            "{:?}|{}|{}|{:?}|{:?}",
+            "{:?}|{}|{}|{:?}|{:?}|{}|{:?}",
             self.renderer.as_ref().map(|r| Arc::as_ptr(r.scene())),
             self.bang.pw.as_ref().filter(|_| self.bang.pixelwalks).map_or(0, |p| Arc::as_ptr(p) as usize),
             if self.bang.inspect { self.bang.look_gen } else { 0 },
             frame,
-            self.bang.replay.as_ref().map(|r| r.pw)
+            self.bang.replay.as_ref().map(|r| r.pw),
+            self.bang.damage,
+            self.shown_paths().map(|p| Arc::as_ptr(&p))
         );
         if mk != self.bang.marks {
             let m = self.bang_markers(frame);
@@ -377,12 +399,42 @@ impl App {
         }
     }
 
-    fn bang_markers(&self, frame: Option<usize>) -> Markers {
-        let mut m = Markers::default();
+    fn shown_paths(&self) -> Option<Arc<Markers>> {
+        if !self.bang.paths || self.bang.style == Style::Off || !matches!(self.mode, Mode::Iso | Mode::Free) {
+            return None;
+        }
+        let k = format!("{}|{}", Arc::as_ptr(&self.current_sim()?) as usize, self.bang.damage);
+        self.bang.path_cache.as_ref().filter(|c| c.0 == k).map(|c| c.1.clone())
+    }
+
+    pub(super) fn bang_layers(&self) -> Option<Arc<Layers>> {
+        if !self.bang_ok() {
+            return None;
+        }
+        let mesh = self.bang.paint_cache.as_ref().filter(|c| !self.bang.painted.is_empty() && c.0 == self.bang.painted).map(|c| c.2.clone());
+        let mut nodes = Vec::new();
+        if let Some(p) = self.shown_paths() {
+            nodes.push(("wallbang_paths".to_string(), (*p).clone()));
+        }
         if self.bang.pixelwalks
             && let Some(pw) = &self.bang.pw
         {
-            m = crate::pixelwalk::draw3d::markers(&pw.list, pw.zr);
+            nodes.push(("pixelwalks".to_string(), crate::pixelwalk::draw3d::markers(&pw.list, pw.zr)));
+        }
+        (mesh.is_some() || !nodes.is_empty()).then(|| Arc::new(Layers { mesh, nodes }))
+    }
+
+    fn bang_markers(&self, frame: Option<usize>) -> Markers {
+        let mut m = Markers::default();
+        if let Some(p) = self.shown_paths() {
+            m.lines.extend(p.lines.iter().cloned());
+        }
+        if self.bang.pixelwalks
+            && let Some(pw) = &self.bang.pw
+        {
+            let p = crate::pixelwalk::draw3d::markers(&pw.list, pw.zr);
+            m.tris.extend(p.tris);
+            m.lines.extend(p.lines);
             if let (Some(r), Some(k)) = (&self.bang.replay, frame)
                 && let Some(p) = pw.list.get(r.pw)
             {
@@ -393,7 +445,7 @@ impl App {
             && let Some(l) = &self.bang.look
         {
             for s in l.shown() {
-                let c = if s.made() { GREEN } else { RED };
+                let c = draw2d::color(s.kind(self.bang.damage));
                 m.lines.push(MarkLine { a: s.start(), b: s.end(), color: rgba(c, 220), px: PATH_PX });
                 if s.made() {
                     let x = s.crossings.last().unwrap().exit;
@@ -435,6 +487,12 @@ impl App {
             });
             ui.add_enabled(self.bang.style != Style::Off, egui::Slider::new(&mut self.bang.opacity, 0.0..=1.0).text("opacity"));
             ui.checkbox(&mut self.bang.paint, "Paint 3D").on_hover_text("tint walls in Isometric and Free with the wallbang result and the pixelwalk seams");
+            ui.checkbox(&mut self.bang.damage, "Damage").on_hover_text(format!(
+                "made shots: green when a headshot kills ({}+ unarmoured damage past the wall), yellow when it does not",
+                shots::LETHAL_HEAD
+            ));
+            ui.toggle_value(&mut self.bang.paths, "Paths")
+                .on_hover_text("Isometric and Free: shot paths bundled by wall spot and direction, seen through walls; wider = more shots");
             let ins = ui.toggle_value(&mut self.bang.inspect, "Inspect").on_hover_text(
                 "click a spot: fire the fan from there only. shift+click a wall: keep only shots through it",
             );
@@ -490,7 +548,7 @@ impl App {
             && self.bang.style != Style::Off
             && let Some(sim) = self.current_sim()
         {
-            let key = format!("{}|{}|{}|{}", Arc::as_ptr(&sim) as usize, self.bang.style.key(), cuts.zmin, cuts.zmax);
+            let key = format!("{}|{}|{}|{}|{}", Arc::as_ptr(&sim) as usize, self.bang.style.key(), cuts.zmin, cuts.zmax, self.bang.damage);
             if self.bang.raster.as_ref().is_none_or(|r| r.0 != key)
                 && let Some(s) = &self.scene
             {
@@ -506,7 +564,7 @@ impl App {
                         z >= cuts.zmin && z <= cuts.zmax
                     })
                     .collect();
-                let layer = Layer { main, faint: Vec::new() };
+                let layer = Layer { main, faint: Vec::new(), damage: self.bang.damage };
                 let px = if self.bang.style == Style::Areas { draw2d::areas_rgba(&fr, &layer, SIGMA) } else { draw2d::lines_rgba(&fr, &layer) };
                 let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
                 let tex = ctx.load_texture("wallbang", img, egui::TextureOptions::LINEAR);
@@ -533,7 +591,7 @@ impl App {
         {
             let p = painter.with_clip_rect(rect);
             for s in l.shown() {
-                let c = if s.made() { GREEN } else { RED };
+                let c = draw2d::color(s.kind(self.bang.damage));
                 if let (Some(a), Some(b)) = (project(f, s.start()), project(f, s.end())) {
                     p.line_segment([a, b], Stroke::new(1.0, color32(c, 150)));
                 }

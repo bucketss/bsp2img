@@ -328,8 +328,14 @@ pub struct WallbangArgs {
     pub csv: bool,
     #[arg(long, help = "add the pixelwalk layer")]
     pub pixelwalks: bool,
+    #[arg(long, help = "colour made shots by damage: green when a headshot kills, yellow when it does not")]
+    pub damage: bool,
     #[arg(long = "3d", help = "also write iso renders with the walls painted")]
     pub three_d: bool,
+    #[arg(long, help = "also write a .glb with the walls painted and wallbang_paths / pixelwalks nodes")]
+    pub gltf: bool,
+    #[arg(long, help = "also write an .obj with the walls painted")]
+    pub obj: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -354,6 +360,10 @@ pub struct PixelwalkArgs {
     pub labels: bool,
     #[arg(long = "3d", help = "also write iso renders with pixelwalk markers")]
     pub three_d: bool,
+    #[arg(long, help = "also write a .glb with the seams painted and a pixelwalks node")]
+    pub gltf: bool,
+    #[arg(long, help = "also write an .obj with the seams painted")]
+    pub obj: bool,
     #[command(flatten)]
     pub f: FaceArgs,
 }
@@ -759,6 +769,7 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
         others_faint: a.others == "faint",
         csv: a.csv,
         pixelwalks: a.pixelwalks,
+        damage: a.damage,
     };
     each_map(&a.c, |path, name| {
         let mut scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
@@ -769,43 +780,75 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
             let (mut r, _) = scene.job_renderer(&gpu, None, a.f.nearest, None, &mut say)?;
             let (_, sim, pws) =
                 reported(|rep| crate::wallbang::export::export_wallbang(&mut r, &scene.bsp, &scene.dirs, name, &tag, &cuts, &o, out, rep))?;
-            if a.three_d {
+            if a.three_d || a.gltf || a.obj {
                 drop(r);
-                let mut splats = crate::wallbang::draw3d::splats(&sim);
+                let mut splats = crate::wallbang::draw3d::splats(&sim, o.damage);
                 splats.extend(crate::pixelwalk::draw3d::seam_splats(&pws));
                 let marks = crate::pixelwalk::draw3d::markers(&pws, crate::pixelwalk::present::world_z(&scene.bsp));
-                let stem = format!("{name}{tag}_wallbang_{}_3d", o.shots.weapon.name);
-                paint_iso(&gpu, &mut scene, a.f.nearest, &splats, marks, &stem, &cuts, a.c.ss, out)?;
+                paint_scene(&gpu, &mut scene, &splats);
+                let stem = format!("{name}{tag}_wallbang_{}", o.shots.weapon.name);
+                if a.three_d {
+                    paint_iso(&gpu, &scene, a.f.nearest, marks.clone(), &format!("{stem}_3d"), &cuts, a.c.ss, out)?;
+                }
+                if a.gltf || a.obj {
+                    let bs = crate::wallbang::draw3d::bundles(&sim.shots, o.damage);
+                    say(format!("  paths: {} shots in {} bundles", sim.shots.len(), bs.len()));
+                    let mut nodes = vec![("wallbang_paths".to_string(), crate::wallbang::draw3d::path_markers(&bs))];
+                    if !pws.is_empty() {
+                        nodes.push(("pixelwalks".to_string(), marks));
+                    }
+                    model_exports(&scene, nodes, a.gltf, a.obj, &stem, &cuts, out)?;
+                }
             }
             Ok(())
         })
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn paint_iso(
-    gpu: &Gpu,
-    scene: &mut Scene,
-    nearest: bool,
-    splats: &[crate::mesh::overlay::Splat],
-    marks: crate::render::Markers,
-    stem: &str,
-    cuts: &crate::render::Cuts,
-    ss: u32,
-    out: &std::path::Path,
-) -> Result<Vec<PathBuf>> {
-    let colors = [crate::wallbang::draw2d::RED, crate::wallbang::draw2d::GREEN, crate::pixelwalk::draw3d::SEAM];
-    let p = crate::mesh::overlay::paint(&mut scene.mesh, splats, &colors, gpu.max_dim);
+fn paint_scene(gpu: &Gpu, scene: &mut Scene, splats: &[crate::mesh::overlay::Splat]) {
+    let p = crate::mesh::overlay::paint(&mut scene.mesh, splats, &crate::wallbang::draw3d::COLORS, gpu.max_dim);
     if p.splats > 0 {
         say(format!(
             "  3d: {} surface points, {} on no drawn face; {} faces painted ({}u texels, {}x{} atlas)",
             p.splats, p.missed, p.faces, p.texel, p.w, p.h
         ));
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_iso(
+    gpu: &Gpu,
+    scene: &Scene,
+    nearest: bool,
+    marks: crate::render::Markers,
+    stem: &str,
+    cuts: &crate::render::Cuts,
+    ss: u32,
+    out: &std::path::Path,
+) -> Result<Vec<PathBuf>> {
     let (mut r, _) = scene.job_renderer(gpu, None, nearest, None, &mut say)?;
     r.set_markers(Some(marks));
     let o = IsoOpts { ss, ..Default::default() };
     reported(|rep| export_iso(&mut r, &scene.bsp, stem, "", "", cuts, &o, out, rep))
+}
+
+fn model_exports(
+    scene: &Scene,
+    nodes: Vec<(String, crate::render::Markers)>,
+    gltf: bool,
+    obj: bool,
+    stem: &str,
+    cuts: &crate::render::Cuts,
+    out: &std::path::Path,
+) -> Result<()> {
+    let layers = crate::gltf::Layers { mesh: None, nodes };
+    for (on, obj) in [(gltf, false), (obj, true)] {
+        if on {
+            let o = GltfOpts { obj, ..Default::default() };
+            reported(|rep| export_gltf(scene, Some(&layers), stem, "", cuts, &o, out, rep))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn run_pixelwalk(a: &PixelwalkArgs) -> Result<()> {
@@ -836,11 +879,16 @@ pub fn run_pixelwalk(a: &PixelwalkArgs) -> Result<()> {
             let (files, s, pws) = reported(|rep| {
                 crate::pixelwalk::present::export_pixelwalks(&mut r, &scene.bsp, &scene.dirs, name, &tag, &cuts, &o, out, rep)
             })?;
-            if a.three_d {
+            if a.three_d || a.gltf || a.obj {
                 drop(r);
                 let splats = crate::pixelwalk::draw3d::seam_splats(&pws);
                 let marks = crate::pixelwalk::draw3d::markers(&pws, crate::pixelwalk::present::world_z(&scene.bsp));
-                paint_iso(&gpu, &mut scene, a.f.nearest, &splats, marks, &format!("{name}{tag}_pixelwalks_3d"), &cuts, a.c.ss, out)?;
+                paint_scene(&gpu, &mut scene, &splats);
+                let stem = format!("{name}{tag}_pixelwalks");
+                if a.three_d {
+                    paint_iso(&gpu, &scene, a.f.nearest, marks.clone(), &format!("{stem}_3d"), &cuts, a.c.ss, out)?;
+                }
+                model_exports(&scene, vec![("pixelwalks".to_string(), marks)], a.gltf, a.obj, &stem, &cuts, out)?;
             }
             Ok((files, s))
         });
@@ -1135,7 +1183,7 @@ pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
                 (true, true) => Lighting::None,
             });
             let o = GltfOpts { lighting, texel: a.texel, nearest: a.nearest, obj };
-            reported(|rep| export_gltf(&scene, name, &co.tag(lo.hull), &cuts, &o, out, rep))
+            reported(|rep| export_gltf(&scene, None, name, &co.tag(lo.hull), &cuts, &o, out, rep))
         })
         .map(drop)
     })

@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
 use tiny_skia::{Pixmap, Transform};
 
-use super::shots::Shot;
+use super::shots::{Kind, Shot};
 use crate::bsp::Bsp;
 use crate::grid::{CT, GridFrame, T, Text, line, paint, rect};
 
 pub const GREEN: [u8; 3] = [70, 230, 80];
 pub const RED: [u8; 3] = [235, 55, 45];
+pub const YELLOW: [u8; 3] = [240, 200, 50];
 const LINE_GREEN: ([u8; 3], f32) = ([60, 240, 70], 70.0 / 255.0);
 const LINE_RED: ([u8; 3], f32) = ([240, 50, 40], 40.0 / 255.0);
+const LINE_YELLOW: ([u8; 3], f32) = ([245, 205, 50], 60.0 / 255.0);
 const FAINT: f32 = 0.25;
 const ALPHA_CUT: f64 = 0.12;
 const ALPHA_MAX: f64 = 0.8;
@@ -36,11 +38,34 @@ impl Frame {
 pub struct Layer<'a> {
     pub main: Vec<&'a Shot>,
     pub faint: Vec<&'a Shot>,
+    pub damage: bool,
 }
 
-fn density(f: &Frame, shots: &[&Shot], made: bool, weight: f32, acc: &mut [f32]) {
+impl Layer<'_> {
+    fn kinds(&self) -> impl Iterator<Item = Kind> + '_ {
+        Kind::ALL.into_iter().filter(|&k| self.damage || k != Kind::Weak)
+    }
+}
+
+pub fn color(k: Kind) -> [u8; 3] {
+    match k {
+        Kind::Died => RED,
+        Kind::Weak => YELLOW,
+        Kind::Made => GREEN,
+    }
+}
+
+fn line_color(k: Kind) -> ([u8; 3], f32) {
+    match k {
+        Kind::Died => LINE_RED,
+        Kind::Weak => LINE_YELLOW,
+        Kind::Made => LINE_GREEN,
+    }
+}
+
+fn density(f: &Frame, shots: &[&Shot], kind: Kind, damage: bool, weight: f32, acc: &mut [f32]) {
     let (w, h) = (f.w as i64, f.h as i64);
-    for s in shots.iter().filter(|s| s.made() == made) {
+    for s in shots.iter().filter(|s| s.kind(damage) == kind) {
         let (a, b) = (s.start(), s.end());
         let (ax, ay) = f.px(a.x, a.y);
         let (bx, by) = f.px(b.x, b.y);
@@ -69,10 +94,10 @@ fn percentile(v: &[f32], q: f64) -> f64 {
     a + (b - a) * fr
 }
 
-fn area_alpha(f: &Frame, layer: &Layer, sigma: f64, made: bool) -> Vec<f64> {
+fn area_alpha(f: &Frame, layer: &Layer, sigma: f64, kind: Kind) -> Vec<f64> {
     let mut acc = vec![0f32; (f.w * f.h) as usize];
-    density(f, &layer.main, made, 1.0, &mut acc);
-    density(f, &layer.faint, made, FAINT, &mut acc);
+    density(f, &layer.main, kind, layer.damage, 1.0, &mut acc);
+    density(f, &layer.faint, kind, layer.damage, FAINT, &mut acc);
     if sigma > 0.0 {
         crate::grid::blur(&mut acc, f.w as usize, f.h as usize, sigma);
     }
@@ -122,16 +147,16 @@ fn unpremultiply(acc: &[f64]) -> Vec<u8> {
 
 pub fn areas(base: &[u8], f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
     let mut out = base.to_vec();
-    for (made, col) in [(false, RED), (true, GREEN)] {
-        blend(&mut out, col, &area_alpha(f, layer, sigma, made));
+    for k in layer.kinds() {
+        blend(&mut out, color(k), &area_alpha(f, layer, sigma, k));
     }
     out
 }
 
 pub fn areas_rgba(f: &Frame, layer: &Layer, sigma: f64) -> Vec<u8> {
     let mut acc = vec![0f64; (f.w * f.h) as usize * 4];
-    for (made, col) in [(false, RED), (true, GREEN)] {
-        over(&mut acc, col, &area_alpha(f, layer, sigma, made));
+    for k in layer.kinds() {
+        over(&mut acc, color(k), &area_alpha(f, layer, sigma, k));
     }
     unpremultiply(&acc)
 }
@@ -164,10 +189,11 @@ fn raster(mask: &mut [bool], w: i64, h: i64, a: (f32, f32), b: (f32, f32)) {
 fn line_alphas(f: &Frame, layer: &Layer) -> Vec<([u8; 3], Vec<f64>)> {
     let (w, h) = (f.w as i64, f.h as i64);
     let mut out = Vec::new();
-    for (made, (col, alpha)) in [(false, LINE_RED), (true, LINE_GREEN)] {
+    for kind in layer.kinds() {
+        let (col, alpha) = line_color(kind);
         for (set, k) in [(&layer.faint, FAINT), (&layer.main, 1.0)] {
             let mut mask = vec![false; (w * h) as usize];
-            for s in set.iter().filter(|s| s.made() == made) {
+            for s in set.iter().filter(|s| s.kind(layer.damage) == kind) {
                 let (a, b) = (s.start(), s.end());
                 raster(&mut mask, w, h, f.px(a.x, a.y), f.px(b.x, b.y));
             }

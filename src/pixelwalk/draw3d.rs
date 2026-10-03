@@ -5,7 +5,7 @@ use crate::mesh::overlay::Splat;
 use crate::render::{MarkLine, Markers};
 
 pub const SEAM: [u8; 3] = [255, 40, 255];
-pub const SEAM_LAYER: u8 = 2;
+pub const SEAM_LAYER: u8 = 3;
 const HALF: f64 = 16.0;
 const GHOST_ALPHA: u8 = 70;
 const EDGE_PX: f64 = 1.5;

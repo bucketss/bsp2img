@@ -28,6 +28,26 @@ const DEATH_DZ: f64 = 160.0;
 const CORNER_PATH: f64 = 4.0;
 const CORNER_NORMAL: f64 = 8.0;
 const GRAZE: f64 = 0.01;
+pub const LETHAL_HEAD: u16 = 25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Kind {
+    Died,
+    Weak,
+    Made,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 3] = [Kind::Died, Kind::Weak, Kind::Made];
+
+    fn of(made: bool, damage: u16, by_damage: bool) -> Kind {
+        match (made, by_damage && damage < LETHAL_HEAD) {
+            (false, _) => Kind::Died,
+            (true, true) => Kind::Weak,
+            (true, false) => Kind::Made,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ShotOpts {
@@ -98,6 +118,12 @@ pub struct Crossing {
     pub path: f32,
 }
 
+impl Crossing {
+    pub fn kind(&self, by_damage: bool) -> Kind {
+        Kind::of(self.made, self.damage, by_damage)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Shot {
     pub shooter: u32,
@@ -131,6 +157,10 @@ impl Shot {
 
     pub fn damage(&self) -> u16 {
         self.crossings.last().map_or(0, |c| if c.made { c.damage } else { 0 })
+    }
+
+    pub fn kind(&self, by_damage: bool) -> Kind {
+        Kind::of(self.made(), self.damage(), by_damage)
     }
 }
 

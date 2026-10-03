@@ -121,7 +121,7 @@ impl App {
                 Job::Svg(o)
             }
             Exporter::Stl => Job::Stl(self.stl.clone()),
-            Exporter::Gltf => Job::Gltf(self.gltf.clone()),
+            Exporter::Gltf => Job::Gltf(self.gltf.clone(), self.bang_layers()),
             Exporter::Poster => {
                 let mut o = self.poster.clone();
                 o.pitch = self.iso.pitch;

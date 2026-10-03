@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use tiny_skia::Pixmap;
 
-use super::draw2d::{self, Frame, GREEN, Layer, RED};
-use super::shots::{self, Ctx, DUCK, STAND, Shot, ShotOpts, Spot};
+use super::draw2d::{self, Frame, GREEN, Layer, RED, YELLOW};
+use super::shots::{self, Ctx, DUCK, Kind, LETHAL_HEAD, STAND, Shot, ShotOpts, Spot};
 use super::texture::Materials;
 use super::{DrawBase, NAV_CELL, WallbangOpts, World};
 use crate::bsp::{Bsp, Engine};
@@ -114,6 +114,44 @@ fn csv_row(s: &Shot, spot: &Spot, pitch: f64, yaw: f64) -> String {
     r
 }
 
+#[allow(dead_code)]
+fn strongest(shots: &[Shot], spots: &[Spot], pitches: &[f64], yaws: &[f64]) -> Result<String> {
+    let mut txt = String::new();
+    writeln!(txt)?;
+    writeln!(txt, "strongest bangs, one per spot (unarmoured chest damage just past the last wall; x4 for a headshot):")?;
+    let mut best: BTreeMap<u32, &Shot> = BTreeMap::new();
+    for s in shots.iter().filter(|s| s.made()) {
+        let e = best.entry(s.shooter).or_insert(s);
+        if (s.damage(), s.path()) > (e.damage(), e.path()) {
+            *e = s;
+        }
+    }
+    let mut top: Vec<&Shot> = best.into_values().collect();
+    top.sort_by(|a, b| b.damage().cmp(&a.damage()).then(b.path().total_cmp(&a.path())).then(a.shooter.cmp(&b.shooter)));
+    for s in top.iter().take(25) {
+        let sp = &spots[s.shooter as usize];
+        let org = sp.origin();
+        let th: Vec<String> = s
+            .crossings
+            .iter()
+            .map(|c| format!("{:.0}u {}", c.path, if c.material == 0 { '-' } else { c.material as char }))
+            .collect();
+        writeln!(
+            txt,
+            "{:>4} dmg  {}  walls {}  setpos {:.1} {:.1} {:.1}; setang {} {} 0",
+            s.damage(),
+            if sp.stance == STAND { "stand" } else { "duck " },
+            th.join(" + "),
+            org.x,
+            org.y,
+            org.z,
+            pitches[s.pitch_idx as usize],
+            yaws[s.yaw_idx as usize]
+        )?;
+    }
+    Ok(txt)
+}
+
 pub struct Sim {
     pub world: World,
     pub spots: Vec<Spot>,
@@ -211,7 +249,12 @@ pub fn export_wallbang(
     let pitches = o.shots.pitches();
     let yaws = o.shots.yaws();
     let (pa, pb, ps) = o.shots.pitch;
-    let settings = format!("{}, pitch {pa}..{pb} step {ps}, yaw step {}", stances(&o.shots), o.shots.yaw_step);
+    let settings = format!(
+        "{}, pitch {pa}..{pb} step {ps}, yaw step {}{}",
+        stances(&o.shots),
+        o.shots.yaw_step,
+        if o.damage { ", damage colours" } else { "" }
+    );
     let pws = if o.pixelwalks {
         let po = crate::pixelwalk::present::PixelwalkOpts {
             finder: Default::default(),
@@ -231,7 +274,7 @@ pub fn export_wallbang(
     let mut files = Partial::default();
     for (bi, b) in bases.iter().enumerate() {
         rep.step(0.7 + 0.25 * bi as f32 / bases.len() as f32)?;
-        let mut layer = Layer { main: Vec::new(), faint: Vec::new() };
+        let mut layer = Layer { main: Vec::new(), faint: Vec::new(), damage: o.damage };
         for s in shots {
             if b.section.contains(spots[s.shooter as usize].feet.z) {
                 layer.main.push(s);
@@ -239,11 +282,16 @@ pub fn export_wallbang(
                 layer.faint.push(s);
             }
         }
-        let made = layer.main.iter().filter(|s| s.made()).count();
-        let legend = [
-            (GREEN, format!("made it through ({made})")),
-            (RED, format!("died in the wall ({})", layer.main.len() - made)),
-        ];
+        let count = |k: Kind| layer.main.iter().filter(|s| s.kind(o.damage) == k).count();
+        let legend = if o.damage {
+            vec![
+                (GREEN, format!("made it, a headshot kills ({})", count(Kind::Made))),
+                (YELLOW, format!("made it, under {LETHAL_HEAD} damage ({})", count(Kind::Weak))),
+                (RED, format!("died in the wall ({})", count(Kind::Died))),
+            ]
+        } else {
+            vec![(GREEN, format!("made it through ({})", count(Kind::Made))), (RED, format!("died in the wall ({})", count(Kind::Died)))]
+        };
         let mut styles = Vec::new();
         if o.areas {
             styles.push(("", "wallbang areas"));
@@ -318,38 +366,6 @@ pub fn export_wallbang(
     writeln!(txt, "second wall cut by filter{:>10}", c.cut)?;
     writeln!(txt, "made it through          {:>10}", c.made)?;
     writeln!(txt, "died in the wall         {:>10}", c.died)?;
-    writeln!(txt)?;
-    writeln!(txt, "strongest bangs, one per spot (unarmoured chest damage just past the last wall; x4 for a headshot):")?;
-    let mut best: BTreeMap<u32, &Shot> = BTreeMap::new();
-    for s in shots.iter().filter(|s| s.made()) {
-        let e = best.entry(s.shooter).or_insert(s);
-        if (s.damage(), s.path()) > (e.damage(), e.path()) {
-            *e = s;
-        }
-    }
-    let mut top: Vec<&Shot> = best.into_values().collect();
-    top.sort_by(|a, b| b.damage().cmp(&a.damage()).then(b.path().total_cmp(&a.path())).then(a.shooter.cmp(&b.shooter)));
-    for s in top.iter().take(25) {
-        let sp = &spots[s.shooter as usize];
-        let org = sp.origin();
-        let th: Vec<String> = s
-            .crossings
-            .iter()
-            .map(|c| format!("{:.0}u {}", c.path, if c.material == 0 { '-' } else { c.material as char }))
-            .collect();
-        writeln!(
-            txt,
-            "{:>4} dmg  {}  walls {}  setpos {:.1} {:.1} {:.1}; setang {} {} 0",
-            s.damage(),
-            if sp.stance == STAND { "stand" } else { "duck " },
-            th.join(" + "),
-            org.x,
-            org.y,
-            org.z,
-            pitches[s.pitch_idx as usize],
-            yaws[s.yaw_idx as usize]
-        )?;
-    }
     let f = free_name(out, &format!("{name}{cut_tag}_wallbang_{}", w.name), ".txt");
     files.add(f.clone());
     std::fs::write(&f, txt)?;

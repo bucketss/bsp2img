@@ -81,6 +81,7 @@ pub struct WallbangOpts {
     pub others_faint: bool,
     pub csv: bool,
     pub pixelwalks: bool,
+    pub damage: bool,
 }
 
 pub struct DrawBase {
@@ -282,6 +283,7 @@ mod tests {
             others_faint: false,
             csv: false,
             pixelwalks: false,
+            damage: false,
         }
     }
 

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -8,9 +9,9 @@ use rayon::prelude::*;
 use serde_json::{Value, json};
 
 use crate::clip::clip_tris_cuts;
-use crate::mesh::{Image, Mode, Vertex, unpack_rgb9e5};
+use crate::mesh::{Image, Mesh, Mode, Vertex, unpack_rgb9e5};
 use crate::paths::{Partial, free_name};
-use crate::render::Cuts;
+use crate::render::{Cuts, Markers};
 use crate::scene::{Report, Scene};
 
 const METRES: f64 = 0.0254;
@@ -21,6 +22,14 @@ const SUPER: usize = 2;
 const CHART_WASTE: f64 = 2.0;
 const CHART_SLACK: f64 = 16.0;
 const MAX_TEXEL_RAISE: f64 = 64.0;
+const DECAL_BIAS: f32 = 1.0;
+const PAINT_NODE: &str = "surface_paint";
+
+#[derive(Default)]
+pub struct Layers {
+    pub mesh: Option<Arc<Mesh>>,
+    pub nodes: Vec<(String, Markers)>,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lighting {
@@ -348,7 +357,11 @@ impl VertexLight {
     }
 }
 
-fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, vl: Option<VertexLight>) -> Vec<u8> {
+fn painted<'a>(ov: Option<&'a Image>, v: &[Vertex]) -> Option<&'a Image> {
+    ov.filter(|_| v.iter().all(|x| x.uv2 != [0.0; 2]))
+}
+
+fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, vl: Option<VertexLight>, ov: Option<&Image>) -> Vec<u8> {
     let (cw, ch) = (c.size.0 as usize, c.size.1 as usize);
     let local = |v: &Vertex| {
         let p = dv(v.pos);
@@ -417,7 +430,9 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, v
     for (k, px) in out.chunks_exact_mut(4).enumerate() {
         let (b, v) = &tris[owner[k] as usize];
         let (x, y) = ((k % cw) as f64, (k / cw) as f64);
+        let ov = painted(ov, v);
         let mut acc = [0.0f64; 4];
+        let mut oacc = [0.0f64; 4];
         for sy in 0..SUPER {
             for sx in 0..SUPER {
                 let p = DVec2::new(x + (sx as f64 + 0.5) / SUPER as f64, y + (sy as f64 + 0.5) / SUPER as f64);
@@ -437,9 +452,21 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, v
                     acc[i] += t[i] * part.tint[i] as f64 * l[i] / 255.0;
                 }
                 acc[3] += t[3];
+                if let Some(ov) = ov {
+                    let o = sample(ov, mix(|v| v.uv2), false, false);
+                    for i in 0..4 {
+                        oacc[i] += o[i];
+                    }
+                }
             }
         }
         let mut c = acc.map(|v| v / n / 255.0);
+        if ov.is_some() {
+            let o = oacc.map(|v| v / n / 255.0);
+            for i in 0..3 {
+                c[i] = c[i] * (1.0 - o[3]) + o[i];
+            }
+        }
         if part.mode == Mode::Additive {
             let m = c[0].max(c[1]).max(c[2]);
             if m > 1e-6 {
@@ -483,6 +510,7 @@ struct Doc {
     samplers: Vec<Value>,
     materials: Vec<Value>,
     prims: Vec<Value>,
+    nodes: Vec<(String, Vec<Value>)>,
 }
 
 impl Doc {
@@ -497,6 +525,7 @@ impl Doc {
             samplers: Vec::new(),
             materials: Vec::new(),
             prims: Vec::new(),
+            nodes: Vec::new(),
         })
     }
 
@@ -556,19 +585,26 @@ impl Doc {
         self.samplers.len() - 1
     }
 
-    fn glb(mut self, name: &str, unlit: bool, tmp: &Path, dest: &Path) -> Result<u64> {
+    fn glb(mut self, name: &str, tmp: &Path, dest: &Path) -> Result<u64> {
         use std::io::Write;
         let pad = (4 - self.len % 4) % 4;
         self.bin.write_all(&[0u8; 3][..pad])?;
         self.len += pad;
         self.bin.flush()?;
         drop(self.bin);
+        let unlit = self.materials.iter().any(|m| m.get("extensions").is_some());
+        let mut nodes = vec![json!({"name": name, "mesh": 0})];
+        let mut meshes = vec![json!({"name": name, "primitives": self.prims})];
+        for (n, prims) in self.nodes {
+            nodes.push(json!({"name": n, "mesh": meshes.len()}));
+            meshes.push(json!({"name": n, "primitives": prims}));
+        }
         let mut root = json!({
             "asset": {"version": "2.0", "generator": "bsp2img"},
             "scene": 0,
-            "scenes": [{"name": name, "nodes": [0]}],
-            "nodes": [{"name": name, "mesh": 0}],
-            "meshes": [{"name": name, "primitives": self.prims}],
+            "scenes": [{"name": name, "nodes": (0..nodes.len()).collect::<Vec<_>>()}],
+            "nodes": nodes,
+            "meshes": meshes,
             "materials": self.materials,
             "accessors": self.accessors,
             "bufferViews": self.views,
@@ -714,6 +750,8 @@ struct Mat {
     tint: [f32; 3],
     tex: Option<usize>,
     occlusion: Option<usize>,
+    unlit: bool,
+    two_sided: bool,
 }
 
 struct Prim<'a> {
@@ -732,11 +770,18 @@ impl Prim<'_> {
     }
 }
 
+struct Node<'a> {
+    name: String,
+    prims: Vec<Prim<'a>>,
+    marks: Option<(&'a Markers, usize)>,
+}
+
 struct Model<'a> {
     texs: Vec<Tex<'a>>,
     mats: Vec<Mat>,
     prims: Vec<Prim<'a>>,
     unlit: bool,
+    nodes: Vec<Node<'a>>,
 }
 
 fn write_glb(m: &Model, name: &str, nearest: bool, dest: &Path, rep: &mut Report) -> Result<u64> {
@@ -762,34 +807,91 @@ fn write_glb_inner(m: &Model, name: &str, nearest: bool, tmp: &Path, dest: &Path
         texs.push(doc.texture(t.img.get(), &t.name, s)?);
     }
     for mat in &m.mats {
-        let mut v = material(&mat.name, mat.mode, mat.alpha, mat.tint, mat.tex.map(|t| texs[t]), m.unlit);
+        let mut v = material(&mat.name, mat.mode, mat.alpha, mat.tint, mat.tex.map(|t| texs[t]), m.unlit || mat.unlit);
         if let Some(o) = mat.occlusion {
             v["occlusionTexture"] = json!({"index": texs[o], "texCoord": 1});
+        }
+        if mat.two_sided {
+            v["doubleSided"] = json!(true);
         }
         doc.materials.push(v);
     }
     let uv1 = m.mats.iter().any(|x| x.occlusion.is_some());
     for (i, p) in m.prims.iter().enumerate() {
         rep.step(0.8 + 0.1 * i as f32 / m.prims.len() as f32)?;
-        let ix = p.indexed(uv1);
-        if ix.idx.is_empty() {
+        if let Some(v) = prim_json(&mut doc, p, uv1)? {
+            doc.prims.push(v);
+        }
+    }
+    for n in &m.nodes {
+        let mut prims = Vec::new();
+        for p in &n.prims {
+            prims.extend(prim_json(&mut doc, p, uv1)?);
+        }
+        if let Some((mk, mat)) = n.marks {
+            prims.extend(marker_prims(&mut doc, mk, mat)?);
+        }
+        if !prims.is_empty() {
+            doc.nodes.push((n.name.clone(), prims));
+        }
+    }
+    doc.glb(name, tmp, dest)
+}
+
+fn prim_json(doc: &mut Doc, p: &Prim, uv1: bool) -> Result<Option<Value>> {
+    let ix = p.indexed(uv1);
+    if ix.idx.is_empty() {
+        return Ok(None);
+    }
+    let mut attrs = json!({
+        "POSITION": doc.floats(&ix.pos, 3, true)?,
+        "NORMAL": doc.floats(&ix.nrm, 3, false)?,
+        "TEXCOORD_0": doc.floats(&ix.t0, 2, false)?,
+    });
+    if uv1 {
+        attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false)?);
+    }
+    if p.color.is_some() {
+        attrs["COLOR_0"] = json!(doc.floats(&ix.col, 3, false)?);
+    }
+    let indices = doc.indices(&ix.idx)?;
+    Ok(Some(json!({"attributes": attrs, "indices": indices, "material": p.mat, "mode": 4})))
+}
+
+fn marker_prims(doc: &mut Doc, m: &Markers, mat: usize) -> Result<Vec<Value>> {
+    let lines: Vec<(DVec3, [u8; 4])> = m.lines.iter().flat_map(|l| [(l.a, l.color), (l.b, l.color)]).collect();
+    let mut out = Vec::new();
+    for (mode, pts) in [(4, &m.tris), (1, &lines)] {
+        if pts.is_empty() {
             continue;
         }
-        let mut attrs = json!({
-            "POSITION": doc.floats(&ix.pos, 3, true)?,
-            "NORMAL": doc.floats(&ix.nrm, 3, false)?,
-            "TEXCOORD_0": doc.floats(&ix.t0, 2, false)?,
-        });
-        if uv1 {
-            attrs["TEXCOORD_1"] = json!(doc.floats(&ix.t1, 2, false)?);
-        }
-        if p.color.is_some() {
-            attrs["COLOR_0"] = json!(doc.floats(&ix.col, 3, false)?);
-        }
-        let indices = doc.indices(&ix.idx)?;
-        doc.prims.push(json!({"attributes": attrs, "indices": indices, "material": p.mat, "mode": 4}));
+        let pos: Vec<f32> = pts.iter().flat_map(|(p, _)| to_gltf(*p)).collect();
+        let col: Vec<f32> = pts.iter().flat_map(|(_, c)| c.map(|v| v as f32 / 255.0)).collect();
+        let attrs = json!({"POSITION": doc.floats(&pos, 3, true)?, "COLOR_0": doc.floats(&col, 4, false)?});
+        out.push(json!({"attributes": attrs, "material": mat, "mode": mode}));
     }
-    doc.glb(name, m.unlit, tmp, dest)
+    Ok(out)
+}
+
+fn cut_marks(m: &Markers, cuts: &Cuts) -> Markers {
+    let inz = |p: DVec3| p.z >= cuts.zmin && p.z <= cuts.zmax;
+    Markers {
+        tris: m.tris.chunks_exact(3).filter(|t| t.iter().any(|q| inz(q.0))).flatten().copied().collect(),
+        lines: m.lines.iter().filter(|l| inz(l.a) || inz(l.b)).cloned().collect(),
+    }
+}
+
+fn straight(img: &Image) -> Image {
+    let rgba = img
+        .rgba
+        .chunks_exact(4)
+        .flat_map(|p| {
+            let a = p[3] as f64 / 255.0;
+            let c = |v: u8| if p[3] > 0 { (v as f64 / a).round().min(255.0) as u8 } else { 0 };
+            [c(p[0]), c(p[1]), c(p[2]), p[3]]
+        })
+        .collect();
+    Image { w: img.w, h: img.h, rgba }
 }
 
 fn file_safe(s: &str) -> String {
@@ -873,8 +975,10 @@ fn write_obj(m: &Model, obj: &Path, files: &mut Partial, rep: &mut Report) -> Re
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn export_gltf(
     scene: &Scene,
+    layers: Option<&Layers>,
     name: &str,
     cut_tag: &str,
     cuts: &Cuts,
@@ -890,7 +994,7 @@ pub fn export_gltf(
     }
     let t0 = Instant::now();
     rep.step(0.0)?;
-    let mesh = &scene.mesh;
+    let mesh = layers.and_then(|l| l.mesh.as_deref()).unwrap_or(&scene.mesh);
     let decoded: Vec<std::sync::OnceLock<Option<std::borrow::Cow<Image>>>> = mesh.textures.iter().map(|_| std::sync::OnceLock::new()).collect();
     let parts: Vec<Part> = mesh
         .batches
@@ -915,7 +1019,35 @@ pub fn export_gltf(
     let tex_name = |t: usize| {
         mesh.names.get(t).or(scene.bsp.miptex.get(t).map(|m| &m.name)).cloned().filter(|n| !n.is_empty()).unwrap_or_else(|| format!("tex{t}"))
     };
-    let mut model = Model { texs: Vec::new(), mats: Vec::new(), prims: Vec::new(), unlit: o.lighting == Lighting::Baked };
+    let ov = mesh.overlay.as_ref();
+    let decal: Vec<Vec<Vertex>> = match ov {
+        Some(_) if o.lighting != Lighting::Baked && !o.obj => parts
+            .iter()
+            .map(|p| {
+                p.verts
+                    .chunks_exact(3)
+                    .filter(|t| painted(ov, t).is_some())
+                    .flatten()
+                    .map(|v| Vertex { uv: v.uv2, bias: v.bias + DECAL_BIAS, ..*v })
+                    .collect()
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    if ov.is_some() {
+        rep.log(match (o.lighting, o.obj) {
+            (Lighting::Baked, _) => "  surface paint baked into the atlas".to_string(),
+            (_, false) => format!("  surface paint as a separate {PAINT_NODE} node"),
+            (_, true) => "  OBJ: the surface paint needs --lighting baked; left out".to_string(),
+        });
+    }
+    let marks: Vec<(String, Markers)> = layers
+        .map(|l| l.nodes.iter().map(|(n, m)| (n.clone(), cut_marks(m, cuts))).filter(|(_, m)| !m.is_empty()).collect())
+        .unwrap_or_default();
+    if o.obj && !marks.is_empty() {
+        rep.log(format!("  OBJ: {} left out (glTF only)", marks.iter().map(|m| m.0.as_str()).collect::<Vec<_>>().join(", ")));
+    }
+    let mut model = Model { texs: Vec::new(), mats: Vec::new(), prims: Vec::new(), unlit: o.lighting == Lighting::Baked, nodes: Vec::new() };
     let vl = matches!(scene.bsp.engine(), crate::bsp::Engine::Source(_)).then(|| VertexLight { curve: mesh.hdr.as_ref().map(|h| h.curve) });
     match o.lighting {
         Lighting::Baked => {
@@ -930,7 +1062,7 @@ pub fn export_gltf(
             ));
             rep.step(0.2)?;
             let baked: Vec<Vec<u8>> =
-                charts.par_iter().map(|c| bake_chart(c, &parts[c.part], &mesh.atlas, texel, o.nearest, vl)).collect();
+                charts.par_iter().map(|c| bake_chart(c, &parts[c.part], &mesh.atlas, texel, o.nearest, vl, ov)).collect();
             rep.step(0.6)?;
             let mut atlas = Image { w: aw, h: ah, rgba: vec![0u8; (aw * ah * 4) as usize] };
             let mut uvs: Vec<Vec<[f32; 2]>> = parts.iter().map(|p| vec![[0.0; 2]; p.verts.len()]).collect();
@@ -965,7 +1097,7 @@ pub fn export_gltf(
                         })
                     });
                     let m = *own.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits))).or_insert_with(|| {
-                        model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion: None });
+                        model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion: None, unlit: false, two_sided: false });
                         model.mats.len() - 1
                     });
                     model.prims.push(Prim { verts: &p.verts, uv: None, mat: m, color: vl });
@@ -973,7 +1105,7 @@ pub fn export_gltf(
                 }
                 let m = *mats.entry((p.mode, p.alpha.to_bits())).or_insert_with(|| {
                     let label = format!("{}_{:.0}", mode_key(p.mode), p.alpha * 255.0);
-                    model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tint: [1.0; 3], tex: Some(0), occlusion: None });
+                    model.mats.push(Mat { name: label, mode: p.mode, alpha: p.alpha, tint: [1.0; 3], tex: Some(0), occlusion: None, unlit: false, two_sided: false });
                     model.mats.len() - 1
                 });
                 model.prims.push(Prim { verts: &p.verts, uv: Some(uv), mat: m, color: None });
@@ -996,11 +1128,26 @@ pub fn export_gltf(
                 });
                 let m = *mats.entry((p.tex, p.mode, p.alpha.to_bits(), p.tint.map(f32::to_bits), color.is_some())).or_insert_with(|| {
                     let occlusion = if color.is_some() { None } else { lm };
-                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion });
+                    model.mats.push(Mat { name: tex_name(p.tex), mode: p.mode, alpha: p.alpha, tint: p.tint, tex: t, occlusion, unlit: false, two_sided: false });
                     model.mats.len() - 1
                 });
                 model.prims.push(Prim { verts: &p.verts, uv: None, mat: m, color });
             }
+        }
+    }
+    if let Some(ov) = ov.filter(|_| decal.iter().any(|d| !d.is_empty())) {
+        model.texs.push(Tex { name: PAINT_NODE.into(), img: Pixels::Owned(straight(ov)), repeat: false });
+        let tex = Some(model.texs.len() - 1);
+        model.mats.push(Mat { name: PAINT_NODE.into(), mode: Mode::Blend, alpha: 1.0, tint: [1.0; 3], tex, occlusion: None, unlit: true, two_sided: false });
+        let mat = model.mats.len() - 1;
+        let prims = decal.iter().filter(|d| !d.is_empty()).map(|d| Prim { verts: d, uv: None, mat, color: None }).collect();
+        model.nodes.push(Node { name: PAINT_NODE.into(), prims, marks: None });
+    }
+    if !o.obj && !marks.is_empty() {
+        model.mats.push(Mat { name: "markers".into(), mode: Mode::Blend, alpha: 1.0, tint: [1.0; 3], tex: None, occlusion: None, unlit: true, two_sided: true });
+        let mat = model.mats.len() - 1;
+        for (n, m) in &marks {
+            model.nodes.push(Node { name: n.clone(), prims: Vec::new(), marks: Some((m, mat)) });
         }
     }
     rep.step(0.8)?;
@@ -1019,8 +1166,13 @@ pub fn export_gltf(
         (f, size)
     };
     let _ = rep.step(1.0);
+    let extra = if o.obj || model.nodes.is_empty() {
+        String::new()
+    } else {
+        format!(", nodes: {}", model.nodes.iter().map(|n| n.name.as_str()).collect::<Vec<_>>().join(", "))
+    };
     rep.log(format!(
-        "  {} {:.1} MB, {} parts, {mats} materials, {imgs} images ({:.1}s)",
+        "  {} {:.1} MB, {} parts, {mats} materials, {imgs} images{extra} ({:.1}s)",
         f.display(),
         bytes as f64 / 1048576.0,
         model.prims.len(),
