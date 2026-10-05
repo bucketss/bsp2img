@@ -860,7 +860,8 @@ fn model_exports(
     let layers = crate::gltf::Layers { mesh: None, nodes };
     for (on, obj) in [(gltf, false), (obj, true)] {
         if on {
-            let o = GltfOpts { obj, ..Default::default() };
+            let lighting = if scene.bsp.modern() && !obj { Lighting::Separate } else { Lighting::Baked };
+            let o = GltfOpts { obj, lighting, ..Default::default() };
             reported(|rep| export_gltf(scene, Some(&layers), stem, "", cuts, &o, out, rep))?;
         }
     }

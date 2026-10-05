@@ -4,6 +4,7 @@ use glam::DVec3;
 
 use super::draw2d::color;
 use super::export::Sim;
+use super::World;
 use super::shots::{Kind, Shot};
 use crate::mesh::overlay::{SIGMA, Splat};
 use crate::render::{MarkLine, Markers};
@@ -19,6 +20,7 @@ const PATH_ALPHA: u8 = 200;
 const PATH_PX: f64 = 1.0;
 const PATH_PX_PER_DOUBLING: f64 = 0.75;
 const PATH_PX_MAX: f64 = 6.0;
+const SNAP: f64 = 8.0;
 
 pub fn layer(k: Kind) -> u8 {
     match k {
@@ -29,14 +31,16 @@ pub fn layer(k: Kind) -> u8 {
 }
 
 pub fn splats(sim: &Sim, damage: bool) -> Vec<Splat> {
+    let cs2 = matches!(sim.base.world, World::Cs2(_));
+    let snap = if cs2 { SNAP } else { 0.0 };
     let mut out = Vec::with_capacity(sim.shots.len() * 2);
     for s in &sim.shots {
         let dir = s.dir();
         for c in s.crossings() {
             let layer = layer(c.kind(damage));
-            let model = Some(c.model as u32);
-            out.push(Splat { p: c.entry(), facing: Some(dir), model, layer, sigma: SIGMA });
-            out.push(Splat { p: s.exit(c), facing: Some(-dir), model, layer, sigma: SIGMA });
+            let model = (!cs2).then_some(c.model as u32);
+            out.push(Splat { p: c.entry(), facing: Some(dir), model, layer, sigma: SIGMA, snap });
+            out.push(Splat { p: s.exit(c), facing: Some(-dir), model, layer, sigma: SIGMA, snap });
         }
     }
     out
