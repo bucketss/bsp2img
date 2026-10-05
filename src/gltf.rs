@@ -358,7 +358,7 @@ impl VertexLight {
 }
 
 fn painted<'a>(ov: Option<&'a Image>, v: &[Vertex]) -> Option<&'a Image> {
-    ov.filter(|_| v.iter().all(|x| crate::mesh::overlay::painted(x.uv2)))
+    ov.filter(|_| v.iter().all(|x| crate::mesh::overlay::painted(x.ov)))
 }
 
 fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, vl: Option<VertexLight>, ov: Option<&Image>) -> Vec<u8> {
@@ -453,7 +453,7 @@ fn bake_chart(c: &Chart, part: &Part, lmap: &Image, texel: f64, nearest: bool, v
                 }
                 acc[3] += t[3];
                 if let Some(ov) = ov {
-                    let o = sample(ov, mix(|v| v.uv2), false, false);
+                    let o = sample(ov, mix(|v| v.ov), false, false);
                     for i in 0..4 {
                         oacc[i] += o[i];
                     }
@@ -1028,7 +1028,7 @@ pub fn export_gltf(
                     .chunks_exact(3)
                     .filter(|t| painted(ov, t).is_some())
                     .flatten()
-                    .map(|v| Vertex { uv: v.uv2, bias: v.bias + DECAL_BIAS, ..*v })
+                    .map(|v| Vertex { uv: v.ov, bias: v.bias + DECAL_BIAS, ..*v })
                     .collect()
             })
             .collect(),

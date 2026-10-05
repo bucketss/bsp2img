@@ -81,6 +81,7 @@ struct VOut {
     @location(7) paint: vec4<f32>,
     @location(8) vlight: vec4<f32>,
     @location(9) mask: vec4<f32>,
+    @location(10) ov: vec2<f32>,
 };
 
 fn unpack9e5(v: u32) -> vec3<f32> {
@@ -112,7 +113,7 @@ fn vs_pos(@location(0) pos: vec3<f32>) -> POut {
 
 @vertex
 fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) uv2: vec2<f32>, @location(3) lm: vec2<f32>, @location(4) nb: u32,
-      @location(5) blend: vec4<f32>, @location(6) paint: vec4<f32>, @location(7) vlight: u32, @location(8) mask: vec4<f32>) -> VOut {
+      @location(5) blend: vec4<f32>, @location(6) paint: vec4<f32>, @location(7) vlight: u32, @location(8) mask: vec4<f32>, @location(9) ov: vec2<f32>) -> VOut {
     var o: VOut;
     let nbv = unpack_nb(nb);
     let normal = nbv.xyz;
@@ -138,6 +139,7 @@ fn vs(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) uv2:
         o.vlight = vec4<f32>(unpack9e5(vlight), 1.0);
     }
     o.mask = mask;
+    o.ov = ov;
     return o;
 }
 
@@ -350,7 +352,7 @@ fn shade(i: VOut, front: bool) -> vec4<f32> {
     if (lu.shadow0.w > 0.0 && lu.dir.w > 0.0 && !unlit) {
         t = vec4<f32>(mix(t.rgb, pow(max(t.rgb, vec3<f32>(0.0)), vec3<f32>(lu.shadow0.w)), clamp(lu.dir.w, 0.0, 1.0)), t.a);
     }
-    let ov = textureSampleLevel(ovl, lsamp, i.uv2, 0.0);
+    let ov = textureSampleLevel(ovl, lsamp, i.ov, 0.0);
     let c = t.rgb * tint * lr * (1.0 - ov.a) + ov.rgb;
     var a = 1.0;
     if (mode >= 2) {

@@ -17,8 +17,8 @@ const NORM_PCT: f64 = 0.6;
 const NORM_FLOOR: f32 = 1e-3;
 pub const UNPAINTED: [f32; 2] = [0.0, 0.0];
 
-pub fn painted(uv2: [f32; 2]) -> bool {
-    uv2 != UNPAINTED
+pub fn painted(ov: [f32; 2]) -> bool {
+    ov != UNPAINTED
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -297,7 +297,7 @@ pub fn paint(mesh: &mut Mesh, splats: &[Splat], colors: &[[u8; 3]], max_dim: u32
         let b = &mut mesh.batches[span.batch as usize];
         for v in &mut b.verts[span.first as usize..(span.first + span.count) as usize] {
             let q = f.to2(DVec3::new(v.pos[0] as f64, v.pos[1] as f64, v.pos[2] as f64));
-            v.uv2 = [
+            v.ov = [
                 ((px as f64 + 0.5 + (q.x - f.lo.x) / texel) / aw as f64) as f32,
                 ((py as f64 + 0.5 + (q.y - f.lo.y) / texel) / ah as f64) as f32,
             ];
