@@ -1,9 +1,12 @@
+pub mod cache;
+pub mod cs2;
 pub mod draw2d;
 pub mod draw3d;
 pub mod export;
 pub mod hull0;
 pub mod shots;
 pub mod sim;
+pub mod sim_s2;
 pub mod texture;
 
 use std::collections::BTreeMap;
@@ -12,6 +15,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 
 use crate::bsp::Bsp;
+use crate::nav::Stance;
 use crate::grid::Backdrop;
 use crate::radar::{Section, Split};
 use crate::scene::Report;
@@ -40,14 +44,8 @@ pub fn overview_bases(bsp: &Bsp, dirs: &[PathBuf], size: u32, secs: &[Section], 
     let (w, h) = ((img.width() as f64 * s).round() as u32, (img.height() as f64 * s).round() as u32);
     let img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
     let mut px = img.into_raw();
-    for p in px.chunks_exact_mut(4) {
-        let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
-        for c in &mut p[..3] {
-            *c = ((*c as f64 * 0.4 + l * 0.6) * 0.75) as u8;
-        }
-        p[3] = 255;
-    }
-    let k = ov.zoom / 8.0 * (w as f64 / 1024.0);
+    dim(&mut px);
+    let k =ov.zoom / 8.0 * (w as f64 / 1024.0);
     let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
     let (ox, oy) = (ov.origin[0], ov.origin[1]);
     let m = if ov.rotated != 0 { [k, 0.0, cx - ox * k, 0.0, -k, cy + oy * k] } else { [0.0, -k, cx + oy * k, -k, 0.0, cy + ox * k] };
@@ -65,7 +63,51 @@ pub fn overview_bases(bsp: &Bsp, dirs: &[PathBuf], size: u32, secs: &[Section], 
         .collect())
 }
 
+fn dim(px: &mut [u8]) {
+    for p in px.chunks_exact_mut(4) {
+        let l = 0.3 * p[0] as f64 + 0.59 * p[1] as f64 + 0.11 * p[2] as f64;
+        for c in &mut p[..3] {
+            *c = ((*c as f64 * 0.4 + l * 0.6) * 0.75) as u8;
+        }
+        p[3] = 255;
+    }
+}
+
+pub fn radar_bases(bsp: &Bsp, size: u32, secs: &[Section], rep: &mut Report) -> Result<Vec<DrawBase>> {
+    let Some(x) = &bsp.extra else { return Ok(Vec::new()) };
+    let Some(o) = &x.radar else { return Ok(Vec::new()) };
+    let map = bsp.name().to_lowercase();
+    let one = secs.len() == 1;
+    let mut out = Vec::new();
+    for sec in secs {
+        let (found, f) = match x.radar_image(&map, &sec.name, 4096)? {
+            Some(v) => (Some(v), sec.frame.unwrap_or(o.frame)),
+            None => (x.radar_image(&map, crate::radar::DEFAULT, 4096)?, o.frame),
+        };
+        let Some((n, im)) = found else { continue };
+        let img = image::RgbaImage::from_raw(im.w as u32, im.h as u32, im.rgba).context("radar image size")?;
+        let mut px = image::imageops::resize(&img, size, size, image::imageops::FilterType::Triangle).into_raw();
+        for p in px.chunks_exact_mut(4) {
+            let a = p[3] as f64 / 255.0;
+            for c in &mut p[..3] {
+                *c = (*c as f64 * a + 0x1c as f64 * (1.0 - a)) as u8;
+            }
+        }
+        dim(&mut px);
+        rep.log(format!("  backdrop {}: {n}", sec.name));
+        out.push(DrawBase {
+            tag: if one || sec.name.eq_ignore_ascii_case(crate::radar::DEFAULT) { String::new() } else { format!("_{}", sec.name) },
+            title: if one { String::new() } else { format!(" {} ({})", sec.name, sec.range()) },
+            frame: Frame::from_grid(&crate::grid::radar_frame(&f, size)),
+            px,
+            section: sec.clone(),
+        });
+    }
+    Ok(out)
+}
+
 pub const NAV_CELL: f64 = 8.0;
+pub const NAV_STEP: f64 = 250.0;
 
 #[derive(Clone, Debug)]
 pub struct WallbangOpts {
@@ -82,6 +124,7 @@ pub struct WallbangOpts {
     pub csv: bool,
     pub pixelwalks: bool,
     pub damage: bool,
+    pub cache: Option<PathBuf>,
 }
 
 pub struct DrawBase {
@@ -108,7 +151,7 @@ pub struct Placed {
     pub bsp: bool,
 }
 
-pub struct World {
+pub struct Gold {
     pub hull: Hull0,
     pub tex: Textures,
     pub world_head: i32,
@@ -152,11 +195,11 @@ fn parse_v3(s: Option<&str>) -> V3 {
     out
 }
 
-impl World {
-    pub fn new(bsp: &Bsp, mats: &Materials, eo: Option<EntOpts>) -> World {
+impl Gold {
+    pub fn new(bsp: &Bsp, mats: &Materials, eo: Option<EntOpts>) -> Gold {
         let tex = Textures::new(bsp);
         let mat = tex.names().map(|n| mats.material(n)).collect();
-        let mut w = World {
+        let mut w = Gold {
             hull: Hull0::new(bsp),
             tex,
             world_head: bsp.models[0].headnode[0],
@@ -259,6 +302,27 @@ impl World {
     }
 }
 
+pub enum World {
+    Gold(Gold),
+    Cs2(cs2::Cs2),
+}
+
+impl World {
+    pub fn eye(&self, stance: Stance) -> f64 {
+        match self {
+            World::Gold(_) => stance.eye(),
+            World::Cs2(_) => cs2::Cs2::eye(stance),
+        }
+    }
+
+    pub fn kind(&self) -> u8 {
+        match self {
+            World::Gold(_) => 0,
+            World::Cs2(_) => 1,
+        }
+    }
+}
+
 pub fn sub(a: &V3, b: &V3) -> V3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -306,6 +370,7 @@ mod tests {
             csv: false,
             pixelwalks: false,
             damage: false,
+            cache: None,
         }
     }
 
@@ -420,7 +485,7 @@ mod tests {
     fn exits_in_solid() {
         let (Ok(csv), Ok(map)) = (std::env::var("WALLBANG_CSV"), std::env::var("WALLBANG_BSP")) else { return };
         let bsp = Bsp::load(Path::new(&map)).unwrap();
-        let world = World::new(&bsp, &Materials::empty(), Some(EntOpts::default()));
+        let world = Gold::new(&bsp, &Materials::empty(), Some(EntOpts::default()));
         let text = std::fs::read_to_string(csv).unwrap();
         let (mut made, mut solid) = (0usize, 0usize);
         for line in text.lines().skip(1) {
@@ -518,7 +583,7 @@ mod tests {
             }
             let bsp = Bsp::load(path).unwrap();
             let mats = Materials::locate(path, &[]).map(|p| Materials::load(&p).unwrap()).unwrap_or_else(Materials::empty);
-            let world = World::new(&bsp, &mats, None);
+            let world = Gold::new(&bsp, &mats, None);
             for wname in ["ak47", "awp", "m4a1", "deagle", "scout"] {
                 let Ok(shots) = std::fs::read(dir.join(format!("{name}_{wname}_shots.bin"))) else { continue };
                 let res = std::fs::read(dir.join(format!("{name}_{wname}.bin"))).unwrap();

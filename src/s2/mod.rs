@@ -1,4 +1,5 @@
 pub mod buf;
+pub mod bullet;
 pub mod entities;
 pub mod kv3;
 pub mod light;
@@ -11,6 +12,7 @@ pub mod probe;
 pub mod radar;
 pub mod resource;
 pub mod sky;
+pub mod surfprop;
 pub mod texture;
 pub mod vpk;
 pub mod world;

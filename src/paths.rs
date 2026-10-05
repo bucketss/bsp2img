@@ -7,6 +7,23 @@ use std::time::SystemTime;
 use anyhow::{Result, bail};
 use rayon::prelude::*;
 
+#[cfg(windows)]
+fn cfg_dir() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn cfg_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+}
+
+pub fn app_dir() -> Option<PathBuf> {
+    cfg_dir().map(|d| d.join("bsp2img"))
+}
+
 pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
     let p = Path::new(arg);
     if p.is_file() {

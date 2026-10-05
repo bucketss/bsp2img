@@ -6,8 +6,9 @@ use glam::{DVec3, Vec3};
 use rayon::prelude::*;
 
 use super::hull0::CONTENTS_SOLID;
+use super::cs2::Cs2;
 use super::sim::{self, IT_HIT, Iter, Weapon};
-use super::{World, dv, v3};
+use super::{Gold, World, dv, v3};
 use crate::nav::{Nav, STAND_OFS, Stance};
 
 const LEVEL_GAP: f32 = 72.0;
@@ -27,7 +28,7 @@ const CORNER_NORMAL: f64 = 8.0;
 const GRAZE: f64 = 0.01;
 const EXIT_PAD: f64 = 0.1;
 const EXIT_HOPS: usize = 8;
-const MAX_WALLS: usize = 2;
+pub const MAX_WALLS: usize = 2;
 pub const MAX_PITCHES: usize = 256;
 pub const MAX_YAWS: usize = 65536;
 pub const LETHAL_HEAD: u16 = 25;
@@ -107,8 +108,8 @@ pub struct Spot {
 }
 
 impl Spot {
-    pub fn eye(&self) -> DVec3 {
-        self.feet + DVec3::Z * self.stance.eye()
+    pub fn eye(&self, w: &World) -> DVec3 {
+        self.feet + DVec3::Z * w.eye(self.stance)
     }
 
     pub fn origin(&self) -> DVec3 {
@@ -150,8 +151,8 @@ pub struct Shot {
     pub yaw_idx: u16,
     pub pitch_idx: u8,
     pub stance: Stance,
-    walls: u8,
-    cross: [Crossing; MAX_WALLS],
+    pub(super) walls: u8,
+    pub(super) cross: [Crossing; MAX_WALLS],
 }
 
 impl Shot {
@@ -258,6 +259,7 @@ pub struct Ctx<'a> {
     pub reach: &'a [bool],
     pub opts: &'a ShotOpts,
     pub stop: Option<&'a AtomicBool>,
+    cs2_weapon: Option<&'a crate::s2::surfprop::Weapon>,
 }
 
 #[derive(Clone, Copy)]
@@ -281,29 +283,49 @@ struct Geom {
     normal_thick: f64,
 }
 
-impl Ctx<'_> {
-    fn model_ref(&self, model: u16) -> (i32, DVec3) {
-        let (head, o) = self.world.model_ref(model as usize);
-        (head, dv(&o))
-    }
+fn model_ref(g: &Gold, model: u16) -> (i32, DVec3) {
+    let (head, o) = g.model_ref(model as usize);
+    (head, dv(&o))
+}
 
+impl<'a> Ctx<'a> {
+    pub fn new(world: &'a World, nav: &'a Nav, reach: &'a [bool], opts: &'a ShotOpts, stop: Option<&'a AtomicBool>) -> Ctx<'a> {
+        let cs2_weapon = match world {
+            World::Cs2(w) => w.weapon(opts.weapon.name),
+            World::Gold(_) => None,
+        };
+        Ctx { world, nav, reach, opts, stop, cs2_weapon }
+    }
+}
+
+impl Ctx<'_> {
     fn open_dist(&self, model: u16, p: DVec3, d: DVec3, cap: f64) -> Option<f64> {
-        let (head, o) = self.model_ref(model);
-        self.world.hull.first_open(head, p - o, p - o + d * cap).map(|f| f * cap)
+        match self.world {
+            World::Gold(g) => {
+                let (head, o) = model_ref(g, model);
+                g.hull.first_open(head, p - o, p - o + d * cap).map(|f| f * cap)
+            }
+            World::Cs2(w) => w.open_dist(p, d, cap),
+        }
     }
 
     fn solid_at(&self, model: u16, p: DVec3) -> bool {
-        let (head, o) = self.model_ref(model);
-        self.world.hull.contents64(head, p - o) == CONTENTS_SOLID
+        match self.world {
+            World::Gold(g) => {
+                let (head, o) = model_ref(g, model);
+                g.hull.contents64(head, p - o) == CONTENTS_SOLID
+            }
+            World::Cs2(w) => w.solid_at(p, CAP),
+        }
     }
 
     fn solid_other(&self, model: u16, p: DVec3) -> Option<u16> {
+        let World::Gold(g) = self.world else { return None };
         if model != 0 && self.solid_at(0, p) {
             return Some(0);
         }
         let q = v3(p);
-        self.world
-            .ents
+        g.ents
             .iter()
             .filter(|e| e.model != model as usize && (0..3).all(|i| q[i] >= e.mins[i] && q[i] <= e.maxs[i]))
             .map(|e| e.model as u16)
@@ -321,8 +343,13 @@ impl Ctx<'_> {
     }
 
     fn trace_frac(&self, a: DVec3, b: DVec3) -> (f32, DVec3, bool) {
-        let (t, _) = self.world.trace(&v3(a), &v3(b), true);
-        (t.fraction, dv(&t.endpos), t.startsolid)
+        match self.world {
+            World::Gold(g) => {
+                let (t, _) = g.trace(&v3(a), &v3(b), true);
+                (t.fraction, dv(&t.endpos), t.startsolid)
+            }
+            World::Cs2(w) => w.trace(a, b),
+        }
     }
 
     fn nodes_near(&self, p: DVec3, r: f64) -> impl Iterator<Item = usize> + '_ {
@@ -426,16 +453,7 @@ impl Ctx<'_> {
             }
         }
         let Some(d) = death else {
-            let (fr, _, _) = self.trace_frac(g.exit, g.exit + dir * BEHIND);
-            let room = fr as f64 * BEHIND;
-            let mut t = 8.0;
-            while t < room {
-                if self.playable(g.exit + dir * t) {
-                    return Ok(());
-                }
-                t += 16.0;
-            }
-            return Err(Drop::Behind);
+            return if self.playable_behind(g.exit, dir) { Ok(()) } else { Err(Drop::Behind) };
         };
         if !self.in_play(d) {
             return Err(Drop::Void);
@@ -474,22 +492,105 @@ impl Ctx<'_> {
         })
     }
 
+    fn playable_behind(&self, exit: DVec3, dir: DVec3) -> bool {
+        let (fr, _, _) = self.trace_frac(exit, exit + dir * BEHIND);
+        let room = fr as f64 * BEHIND;
+        let mut t = 8.0;
+        while t < room {
+            if self.playable(exit + dir * t) {
+                return true;
+            }
+            t += 16.0;
+        }
+        false
+    }
+
+    fn wall_geom(&self, hp: DVec3, n: DVec3, path: f64, dir: DVec3) -> Result<Geom, Drop> {
+        let mut n = n;
+        if n.length_squared() < 0.5 {
+            n = -dir;
+        }
+        let mut dn = dir.dot(n);
+        if dn > 0.0 {
+            n = -n;
+            dn = -dn;
+        }
+        if -dn < GRAZE {
+            return Err(Drop::Graze);
+        }
+        let exit = hp + dir * (path + EXIT_PAD);
+        let q = hp - n * 0.5;
+        let normal_thick = self.open_dist(0, q, -n, CAP).map_or(CAP, |t| t + 0.5);
+        Ok(Geom { hp, n, q, path, exit, normal_thick })
+    }
+
+    fn walls_cs2(&self, w: &Cs2, eye: DVec3, dir: DVec3, shot: &mut Shot, c: &mut Counts) -> Option<()> {
+        let wp = self.cs2_weapon?;
+        let start = eye.as_vec3();
+        let ray = super::sim_s2::trace_ray(&w.bullet, start, start + dir.as_vec3() * wp.range)?;
+        let (out, _) = super::sim_s2::handle(&w.bullet, &ray, wp.damage, wp.range_mod, wp.pen);
+        let first = ray.segs.iter().find(|s| s.solid)?;
+        let l = super::sim_s2::length(ray.delta) as f64;
+        c.hits += 1;
+        if first.t0 as f64 * l > self.opts.max_hit {
+            c.far += 1;
+            return None;
+        }
+        let (origin, delta) = (ray.start.as_dvec3(), ray.delta.as_dvec3());
+        let mut k = 0;
+        for (s, o) in ray.segs.iter().zip(&out).filter(|(s, _)| s.solid) {
+            if k == MAX_WALLS {
+                break;
+            }
+            k += 1;
+            let made = o.damage >= 1.0 && s.t1 < 1.0;
+            let x = &ray.xs[s.a];
+            let hp = origin + delta * s.t0 as f64;
+            let run = (s.t1 - s.t0).max(0.0) as f64 * l;
+            let r = if s.t1 < 1.0 { Ok(run) } else { self.open_dist(0, hp + dir * EXIT_PAD, dir, CAP).map(|t| t + EXIT_PAD).ok_or(Drop::NoExit) };
+            let r = r.and_then(|path| self.wall_geom(hp, x.normal.as_dvec3(), path, dir)).and_then(|g| {
+                if !made && !self.playable_behind(g.exit, dir) {
+                    return Err(Drop::Behind);
+                }
+                self.filters(&g, 0, (!made).then_some(hp), dir)?;
+                Ok(g)
+            });
+            match r {
+                Ok(g) => {
+                    shot.cross[shot.walls as usize] = Crossing {
+                        entry: hp.as_vec3(),
+                        entry_face: -1,
+                        thickness: g.normal_thick as f32,
+                        path: g.path as f32,
+                        death_at: 0.0,
+                        model: 0,
+                        damage: if made { o.damage as u16 } else { 0 },
+                        material: w.bullet.surf(x.surf).mat,
+                        made,
+                    };
+                    shot.walls += 1;
+                    if !made {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    *c.slot(e) += 1;
+                    if k > 1 {
+                        c.cut += 1;
+                    }
+                    break;
+                }
+            }
+        }
+        Some(())
+    }
+
     fn shoot(&self, si: u32, spot: &Spot, (pi, pitch): (usize, f64), (yi, yaw): (usize, f64), c: &mut Counts) -> Option<Shot> {
         let (p, y) = (pitch.to_radians(), yaw.to_radians());
         let d32 = v3(DVec3::new(p.cos() * y.cos(), p.cos() * y.sin(), -p.sin()));
         let dir = dv(&d32);
-        let eye = v3(spot.eye());
+        let eye = spot.eye(self.world);
         c.fired += 1;
-        let f = sim::fire(self.world, self.opts.weapon, &eye, &d32, true, false);
-        let w = self.opts.weapon;
-        if f.it[0].flags & IT_HIT == 0 {
-            return None;
-        }
-        c.hits += 1;
-        if f.it[0].fraction as f64 * w.distance as f64 > self.opts.max_hit {
-            c.far += 1;
-            return None;
-        }
         let mut shot = Shot {
             dir: dir.as_vec3(),
             shooter: si,
@@ -499,6 +600,32 @@ impl Ctx<'_> {
             walls: 0,
             cross: [Crossing::default(); MAX_WALLS],
         };
+        match self.world {
+            World::Gold(g) => self.walls_gold(g, v3(eye), &d32, dir, &mut shot, c)?,
+            World::Cs2(w) => self.walls_cs2(w, eye, dir, &mut shot, c)?,
+        }
+        if shot.walls == 0 {
+            return None;
+        }
+        if shot.made() {
+            c.made += 1;
+        } else {
+            c.died += 1;
+        }
+        Some(shot)
+    }
+
+    fn walls_gold(&self, g: &Gold, eye: [f32; 3], d32: &[f32; 3], dir: DVec3, shot: &mut Shot, c: &mut Counts) -> Option<()> {
+        let w = self.opts.weapon;
+        let f = sim::fire(g, w, &eye, d32, true, false);
+        if f.it[0].flags & IT_HIT == 0 {
+            return None;
+        }
+        c.hits += 1;
+        if f.it[0].fraction as f64 * w.distance as f64 > self.opts.max_hit {
+            c.far += 1;
+            return None;
+        }
         let walls = ((w.penetration - 1).max(0) as usize).min(MAX_WALLS);
         for k in 1..=walls {
             if f.it[k - 1].flags & IT_HIT == 0 || f.n <= k {
@@ -521,15 +648,7 @@ impl Ctx<'_> {
                 }
             }
         }
-        if shot.walls == 0 {
-            return None;
-        }
-        if shot.made() {
-            c.made += 1;
-        } else {
-            c.died += 1;
-        }
-        Some(shot)
+        Some(())
     }
 }
 

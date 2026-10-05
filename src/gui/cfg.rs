@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use super::{App, Exporter, Tab};
+use crate::wallbang::cache::CacheLoc;
 use crate::camera::Camera;
 use crate::explode::ExplodeOpts;
 use crate::export::{IsoOpts, OverviewOpts};
@@ -17,21 +18,8 @@ use crate::svg::SvgOpts;
 use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
 
-#[cfg(windows)]
-fn cfg_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(PathBuf::from)
-}
-
-#[cfg(not(windows))]
-fn cfg_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-}
-
 fn cfg_path() -> Option<PathBuf> {
-    cfg_dir().map(|d| d.join("bsp2img").join("gui.cfg"))
+    crate::paths::app_dir().map(|d| d.join("gui.cfg"))
 }
 
 pub trait Cfg {
@@ -540,6 +528,8 @@ impl App {
             format!("bang_paint={}", self.bang.paint),
             format!("bang_damage={}", self.bang.damage),
             format!("bang_paths={}", self.bang.paths),
+            format!("cache={}", self.cache_kind),
+            format!("cache_dir={}", self.cache_custom),
         ];
         lines.extend(self.recent.iter().map(|r| format!("recent={r}")));
         let sections: [(&str, &dyn Cfg); 16] = [
@@ -613,6 +603,8 @@ impl App {
                     "bang_paint" => put(&mut self.bang.paint, v),
                     "bang_damage" => put(&mut self.bang.damage, v),
                     "bang_paths" => put(&mut self.bang.paths, v),
+                    "cache" => self.cache_kind = CacheLoc::from_kv(v, "").key().into(),
+                    "cache_dir" => self.cache_custom = v.to_string(),
                     "recent" if !v.is_empty() && self.recent.len() < super::RECENT_MAX => self.recent.push(v.to_string()),
                     _ => {}
                 },

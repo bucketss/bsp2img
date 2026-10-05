@@ -582,6 +582,7 @@ dependencies = [
  "epaint_default_fonts",
  "fast-surface-nets",
  "fast_image_resize",
+ "flate2",
  "gif",
  "glam 0.33.8",
  "image",

@@ -1,5 +1,5 @@
 use super::hull0::V3;
-use super::{World, add};
+use super::{Gold, add};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Weapon {
@@ -97,7 +97,7 @@ fn falloff(a: f32, b: f32) -> f64 {
     f64::from(a).powf(f64::from(b))
 }
 
-pub fn fire(world: &World, w: &Weapon, src: &V3, dir: &V3, ents: bool, record: bool) -> Fired {
+pub fn fire(world: &Gold, w: &Weapon, src: &V3, dir: &V3, ents: bool, record: bool) -> Fired {
     let mut out = Fired::default();
     let mut src = *src;
     let mut dist = w.distance;

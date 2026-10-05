@@ -3,6 +3,7 @@ mod cfg;
 mod export_ui;
 mod jobs;
 mod preview;
+mod settings;
 mod tabs;
 
 use std::path::{Path, PathBuf};
@@ -31,6 +32,7 @@ use crate::spin::{AnimOpts, DayOpts, PeelOpts, SliceOpts};
 use crate::svg::SvgOpts;
 use crate::stl::StlOpts;
 use crate::timing::TimingOpts;
+use crate::wallbang::cache::CacheLoc;
 
 use export_ui::Exporter;
 use jobs::Running;
@@ -209,6 +211,9 @@ struct App {
     last_out: Option<PathBuf>,
     cfg_saved: String,
     bang: bang::Bang,
+    settings_open: bool,
+    cache_kind: String,
+    cache_custom: String,
 }
 
 impl App {
@@ -298,6 +303,9 @@ impl App {
             last_out: None,
             cfg_saved: String::new(),
             bang: bang::Bang::default(),
+            settings_open: false,
+            cache_kind: CacheLoc::Program.key().into(),
+            cache_custom: String::new(),
         };
         app.load_cfg();
         app.refresh_maps();
@@ -480,6 +488,9 @@ impl App {
                 self.start_load(&ctx);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.selectable_label(self.settings_open, "⚙").on_hover_text("Settings").clicked() {
+                    self.settings_open = !self.settings_open;
+                }
                 if let Some(j) = &self.job {
                     if ui.button("Cancel").clicked() {
                         j.cancel();
@@ -577,6 +588,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| self.central(ui));
         self.health_window(&ui.ctx().clone());
         self.bang_window(&ui.ctx().clone());
+        self.settings_window(&ui.ctx().clone());
         if !ui.input(|i| i.pointer.any_down()) {
             self.save_cfg();
         }

@@ -33,6 +33,9 @@ lzma-rs = "0.3"
 demoparser = { package = "parser", path = "third_party/demoparser/parser" }
 vmdl = { path = "third_party/vmdl" }
 
+[dev-dependencies]
+flate2 = "1"
+
 [build-dependencies]
 embed-resource = "3"
 
