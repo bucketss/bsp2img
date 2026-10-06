@@ -8,10 +8,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use anyhow::{Context, Result, bail};
 use tiny_skia::Pixmap;
 
+use super::cs2::Cs2;
 use super::draw2d::{self, Frame, GREEN, Layer, RED, YELLOW};
 use super::shots::{self, Ctx, Kind, LETHAL_HEAD, Shot, ShotOpts, Spot};
 use super::texture::Materials;
-use super::{DrawBase, EntOpts, NAV_CELL, WallbangOpts, World};
+use super::{DrawBase, EntOpts, Gold, NAV_CELL, NAV_STEP, WallbangOpts, World, cache};
 use crate::bsp::{Bsp, Engine};
 use crate::nav::{Nav, Stance};
 use crate::paths::{Partial, free_name};
@@ -44,7 +45,8 @@ pub fn render_bases(
     rep: &mut Report,
 ) -> Result<Vec<DrawBase>> {
     if base == crate::grid::Backdrop::Radar {
-        match super::overview_bases(bsp, dirs, size, secs, rep) {
+        let found = if bsp.extra.is_some() { super::radar_bases(bsp, size, secs, rep) } else { super::overview_bases(bsp, dirs, size, secs, rep) };
+        match found {
             Ok(v) if !v.is_empty() => return Ok(v),
             Ok(_) => rep.log("  no overview for this map; using the rendered backdrop".into()),
             Err(e) => rep.log(format!("  overview: {e:#}; using the rendered backdrop")),
@@ -77,8 +79,8 @@ fn csv_header() -> String {
     h
 }
 
-fn csv_row(w: &mut impl std::io::Write, s: &Shot, spot: &Spot, pitch: f64, yaw: f64) -> std::io::Result<()> {
-    let e = spot.eye();
+fn csv_row(w: &mut impl std::io::Write, s: &Shot, spot: &Spot, eye: f64, pitch: f64, yaw: f64) -> std::io::Result<()> {
+    let e = spot.feet + glam::DVec3::Z * eye;
     write!(w, "{},{},{},{},{:.2},{:.2},{:.2},{},{}", s.shooter, s.stance.label(), pitch, yaw, e.x, e.y, e.z, u8::from(s.made()), s.crossings().len())?;
     for k in 0..2 {
         match s.crossings().get(k) {
@@ -142,6 +144,8 @@ pub struct Base {
     pub reach: Vec<bool>,
     pub reachable: usize,
     pub mat_label: String,
+    pub mat_hash: u64,
+    pub data_hash: u64,
 }
 
 pub struct Sim {
@@ -153,7 +157,7 @@ pub struct Sim {
 
 impl Sim {
     pub fn ctx<'a>(&'a self, opts: &'a ShotOpts) -> Ctx<'a> {
-        Ctx { world: &self.base.world, nav: &self.base.nav, reach: &self.base.reach, opts, stop: None }
+        Ctx::new(&self.base.world, &self.base.nav, &self.base.reach, opts, None)
     }
 }
 
@@ -162,9 +166,39 @@ fn stopped(stop: Option<&AtomicBool>) -> Result<()> {
 }
 
 pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>, stop: Option<&AtomicBool>, rep: &mut Report) -> Result<Base> {
-    if bsp.engine() != Engine::GoldSrc {
-        bail!("wallbang supports GoldSrc maps only (CS 1.6 / CZ); Source and CS2 use a different penetration model");
-    }
+    let (world, mat_label, mat_hash, data_hash) = match bsp.engine() {
+        Engine::GoldSrc => gold_world(bsp, dirs, ents, materials, rep)?,
+        Engine::Cs2 => {
+            if ents.skip_doors || ents.skip_translucent.is_some() || materials.is_some() {
+                rep.log("  --skip-doors, --skip-translucent and --materials are GoldSrc only; ignored".into());
+            }
+            let w = Cs2::load(bsp)?;
+            let st = &w.bullet.stats;
+            rep.log(format!(
+                "  bullet geometry: {} triangles, {} hulls, {} entities, {} surfaces ({:.1}s)",
+                st.tris,
+                st.hulls,
+                st.ents,
+                w.bullet.surfs.len(),
+                st.secs
+            ));
+            let label = format!("surface properties and weapons.vdata from {}", w.root);
+            rep.log(format!("  materials: {label}"));
+            let (sh, dh) = (w.surf_hash, w.data_hash);
+            (World::Cs2(w), label, sh, dh)
+        }
+        _ => bail!("wallbang supports GoldSrc (CS 1.6 / CZ) and CS2 maps; Source uses a different penetration model"),
+    };
+    stopped(stop)?;
+    let nav = Nav::build(bsp, NAV_CELL, NAV_STEP)?;
+    stopped(stop)?;
+    let reach = shots::reachable(bsp, &nav);
+    let reachable = reach.iter().filter(|&&b| b).count();
+    rep.log(format!("  nav: {} floor cells, {reachable} reachable", nav.len()));
+    Ok(Base { world, nav, reach, reachable, mat_label, mat_hash, data_hash })
+}
+
+fn gold_world(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>, rep: &mut Report) -> Result<(World, String, u64, u64)> {
     let mat_path = materials.map(Path::to_path_buf).or_else(|| Materials::locate(&bsp.path, dirs));
     let mats = match &mat_path {
         Some(p) => Materials::load(p).with_context(|| format!("reading {}", p.display()))?,
@@ -172,18 +206,14 @@ pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>
     };
     let mat_label = mat_path.as_ref().map_or("none found (every texture counts as concrete)".to_string(), |p| p.display().to_string());
     rep.log(format!("  materials: {mat_label}"));
-    let world = World::new(bsp, &mats, Some(ents));
+    let mat_hash = mat_path.as_deref().and_then(cache::file_hash).unwrap_or(0);
+    let world = Gold::new(bsp, &mats, Some(ents));
     rep.log(format!("  brush entities traced: {}", world.ents.len()));
     if !world.rotated.is_empty() {
         let list: Vec<String> = world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect();
         rep.log(format!("  warning: skipped rotated brush entities: {}", list.join(", ")));
     }
-    let nav = Nav::build(bsp, NAV_CELL, 250.0)?;
-    stopped(stop)?;
-    let reach = shots::reachable(bsp, &nav);
-    let reachable = reach.iter().filter(|&&b| b).count();
-    rep.log(format!("  nav: {} floor cells, {reachable} reachable", nav.len()));
-    Ok(Base { world, nav, reach, reachable, mat_label })
+    Ok((World::Gold(world), mat_label, mat_hash, 0))
 }
 
 pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<Base>>, stop: Option<&AtomicBool>, rep: &mut Report) -> Result<Sim> {
@@ -192,6 +222,37 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
         Some(b) => b,
         None => Arc::new(self::base(bsp, dirs, o.ents, o.materials.as_deref(), stop, rep)?),
     };
+    if let World::Cs2(w) = &base.world {
+        let name = o.shots.weapon.name;
+        let wp = w.weapon(name).with_context(|| format!("{name} is not in weapons.vdata"))?;
+        rep.log(format!(
+            "  weapon: {} from weapons.vdata (damage {}, penetration {}, range modifier {}, range {})",
+            wp.name, wp.damage, wp.pen, wp.range_mod, wp.range
+        ));
+    }
+    let key = o.cache.as_ref().and_then(|d| cache::key(bsp, &base, o.ents, &o.shots).map(|k| (cache::path(d, &k), k)));
+    if let Some((p, k)) = &key
+        && p.is_file()
+    {
+        let ts = std::time::Instant::now();
+        match cache::load(p, k) {
+            Ok((spots, shots, counts)) => {
+                rep.log(format!("  {} shooter spots", spots.len()));
+                rep.log(format!(
+                    "  {} shots fired, {} hit a wall within {} units: {} made it, {} died (cached, {:.1}s: {})",
+                    counts.fired,
+                    counts.hits - counts.far,
+                    o.shots.max_hit,
+                    counts.made,
+                    counts.died,
+                    ts.elapsed().as_secs_f64(),
+                    p.display()
+                ));
+                return Ok(Sim { base, spots, shots, counts });
+            }
+            Err(e) => rep.log(format!("  sim cache: {e:#} ({}); simulating", p.display())),
+        }
+    }
     let spots = shots::spots(&base.nav, &base.reach, &o.shots);
     rep.log(format!(
         "  {} shooter spots ({} standing, {} crouched)",
@@ -209,7 +270,7 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
     let done = AtomicU32::new(0);
     let (shots, counts) = std::thread::scope(|sc| {
         let h = sc.spawn(|| {
-            let ctx = Ctx { world: &base.world, nav: &base.nav, reach: &base.reach, opts: &o.shots, stop: Some(flag) };
+            let ctx = Ctx::new(&base.world, &base.nav, &base.reach, &o.shots, Some(flag));
             shots::simulate(&ctx, &spots, &|f| done.store(f.to_bits(), Ordering::Relaxed))
         });
         while !h.is_finished() {
@@ -230,6 +291,12 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
         counts.died,
         ts.elapsed().as_secs_f64()
     ));
+    if let Some((p, k)) = &key {
+        match cache::save(p, k, &spots, &shots, &counts) {
+            Ok(()) => rep.log(format!("  sim cache: {}", p.display())),
+            Err(e) => rep.log(format!("  sim cache: could not write {}: {e:#}", p.display())),
+        }
+    }
     Ok(Sim { base, spots, shots, counts })
 }
 
@@ -251,7 +318,7 @@ pub fn export_wallbang(
     rep.step(SIM_TO)?;
     let (shots, spots, c) = (&sim.shots, &sim.spots, &sim.counts);
 
-    let (secs, why) = o.split.sections(None, bsp, cuts);
+    let (secs, why) = o.split.sections(bsp.extra.as_ref().and_then(|x| x.radar.as_ref()), bsp, cuts);
     if let Some(w) = why {
         rep.log(format!("  sections: {w}"));
     }
@@ -264,7 +331,10 @@ pub fn export_wallbang(
         o.shots.yaw_step,
         if o.damage { ", damage colours" } else { "" }
     );
-    let pws = if o.pixelwalks {
+    let pws = if o.pixelwalks && bsp.engine() != Engine::GoldSrc {
+        rep.log("  pixelwalk layer: GoldSrc only, skipped".into());
+        Vec::new()
+    } else if o.pixelwalks {
         let po = PixelwalkOpts { size: o.size, ..Default::default() };
         let v = crate::pixelwalk::present::find_pixelwalks(bsp, &po)?;
         rep.log(format!("  pixelwalk layer: {} pixelwalks", v.len()));
@@ -336,18 +406,27 @@ pub fn export_wallbang(
         "settings: {settings}, spot cell {}, max first hit {}, slab {}, min thickness {}, nav cell {NAV_CELL}",
         o.shots.spot_cell, o.shots.max_hit, o.shots.slab, o.shots.min_thickness
     )?;
-    writeln!(
-        txt,
-        "brush entities: {} traced{}{}{}",
-        world.ents.len(),
-        if o.ents.skip_doors { ", doors skipped" } else { "" },
-        o.ents.skip_translucent.map_or(String::new(), |a| format!(", translucent below renderamt {a} skipped")),
-        if world.rotated.is_empty() {
-            String::new()
-        } else {
-            format!(", rotated skipped: {}", world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect::<Vec<_>>().join(", "))
+    match world {
+        World::Gold(world) => writeln!(
+            txt,
+            "brush entities: {} traced{}{}{}",
+            world.ents.len(),
+            if o.ents.skip_doors { ", doors skipped" } else { "" },
+            o.ents.skip_translucent.map_or(String::new(), |a| format!(", translucent below renderamt {a} skipped")),
+            if world.rotated.is_empty() {
+                String::new()
+            } else {
+                format!(", rotated skipped: {}", world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect::<Vec<_>>().join(", "))
+            }
+        )?,
+        World::Cs2(w) => {
+            let st = &w.bullet.stats;
+            writeln!(txt, "bullet geometry: {} triangles, {} hulls, {} entities, {} surfaces", st.tris, st.hulls, st.ents, w.bullet.surfs.len())?;
+            if let Some(wp) = w.weapon(o.shots.weapon.name) {
+                writeln!(txt, "weapon: {} (damage {}, penetration {}, range modifier {}, range {})", wp.name, wp.damage, wp.pen, wp.range_mod, wp.range)?;
+            }
         }
-    )?;
+    }
     writeln!(txt, "nav: {} floor cells, {} reachable", sim.base.nav.len(), sim.base.reachable)?;
     writeln!(txt)?;
     writeln!(txt, "shooter spots            {:>10}", spots.len())?;
@@ -382,7 +461,8 @@ pub fn export_wallbang(
         let mut wr = std::io::BufWriter::new(std::fs::File::create(&f).with_context(|| format!("creating {}", f.display()))?);
         writeln!(wr, "{}", csv_header())?;
         for s in shots {
-            csv_row(&mut wr, s, &spots[s.shooter as usize], pitches[s.pitch_idx as usize], yaws[s.yaw_idx as usize])?;
+            let sp = &spots[s.shooter as usize];
+            csv_row(&mut wr, s, sp, world.eye(sp.stance), pitches[s.pitch_idx as usize], yaws[s.yaw_idx as usize])?;
         }
         wr.flush()?;
         rep.log(format!("  {}", f.display()));

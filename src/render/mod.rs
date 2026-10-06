@@ -195,6 +195,7 @@ struct Packed {
     paint: [u8; 4],
     light: u32,
     mask: [u8; 4],
+    ov: [f32; 2],
 }
 
 impl Packed {
@@ -217,6 +218,7 @@ impl Packed {
             paint: v.paint,
             light: v.light,
             mask: v.mask,
+            ov: v.ov,
         }
     }
 }
@@ -564,7 +566,7 @@ impl GpuScene {
             array_stride: std::mem::size_of::<Packed>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![
-                1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Unorm16x4, 6 => Unorm8x4, 7 => Uint32, 8 => Unorm8x4
+                1 => Float32x2, 2 => Float32x2, 3 => Float32x2, 4 => Uint32, 5 => Unorm16x4, 6 => Unorm8x4, 7 => Uint32, 8 => Unorm8x4, 9 => Float32x2
             ],
         };
 

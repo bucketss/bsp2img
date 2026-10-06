@@ -43,6 +43,7 @@ pub struct Vertex {
     pub paint: [u8; 4],
     pub light: u32,
     pub mask: [u8; 4],
+    pub ov: [f32; 2],
 }
 
 impl Vertex {
@@ -57,6 +58,7 @@ impl Vertex {
         paint: [255; 4],
         light: 0,
         mask: [0; 4],
+        ov: [0.0; 2],
     };
 
     pub fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
@@ -79,6 +81,7 @@ impl Vertex {
             paint: lb(a.paint, b.paint),
             light: if a.light == b.light { a.light } else { pack_rgb9e5(l3(unpack_rgb9e5(a.light), unpack_rgb9e5(b.light))) },
             mask: lb(a.mask, b.mask),
+            ov: l2(a.ov, b.ov),
         }
     }
 }

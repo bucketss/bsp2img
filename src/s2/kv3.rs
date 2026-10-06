@@ -403,3 +403,115 @@ impl<'a> Ctx<'a> {
         })
     }
 }
+
+#[derive(Debug, PartialEq)]
+enum Tok<'a> {
+    Str(&'a str),
+    Punct(u8),
+    Word(&'a str),
+}
+
+fn strip_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut s = text;
+    loop {
+        let a = s.find("<!--");
+        let b = s.find("//");
+        match (a, b) {
+            (Some(a), b) if b.is_none_or(|b| a < b) => {
+                out.push_str(&s[..a]);
+                s = s[a..].find("-->").map_or("", |e| &s[a + e + 3..]);
+            }
+            (_, Some(b)) => {
+                out.push_str(&s[..b]);
+                s = s[b..].find('\n').map_or("", |e| &s[b + e..]);
+            }
+            _ => {
+                out.push_str(s);
+                return out;
+            }
+        }
+    }
+}
+
+fn tokens(s: &str) -> Vec<Tok<'_>> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let punct = |c: u8| matches!(c, b'{' | b'}' | b'[' | b']' | b'=' | b',');
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+        } else if c == b'"' {
+            let st = i + 1;
+            let mut j = st;
+            while j < b.len() && b[j] != b'"' {
+                j += if b[j] == b'\\' { 2 } else { 1 };
+            }
+            out.push(Tok::Str(&s[st..j.min(b.len())]));
+            i = j + 1;
+        } else if punct(c) {
+            out.push(Tok::Punct(c));
+            i += 1;
+        } else {
+            let st = i;
+            while i < b.len() && !b[i].is_ascii_whitespace() && !punct(b[i]) && b[i] != b'"' {
+                i += 1;
+            }
+            out.push(Tok::Word(&s[st..i]));
+        }
+    }
+    out
+}
+
+pub fn parse_text(text: &str) -> Result<Value> {
+    let text = strip_comments(text);
+    let toks = tokens(&text);
+    let mut p = 0;
+    let v = text_value(&toks, &mut p)?;
+    Ok(v)
+}
+
+fn text_value(t: &[Tok], p: &mut usize) -> Result<Value> {
+    let Some(tok) = t.get(*p) else { bail!("KV3 text: unexpected end") };
+    *p += 1;
+    Ok(match tok {
+        Tok::Punct(b'{') => {
+            let mut v = Vec::new();
+            while t.get(*p) != Some(&Tok::Punct(b'}')) {
+                let k = match t.get(*p) {
+                    Some(Tok::Str(k) | Tok::Word(k)) => k.to_string(),
+                    other => bail!("KV3 text: bad key {other:?}"),
+                };
+                ensure!(t.get(*p + 1) == Some(&Tok::Punct(b'=')), "KV3 text: missing = after {k}");
+                *p += 2;
+                v.push((k, text_value(t, p)?));
+            }
+            *p += 1;
+            Value::Object(v)
+        }
+        Tok::Punct(b'[') => {
+            let mut v = Vec::new();
+            loop {
+                match t.get(*p) {
+                    Some(Tok::Punct(b']')) => break,
+                    Some(Tok::Punct(b',')) => *p += 1,
+                    Some(_) => v.push(text_value(t, p)?),
+                    None => bail!("KV3 text: unclosed array"),
+                }
+            }
+            *p += 1;
+            Value::Array(v)
+        }
+        Tok::Str(s) => Value::Str(s.to_string()),
+        Tok::Word("true") => Value::Bool(true),
+        Tok::Word("false") => Value::Bool(false),
+        Tok::Word("null") => Value::Null,
+        Tok::Word(w) => {
+            let num = if w.contains(['.', 'e', 'E']) { w.parse().ok().map(Value::Float) } else { w.parse().ok().map(Value::Int) };
+            num.unwrap_or_else(|| Value::Str(w.to_string()))
+        }
+        Tok::Punct(c) => bail!("KV3 text: unexpected {}", *c as char),
+    })
+}

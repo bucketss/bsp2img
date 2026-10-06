@@ -86,6 +86,7 @@ pub fn seam_splats(pws: &[Pixelwalk]) -> Vec<Splat> {
                     model: model(m),
                     layer: SEAM_LAYER,
                     sigma: SEAM_SIGMA,
+                    snap: 0.0,
                 };
                 out.push(splat(o + d * support + DVec3::Z * WALL_UP, d, f.wall_model));
                 out.push(splat(o + d * (support - 1.0), -DVec3::Z, f.floor_model));

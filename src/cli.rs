@@ -50,7 +50,7 @@ pub enum Cmd {
     Timing(TimingArgs),
     #[command(about = "Heatmaps of kills and player positions from HLTV and CS2 demos")]
     Kills(KillsArgs),
-    #[command(about = "GoldSrc: map which walls bullets get through and where they go")]
+    #[command(about = "GoldSrc and CS2: map which walls bullets get through and where they go")]
     Wallbang(WallbangArgs),
     #[command(about = "GoldSrc: find pixelwalks (spots where the player catches on a sub-unit seam over the void)")]
     Pixelwalk(PixelwalkArgs),
@@ -330,6 +330,8 @@ pub struct WallbangArgs {
     pub pixelwalks: bool,
     #[arg(long, help = "colour made shots by damage: green when a headshot kills, yellow when it does not")]
     pub damage: bool,
+    #[arg(long = "no-cache", help = "simulate again instead of reusing a saved sim, and do not save one")]
+    pub no_cache: bool,
     #[arg(long = "3d", help = "also write iso renders with the walls painted")]
     pub three_d: bool,
     #[arg(long, help = "also write a .glb with the walls painted and wallbang_paths / pixelwalks nodes")]
@@ -783,6 +785,7 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
         csv: a.csv,
         pixelwalks: a.pixelwalks,
         damage: a.damage,
+        cache: if a.no_cache { None } else { crate::wallbang::cache::CacheLoc::saved().dir() },
     };
     each_map(&a.c, |path, name| {
         let mut scene = Scene::load(path, &lo, gpu.max_dim, &mut say)?;
@@ -857,7 +860,8 @@ fn model_exports(
     let layers = crate::gltf::Layers { mesh: None, nodes };
     for (on, obj) in [(gltf, false), (obj, true)] {
         if on {
-            let o = GltfOpts { obj, ..Default::default() };
+            let lighting = if scene.bsp.modern() && !obj { Lighting::Separate } else { Lighting::Baked };
+            let o = GltfOpts { obj, lighting, ..Default::default() };
             reported(|rep| export_gltf(scene, Some(&layers), stem, "", cuts, &o, out, rep))?;
         }
     }

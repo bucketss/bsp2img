@@ -174,7 +174,7 @@ pub struct Bang {
 impl Default for Bang {
     fn default() -> Bang {
         Bang {
-            style: Style::Lines,
+            style: Style::Off,
             weapon: "ak47".into(),
             stance: "both".into(),
             opacity: 0.8,
@@ -244,7 +244,15 @@ fn color32(c: [u8; 3], a: u8) -> Color32 {
 
 impl App {
     fn bang_ok(&self) -> bool {
+        self.scene.as_ref().is_some_and(|s| matches!(s.bsp.engine(), Engine::GoldSrc | Engine::Cs2))
+    }
+
+    fn pw_ok(&self) -> bool {
         self.scene.as_ref().is_some_and(|s| s.bsp.engine() == Engine::GoldSrc)
+    }
+
+    fn pw_on(&self) -> bool {
+        self.bang.pixelwalks && self.pw_ok()
     }
 
     fn is_current(&self, k: &SimKey) -> bool {
@@ -344,7 +352,7 @@ impl App {
             return (None, None, None);
         }
         let sim = self.current_entry().filter(|_| self.bang.style != Style::Off);
-        let pw = self.bang.pw.clone().filter(|_| self.bang.pixelwalks);
+        let pw = self.bang.pw.clone().filter(|_| self.pw_on());
         if sim.is_none() && pw.is_none() {
             return (None, None, None);
         }
@@ -382,6 +390,7 @@ impl App {
                 csv: false,
                 pixelwalks: false,
                 damage: false,
+                cache: self.cache_loc().dir(),
             };
             let base = self.bang.wb_base.clone();
             self.log.push(format!("== wallbang {} {} ({})", scene.bsp.name(), self.bang.weapon, self.bang.stance));
@@ -389,7 +398,7 @@ impl App {
                 crate::wallbang::export::simulate(&scene.bsp, &scene.dirs, &o, base, Some(stop), rep)
             }));
         }
-        if self.bang.pixelwalks
+        if self.pw_on()
             && self.bang.pw.is_none()
             && self.bang.pw_job.is_none()
             && !self.bang.pw_failed
@@ -453,7 +462,7 @@ impl App {
             }
         }
         let mk = MarkKey {
-            pw: self.bang.pw.as_ref().filter(|_| self.bang.pixelwalks).map_or(0, |p| p.generation),
+            pw: self.bang.pw.as_ref().filter(|_| self.pw_on()).map_or(0, |p| p.generation),
             look: if self.bang.inspect { self.bang.look_gen } else { 0 },
             frame,
             replay: self.bang.replay.as_ref().map(|r| r.pw),
@@ -492,7 +501,7 @@ impl App {
         if let Some(p) = self.shown_paths() {
             nodes.push(("wallbang_paths".to_string(), (*p).clone()));
         }
-        if self.bang.pixelwalks
+        if self.pw_on()
             && let Some(pw) = &self.bang.pw
         {
             nodes.push(("pixelwalks".to_string(), crate::pixelwalk::draw3d::markers(&pw.list, pw.zr)));
@@ -505,7 +514,7 @@ impl App {
         if let Some(p) = self.shown_paths() {
             m.lines.extend(p.lines.iter().cloned());
         }
-        if self.bang.pixelwalks
+        if self.pw_on()
             && let Some(pw) = &self.bang.pw
         {
             let p = crate::pixelwalk::draw3d::markers(&pw.list, pw.zr);
@@ -584,12 +593,14 @@ impl App {
                 l.wall = None;
                 self.bang.look_gen += 1;
             }
-            ui.separator();
-            if ui.checkbox(&mut self.bang.pixelwalks, "Pixelwalks").changed() {
-                self.bang.replay = None;
-            }
-            if self.bang.pixelwalks && self.bang.pw.is_some() {
-                ui.toggle_value(&mut self.bang.pw_window, "List");
+            if self.pw_ok() {
+                ui.separator();
+                if ui.checkbox(&mut self.bang.pixelwalks, "Pixelwalks").changed() {
+                    self.bang.replay = None;
+                }
+                if self.bang.pixelwalks && self.bang.pw.is_some() {
+                    ui.toggle_value(&mut self.bang.pw_window, "List");
+                }
             }
             let mut busy = Vec::new();
             if let Some(j) = &self.bang.sim_job {
@@ -765,7 +776,7 @@ impl App {
     }
 
     fn pick_pixelwalk(&mut self, pos: Pos2, ctx: &egui::Context) {
-        let (Some(f), Some(pw)) = (&self.frame, self.bang.pw.clone().filter(|_| self.bang.pixelwalks)) else { return };
+        let (Some(f), Some(pw)) = (&self.frame, self.bang.pw.clone().filter(|_| self.pw_on())) else { return };
         let best = pw
             .list
             .iter()
@@ -796,7 +807,7 @@ impl App {
     }
 
     pub(super) fn bang_window(&mut self, ctx: &egui::Context) {
-        if !self.bang_ok() || !self.bang.pixelwalks || !self.bang.pw_window {
+        if !self.bang_ok() || !self.pw_on() || !self.bang.pw_window {
             return;
         }
         let Some(pw) = self.bang.pw.clone() else { return };
