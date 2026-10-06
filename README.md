@@ -152,6 +152,7 @@ Also the spin output options.
 | `--skip-doors` | GoldSrc: ignore doors |
 | `--min-thickness U` | Min wall thickness (0) |
 | `--slab U` | Ground thickness (256) |
+| `--pen4` | CS2: map up to 4 walls (2) |
 | `--materials FILE` | GoldSrc: override `materials.txt` |
 | `--style lines\|areas\|both` | 2D style (both) |
 | `--sigma PX` | Area smoothing (2) |

@@ -310,6 +310,8 @@ pub struct WallbangArgs {
     pub min_thickness: f64,
     #[arg(long, default_value_t = 256.0, value_parser = positive, value_name = "U", help = "floors and ceilings thicker than this count as ground")]
     pub slab: f64,
+    #[arg(long, help = "CS2: map shots through up to 4 walls instead of 2")]
+    pub pen4: bool,
     #[arg(long, value_name = "FILE", help = "materials.txt to use instead of the game's")]
     pub materials: Option<PathBuf>,
     #[arg(long, default_value = "both", value_parser = ["lines", "areas", "both"], help = "2D style")]
@@ -772,6 +774,7 @@ pub fn run_wallbang(a: &WallbangArgs) -> Result<()> {
             max_hit: a.max_hit,
             min_thickness: a.min_thickness,
             slab: a.slab,
+            walls: if a.pen4 { 4 } else { 2 },
         },
         ents: crate::wallbang::EntOpts { skip_translucent: a.skip_translucent, skip_doors: a.skip_doors },
         materials: a.materials.clone(),

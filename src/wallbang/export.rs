@@ -67,9 +67,9 @@ pub fn render_bases(
     Ok(out)
 }
 
-fn csv_header() -> String {
+fn csv_header(walls: usize) -> String {
     let mut h = String::from("shooter,stance,pitch,yaw,eye_x,eye_y,eye_z,made,walls");
-    for k in 1..=2 {
+    for k in 1..=walls {
         for f in
             ["model", "face", "entry_x", "entry_y", "entry_z", "exit_x", "exit_y", "exit_z", "made", "death_x", "death_y", "death_z", "damage", "material", "thickness", "path"]
         {
@@ -79,10 +79,10 @@ fn csv_header() -> String {
     h
 }
 
-fn csv_row(w: &mut impl std::io::Write, s: &Shot, spot: &Spot, eye: f64, pitch: f64, yaw: f64) -> std::io::Result<()> {
+fn csv_row(w: &mut impl std::io::Write, s: &Shot, spot: &Spot, eye: f64, pitch: f64, yaw: f64, walls: usize) -> std::io::Result<()> {
     let e = spot.feet + glam::DVec3::Z * eye;
     write!(w, "{},{},{},{},{:.2},{:.2},{:.2},{},{}", s.shooter, s.stance.label(), pitch, yaw, e.x, e.y, e.z, u8::from(s.made()), s.crossings().len())?;
-    for k in 0..2 {
+    for k in 0..walls {
         match s.crossings().get(k) {
             Some(c) => {
                 let (n, x) = (c.entry(), s.exit(c));
@@ -229,6 +229,8 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
             "  weapon: {} from weapons.vdata (damage {}, penetration {}, range modifier {}, range {})",
             wp.name, wp.damage, wp.pen, wp.range_mod, wp.range
         ));
+    } else if o.shots.walls > 2 {
+        rep.log("  --pen4 is CS2 only; ignored".into());
     }
     let key = o.cache.as_ref().and_then(|d| cache::key(bsp, &base, o.ents, &o.shots).map(|k| (cache::path(d, &k), k)));
     if let Some((p, k)) = &key
@@ -425,6 +427,7 @@ pub fn export_wallbang(
             if let Some(wp) = w.weapon(o.shots.weapon.name) {
                 writeln!(txt, "weapon: {} (damage {}, penetration {}, range modifier {}, range {})", wp.name, wp.damage, wp.pen, wp.range_mod, wp.range)?;
             }
+            writeln!(txt, "walls mapped: up to {}", o.shots.walls)?;
         }
     }
     writeln!(txt, "nav: {} floor cells, {} reachable", sim.base.nav.len(), sim.base.reachable)?;
@@ -459,10 +462,11 @@ pub fn export_wallbang(
         let f = free_name(out, &format!("{name}{cut_tag}_wallbang_{}", w.name), ".csv");
         files.add(f.clone());
         let mut wr = std::io::BufWriter::new(std::fs::File::create(&f).with_context(|| format!("creating {}", f.display()))?);
-        writeln!(wr, "{}", csv_header())?;
+        let walls = shots.iter().map(|s| s.crossings().len()).max().unwrap_or(0).max(2);
+        writeln!(wr, "{}", csv_header(walls))?;
         for s in shots {
             let sp = &spots[s.shooter as usize];
-            csv_row(&mut wr, s, sp, world.eye(sp.stance), pitches[s.pitch_idx as usize], yaws[s.yaw_idx as usize])?;
+            csv_row(&mut wr, s, sp, world.eye(sp.stance), pitches[s.pitch_idx as usize], yaws[s.yaw_idx as usize], walls)?;
         }
         wr.flush()?;
         rep.log(format!("  {}", f.display()));

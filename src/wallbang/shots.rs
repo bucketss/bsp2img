@@ -28,7 +28,8 @@ const CORNER_NORMAL: f64 = 8.0;
 const GRAZE: f64 = 0.01;
 const EXIT_PAD: f64 = 0.1;
 const EXIT_HOPS: usize = 8;
-pub const MAX_WALLS: usize = 2;
+pub const MAX_WALLS: usize = 4;
+const INLINE_WALLS: usize = 2;
 pub const MAX_PITCHES: usize = 256;
 pub const MAX_YAWS: usize = 65536;
 pub const LETHAL_HEAD: u16 = 25;
@@ -63,6 +64,7 @@ pub struct ShotOpts {
     pub max_hit: f64,
     pub min_thickness: f64,
     pub slab: f64,
+    pub walls: usize,
 }
 
 pub fn pitch_list(a: f64, b: f64, step: f64, max: usize) -> Vec<f64> {
@@ -75,7 +77,7 @@ pub fn yaw_count(step: f64) -> f64 {
 
 impl ShotOpts {
     pub fn new(weapon: &'static Weapon, stand: bool, duck: bool) -> ShotOpts {
-        ShotOpts { weapon, stand, duck, yaw_step: 2.0, pitch: (-20.0, 20.0, 4.0), spot_cell: 64.0, max_hit: 2000.0, min_thickness: 0.0, slab: 256.0 }
+        ShotOpts { weapon, stand, duck, yaw_step: 2.0, pitch: (-20.0, 20.0, 4.0), spot_cell: 64.0, max_hit: 2000.0, min_thickness: 0.0, slab: 256.0, walls: INLINE_WALLS }
     }
 
     pub fn check(&self) -> Result<()> {
@@ -144,7 +146,7 @@ impl Crossing {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Shot {
     pub dir: Vec3,
     pub shooter: u32,
@@ -152,16 +154,35 @@ pub struct Shot {
     pub pitch_idx: u8,
     pub stance: Stance,
     pub(super) walls: u8,
-    pub(super) cross: [Crossing; MAX_WALLS],
+    pub(super) cross: [Crossing; INLINE_WALLS],
+    pub(super) more: Option<Box<[Crossing; MAX_WALLS]>>,
 }
 
 impl Shot {
     pub fn crossings(&self) -> &[Crossing] {
-        &self.cross[..self.walls as usize]
+        match &self.more {
+            Some(m) => &m[..self.walls as usize],
+            None => &self.cross[..self.walls as usize],
+        }
     }
 
     pub fn last(&self) -> &Crossing {
-        &self.cross[self.walls as usize - 1]
+        &self.crossings()[self.walls as usize - 1]
+    }
+
+    pub(super) fn push(&mut self, c: Crossing) {
+        let k = self.walls as usize;
+        if k < INLINE_WALLS && self.more.is_none() {
+            self.cross[k] = c;
+        } else {
+            let m = self.more.get_or_insert_with(|| {
+                let mut m = Box::new([Crossing::default(); MAX_WALLS]);
+                m[..INLINE_WALLS].copy_from_slice(&self.cross);
+                m
+            });
+            m[k] = c;
+        }
+        self.walls += 1;
     }
 
     pub fn dir(&self) -> DVec3 {
@@ -181,7 +202,7 @@ impl Shot {
     }
 
     pub fn start(&self) -> DVec3 {
-        self.cross[0].entry() - self.dir() * 24.0
+        self.crossings()[0].entry() - self.dir() * 24.0
     }
 
     pub fn end(&self) -> DVec3 {
@@ -538,7 +559,7 @@ impl Ctx<'_> {
         let (origin, delta) = (ray.start.as_dvec3(), ray.delta.as_dvec3());
         let mut k = 0;
         for (s, o) in ray.segs.iter().zip(&out).filter(|(s, _)| s.solid) {
-            if k == MAX_WALLS {
+            if k == self.opts.walls.min(MAX_WALLS) {
                 break;
             }
             k += 1;
@@ -556,7 +577,7 @@ impl Ctx<'_> {
             });
             match r {
                 Ok(g) => {
-                    shot.cross[shot.walls as usize] = Crossing {
+                    shot.push(Crossing {
                         entry: hp.as_vec3(),
                         entry_face: -1,
                         thickness: g.normal_thick as f32,
@@ -566,8 +587,7 @@ impl Ctx<'_> {
                         damage: if made { o.damage as u16 } else { 0 },
                         material: w.bullet.surf(x.surf).mat,
                         made,
-                    };
-                    shot.walls += 1;
+                    });
                     if !made {
                         break;
                     }
@@ -597,7 +617,8 @@ impl Ctx<'_> {
             pitch_idx: pi as u8,
             stance: spot.stance,
             walls: 0,
-            cross: [Crossing::default(); MAX_WALLS],
+            cross: [Crossing::default(); INLINE_WALLS],
+            more: None,
         };
         match self.world {
             World::Gold(g) => self.walls_gold(g, v3(eye), &d32, dir, &mut shot, c)?,
@@ -625,15 +646,14 @@ impl Ctx<'_> {
             c.far += 1;
             return None;
         }
-        let walls = ((w.penetration - 1).max(0) as usize).min(MAX_WALLS);
+        let walls = ((w.penetration - 1).max(0) as usize).min(INLINE_WALLS);
         for k in 1..=walls {
             if f.it[k - 1].flags & IT_HIT == 0 || f.n <= k {
                 break;
             }
             match self.crossing(&f, k, dir) {
                 Ok(x) => {
-                    shot.cross[shot.walls as usize] = x;
-                    shot.walls += 1;
+                    shot.push(x);
                     if !x.made {
                         break;
                     }

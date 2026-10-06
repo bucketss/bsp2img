@@ -77,6 +77,7 @@ pub struct PwData {
 struct SimKey {
     weapon: String,
     stance: String,
+    pen4: bool,
 }
 
 struct SimEntry {
@@ -142,6 +143,7 @@ pub struct Bang {
     pub style: Style,
     pub weapon: String,
     pub stance: String,
+    pub pen4: bool,
     pub opacity: f32,
     pub paint: bool,
     pub damage: bool,
@@ -177,6 +179,7 @@ impl Default for Bang {
             style: Style::Off,
             weapon: "ak47".into(),
             stance: "both".into(),
+            pen4: false,
             opacity: 0.8,
             paint: true,
             damage: false,
@@ -256,16 +259,20 @@ impl App {
     }
 
     fn is_current(&self, k: &SimKey) -> bool {
-        k.weapon == self.bang.weapon && k.stance == self.bang.stance
+        *k == self.sim_key()
     }
 
     fn sim_key(&self) -> SimKey {
-        SimKey { weapon: self.bang.weapon.clone(), stance: self.bang.stance.clone() }
+        SimKey { weapon: self.bang.weapon.clone(), stance: self.bang.stance.clone(), pen4: self.pen4_on() }
     }
 
     fn shot_opts(&self) -> ShotOpts {
         let w = weapon(&self.bang.weapon).unwrap_or(&WEAPONS[0]);
-        ShotOpts::new(w, self.bang.stance != "duck", self.bang.stance != "stand")
+        ShotOpts { walls: if self.pen4_on() { 4 } else { 2 }, ..ShotOpts::new(w, self.bang.stance != "duck", self.bang.stance != "stand") }
+    }
+
+    fn pen4_on(&self) -> bool {
+        self.bang.pen4 && self.scene.as_ref().is_some_and(|s| s.bsp.engine() == Engine::Cs2)
     }
 
     fn current_entry(&self) -> Option<&SimEntry> {
@@ -296,11 +303,11 @@ impl App {
 
     pub(super) fn bang_poll(&mut self) {
         if self.bang.scene != self.scene_gen {
-            let keep = (self.bang.style, self.bang.weapon.clone(), self.bang.stance.clone(), self.bang.opacity, self.bang.paint);
+            let keep = (self.bang.style, self.bang.weapon.clone(), self.bang.stance.clone(), self.bang.pen4, self.bang.opacity, self.bang.paint);
             let (inspect, pixelwalks, pw_window) = (self.bang.inspect, self.bang.pixelwalks, self.bang.pw_window);
             let (damage, paths) = (self.bang.damage, self.bang.paths);
             self.bang = Bang::default();
-            (self.bang.style, self.bang.weapon, self.bang.stance, self.bang.opacity, self.bang.paint) = keep;
+            (self.bang.style, self.bang.weapon, self.bang.stance, self.bang.pen4, self.bang.opacity, self.bang.paint) = keep;
             (self.bang.inspect, self.bang.pixelwalks, self.bang.pw_window) = (inspect, pixelwalks, pw_window);
             (self.bang.damage, self.bang.paths) = (damage, paths);
             self.bang.scene = self.scene_gen;
@@ -571,6 +578,9 @@ impl App {
                     ui.selectable_value(&mut self.bang.stance, s.to_string(), s);
                 }
             });
+            if self.scene.as_ref().is_some_and(|s| s.bsp.engine() == Engine::Cs2) {
+                ui.checkbox(&mut self.bang.pen4, "4 pen").on_hover_text("map shots through up to 4 walls instead of 2");
+            }
             ui.add_enabled(self.bang.style != Style::Off, egui::Slider::new(&mut self.bang.opacity, 0.0..=1.0).text("opacity"));
             ui.checkbox(&mut self.bang.paint, "Paint 3D").on_hover_text("tint walls in Isometric and Free with the wallbang result and the pixelwalk seams");
             ui.checkbox(&mut self.bang.damage, "Damage").on_hover_text(format!(

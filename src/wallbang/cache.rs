@@ -78,6 +78,9 @@ pub fn key(bsp: &Bsp, base: &Base, ents: EntOpts, o: &ShotOpts) -> Option<Key> {
     b.extend([ents.skip_translucent.is_some() as u8, ents.skip_translucent.unwrap_or(0), ents.skip_doors as u8]);
     b.extend(o.weapon.name.as_bytes());
     b.extend([0, o.stand as u8, o.duck as u8]);
+    if !matches!(base.world, super::World::Gold(_)) {
+        b.push(o.walls as u8);
+    }
     for v in [o.yaw_step, o.pitch.0, o.pitch.1, o.pitch.2, o.spot_cell, o.max_hit, o.min_thickness, o.slab, NAV_CELL, NAV_STEP] {
         b.extend(v.to_le_bytes());
     }
@@ -250,8 +253,9 @@ pub fn decode(d: &[u8]) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
         if walls == 0 || walls as usize > MAX_WALLS || shooter as usize >= spots.len() {
             bail!("bad shot");
         }
-        let mut cross = [Crossing::default(); MAX_WALLS];
-        for c in &mut cross[..walls as usize] {
+        let mut shot = Shot { dir, shooter, yaw_idx, pitch_idx, stance, walls: 0, cross: Default::default(), more: None };
+        for _ in 0..walls {
+            let mut c = Crossing::default();
             c.entry = r.v3()?;
             c.entry_face = r.i32()?;
             c.thickness = r.f32()?;
@@ -261,8 +265,9 @@ pub fn decode(d: &[u8]) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
             c.damage = r.u16()?;
             c.material = r.u8()?;
             c.made = r.u8()? != 0;
+            shot.push(c);
         }
-        shots.push(Shot { dir, shooter, yaw_idx, pitch_idx, stance, walls, cross });
+        shots.push(shot);
     }
     if !r.0.is_empty() {
         bail!("trailing data");
@@ -328,15 +333,21 @@ mod tests {
             material: b'M',
             made,
         };
+        let shot = |dir: Vec3, shooter: u32, stance: Stance, cs: &[Crossing]| {
+            let mut s = Shot { dir, shooter, yaw_idx: 179, pitch_idx: 4, stance, walls: 0, cross: Default::default(), more: None };
+            cs.iter().for_each(|c| s.push(*c));
+            s
+        };
         let shots = vec![
-            Shot { dir: Vec3::new(0.6, 0.8, 0.0), shooter: 0, yaw_idx: 179, pitch_idx: 4, stance: Stance::Stand, walls: 1, cross: [cross(10.0, true), Crossing::default()] },
-            Shot { dir: Vec3::new(0.0, -1.0, 0.0), shooter: 1, yaw_idx: 0, pitch_idx: 10, stance: Stance::Duck, walls: 2, cross: [cross(1.0, true), cross(2.0, false)] },
+            shot(Vec3::new(0.6, 0.8, 0.0), 0, Stance::Stand, &[cross(10.0, true)]),
+            shot(Vec3::new(0.0, -1.0, 0.0), 1, Stance::Duck, &[cross(1.0, true), cross(2.0, false)]),
+            shot(Vec3::new(1.0, 0.0, 0.0), 1, Stance::Stand, &[cross(1.0, true), cross(2.0, true), cross(3.0, true), cross(4.0, false)]),
         ];
         let counts = Counts { fired: 9, hits: 8, far: 1, made: 2, died: 1, thin: 3, ..Default::default() };
         let (sp, sh, co) = decode(&encode(&spots, &shots, &counts)).unwrap();
         assert_eq!(sp.len(), 2);
         assert!(sp.iter().zip(&spots).all(|(a, b)| a.feet == b.feet && a.stance == b.stance));
-        assert!(sh.len() == 2 && sh.iter().zip(&shots).all(|(a, b)| same(a, b)));
+        assert!(sh.len() == 3 && sh[2].crossings().len() == 4 && sh.iter().zip(&shots).all(|(a, b)| same(a, b)));
         assert_eq!((co.fired, co.hits, co.far, co.made, co.died, co.thin), (9, 8, 1, 2, 1, 3));
         assert!(decode(&encode(&spots, &shots, &counts)[..40]).is_err());
     }

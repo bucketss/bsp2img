@@ -357,6 +357,7 @@ mod tests {
                 max_hit: 2000.0,
                 min_thickness: 0.0,
                 slab: 256.0,
+                walls: 2,
             },
             ents: EntOpts::default(),
             materials: None,
