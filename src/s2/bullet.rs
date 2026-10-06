@@ -7,9 +7,9 @@ use rayon::prelude::*;
 
 use super::entities::{self, Ent};
 use super::kv3::Value;
-use super::phys::{affine, model_phys};
+use super::phys::affine;
 use super::resource::Res;
-use super::surfprop::{Surf, Surfaces};
+use super::surfprop::{FNV0, Surf, Surfaces, fnv};
 use super::vpk::Fs;
 use super::world::{self, Xf, flatten};
 
@@ -62,14 +62,12 @@ pub struct Crossing {
     pub normal: DVec3,
     pub surf: u32,
     pub layers: u32,
-    pub ent: u32,
     pub hull: bool,
 }
 
 #[derive(Clone, Copy)]
 struct Shape {
     layers: u32,
-    ent: u32,
 }
 
 struct Tri {
@@ -187,8 +185,8 @@ pub struct Bullet {
     hull_bvh: Bvh,
     shapes: Vec<Shape>,
     pub surfs: Vec<Surf>,
-    pub ents: Vec<String>,
     pub stats: Stats,
+    pub digest: u64,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -245,7 +243,6 @@ struct Builder {
     shapes: Vec<Shape>,
     surfs: Vec<Surf>,
     surf_ids: HashMap<String, u32>,
-    ents: Vec<String>,
     stats: Stats,
 }
 
@@ -260,7 +257,7 @@ impl Builder {
         i
     }
 
-    fn add(&mut self, ph: &Value, xf: &DAffine3, sp: &Surfaces, ent: &str) {
+    fn add(&mut self, ph: &Value, xf: &DAffine3, sp: &Surfaces) {
         let layers: Vec<u32> = ph.get("m_collisionAttributes").arr().iter().map(layers_of).collect();
         let mut lut: Vec<u32> = Vec::new();
         for h in ph.get("m_surfacePropertyHashes").arr() {
@@ -271,8 +268,6 @@ impl Builder {
             let s = sp.props("default");
             lut.push(self.surf(s));
         }
-        let ei = self.ents.len() as u32;
-        self.ents.push(ent.to_string());
         let poses = ph.get("m_bindPose").arr();
         for (pi, part) in ph.get("m_parts").arr().iter().enumerate() {
             let pose = poses.get(pi).map_or(DAffine3::IDENTITY, |p| affine(&Xf::from34(&flatten(p))));
@@ -310,7 +305,7 @@ impl Builder {
                     hi = hi.max(q);
                 }
                 let shape = self.shapes.len() as u32;
-                self.shapes.push(Shape { layers: ly, ent: ei });
+                self.shapes.push(Shape { layers: ly });
                 self.hulls.push(Hull { first, count: self.planes.len() as u32 - first, lo, hi, surf, shape });
             }
             for me in sh.get("m_meshes").arr() {
@@ -329,7 +324,7 @@ impl Builder {
                 let mats = bytes_or_ints(mv.get("m_Materials"));
                 let def = me.get("m_nSurfacePropertyIndex").i() as u32;
                 let shape = self.shapes.len() as u32;
-                self.shapes.push(Shape { layers: ly, ent: ei });
+                self.shapes.push(Shape { layers: ly });
                 for (ti, t) in idx.chunks_exact(3).enumerate() {
                     let Some(p) = t.iter().map(|&i| verts.get(i as usize).copied()).collect::<Option<Vec<_>>>() else { continue };
                     let p = if flip { [p[0], p[2], p[1]] } else { [p[0], p[1], p[2]] };
@@ -341,7 +336,7 @@ impl Builder {
         }
     }
 
-    fn finish(mut self) -> Bullet {
+    fn finish(mut self, digest: u64) -> Bullet {
         let boxes: Vec<(Vec3, Vec3)> = self.tris.iter().map(|t| (t.p[0].min(t.p[1]).min(t.p[2]), t.p[0].max(t.p[1]).max(t.p[2]))).collect();
         let (tri_bvh, order) = Bvh::build(&boxes);
         let mut tris: Vec<Option<Tri>> = std::mem::take(&mut self.tris).into_iter().map(Some).collect();
@@ -361,8 +356,8 @@ impl Builder {
             hull_bvh,
             shapes: self.shapes,
             surfs: self.surfs,
-            ents: self.ents,
             stats: self.stats,
+            digest,
         }
     }
 }
@@ -372,7 +367,7 @@ pub fn load(fs: &Fs, map: &str, sp: &Surfaces) -> Result<Bullet> {
     let mut b = Builder::default();
     let name = format!("maps/{map}/world_physics.vmdl_c");
     let world_phys = Res::new(fs.read(&name)?)?.kv("PHYS").with_context(|| name.clone())?;
-    b.add(&world_phys, &DAffine3::IDENTITY, sp, "worldent");
+    b.add(&world_phys, &DAffine3::IDENTITY, sp);
     drop(world_phys);
     let w = world::load(fs, map).context("loading world")?;
     let lumps = entities::load(fs, &w.lumps).context("loading entities")?;
@@ -380,14 +375,27 @@ pub fn load(fs: &Fs, map: &str, sp: &Surfaces) -> Result<Bullet> {
     let mut names: Vec<&str> = ents.iter().filter_map(|e| e.vmdl.as_deref()).collect();
     names.sort_unstable();
     names.dedup();
-    let models: HashMap<&str, Value> = names.par_iter().filter_map(|&m| Some((m, model_phys(fs, m)?))).collect();
+    let models: HashMap<&str, (u64, Value)> = names
+        .par_iter()
+        .filter_map(|&m| {
+            let d = fs.read(&format!("{m}_c")).ok()?;
+            let mut h = FNV0;
+            fnv(&mut h, &d);
+            Some((m, (h, Res::new(d).ok()?.kv("PHYS").ok()?)))
+        })
+        .collect();
+    let mut digest = FNV0;
+    for m in &names {
+        fnv(&mut digest, m.as_bytes());
+        fnv(&mut digest, &models.get(m).map_or(0, |x| x.0).to_le_bytes());
+    }
     for e in ents {
-        let Some(p) = e.vmdl.as_deref().and_then(|m| models.get(m)) else { continue };
-        b.add(p, &affine(&e.xf), sp, e.kv.get("classname").map_or("", |c| c.as_str()));
+        let Some((_, p)) = e.vmdl.as_deref().and_then(|m| models.get(m)) else { continue };
+        b.add(p, &affine(&e.xf), sp);
         b.stats.ents += 1;
     }
     b.stats.secs = t.elapsed().as_secs_f64();
-    Ok(b.finish())
+    Ok(b.finish(digest))
 }
 
 impl Bullet {
@@ -417,7 +425,7 @@ impl Bullet {
         let c = e1.cross(e2);
         let n = c / c.length().max(1e-30);
         let sh = self.shapes[t.shape as usize];
-        Some(Crossing { t: tt, exit: n.dot(d) > 0.0, normal: n, surf: t.surf, layers: sh.layers, ent: sh.ent, hull: false })
+        Some(Crossing { t: tt, exit: n.dot(d) > 0.0, normal: n, surf: t.surf, layers: sh.layers, hull: false })
     }
 
     fn hull_hits(&self, i: usize, o: DVec3, d: DVec3, out: &mut Vec<Crossing>) {
@@ -457,7 +465,7 @@ impl Bullet {
         }
         let sh = self.shapes[h.shape as usize];
         let nrm = |j: usize| DVec3::new(pl[j][0], pl[j][1], pl[j][2]);
-        let c = Crossing { t: 0.0, exit: false, normal: DVec3::ZERO, surf: h.surf, layers: sh.layers, ent: sh.ent, hull: true };
+        let c = Crossing { t: 0.0, exit: false, normal: DVec3::ZERO, surf: h.surf, layers: sh.layers, hull: true };
         if tin >= 0.0 {
             out.push(Crossing { t: tin, normal: nrm(ji), ..c });
         }

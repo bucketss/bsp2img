@@ -8,7 +8,7 @@ use super::shots::{Counts, Crossing, MAX_WALLS, Shot, ShotOpts, Spot};
 use super::{EntOpts, NAV_CELL, NAV_STEP};
 use crate::bsp::Bsp;
 use crate::nav::Stance;
-use crate::s2::surfprop::fnv;
+use crate::s2::surfprop::{FNV0, fnv};
 
 pub const SIM_VERSION: u32 = 2;
 
@@ -57,7 +57,7 @@ impl CacheLoc {
 
 pub fn file_hash(p: &Path) -> Option<u64> {
     let d = std::fs::read(p).ok()?;
-    let mut h = 0xcbf2_9ce4_8422_2325;
+    let mut h = FNV0;
     fnv(&mut h, &d);
     Some(h)
 }
@@ -80,7 +80,7 @@ pub fn key(bsp: &Bsp, base: &Base, ents: EntOpts, o: &ShotOpts) -> Option<Key> {
     for v in [o.yaw_step, o.pitch.0, o.pitch.1, o.pitch.2, o.spot_cell, o.max_hit, o.min_thickness, o.slab, NAV_CELL, NAV_STEP] {
         b.extend(v.to_le_bytes());
     }
-    let mut h = 0xcbf2_9ce4_8422_2325;
+    let mut h = FNV0;
     fnv(&mut h, &b);
     let st = match (o.stand, o.duck) {
         (true, true) => "both",

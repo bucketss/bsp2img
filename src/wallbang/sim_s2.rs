@@ -15,13 +15,12 @@ pub struct X {
     pub normal: Vec3,
     pub surf: u32,
     pub layers: u32,
-    pub ent: u32,
     pub hull: bool,
 }
 
 impl From<&Crossing> for X {
     fn from(c: &Crossing) -> X {
-        X { frac: c.t as f32, exit: c.exit, normal: c.normal.as_vec3(), surf: c.surf, layers: c.layers, ent: c.ent, hull: c.hull }
+        X { frac: c.t as f32, exit: c.exit, normal: c.normal.as_vec3(), surf: c.surf, layers: c.layers, hull: c.hull }
     }
 }
 
@@ -43,25 +42,14 @@ pub struct Ray {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SegOut {
-    pub t0: f32,
-    pub t1: f32,
     pub damage: f32,
-    pub left: i32,
-    pub solid: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct Hit {
-    pub dist: f32,
     pub damage: f32,
     pub walls: i32,
-    pub x: Option<usize>,
-}
-
-pub struct Shot {
-    pub ray: Ray,
-    pub out: Vec<SegOut>,
-    pub hits: Vec<Hit>,
 }
 
 pub fn length(v: Vec3) -> f32 {
@@ -226,20 +214,20 @@ pub fn handle(sc: &Bullet, ray: &Ray, damage: f32, range_mod: f32, pen: f32) -> 
         let d1 = (l * s.t1).max(d0);
         if !s.solid {
             d *= range_mod.powf((d1 - d0) / 500.0);
-            out.push(SegOut { t0: s.t0, t1: s.t1, damage: d, left: n, solid: false });
+            out.push(SegOut { damage: d });
             if s.t1 >= 1.0 {
-                hits.push(Hit { dist: d1, damage: d, walls: MAX_PEN - n, x: None });
+                hits.push(Hit { damage: d, walls: MAX_PEN - n });
             }
             continue;
         }
-        hits.push(Hit { dist: d0, damage: d, walls: MAX_PEN - n, x: Some(s.a) });
+        hits.push(Hit { damage: d, walls: MAX_PEN - n });
         let (ent, ex) = (&xs[s.a], &xs[s.b]);
         let mut m_ = sc.surf(ent.surf).dist_mod;
         if d1 > 3000.0 || m_ < 0.1 {
             n = 0;
         }
         if n < 1 {
-            out.push(SegOut { t0: s.t0, t1: 1.0, damage: 0.0, left: n, solid: true });
+            out.push(SegOut { damage: 0.0 });
             break;
         }
         for x in &xs[s.a..=s.b] {
@@ -283,19 +271,13 @@ pub fn handle(sc: &Bullet, ray: &Ray, damage: f32, range_mod: f32, pen: f32) -> 
         d -= lost.max(0.0);
         if d >= 1.0 {
             n -= 1;
-            out.push(SegOut { t0: s.t0, t1: s.t1, damage: d, left: n, solid: true });
+            out.push(SegOut { damage: d });
         } else {
-            out.push(SegOut { t0: s.t0, t1: 1.0, damage: 0.0, left: n, solid: true });
+            out.push(SegOut { damage: 0.0 });
             break;
         }
     }
     (out, hits)
-}
-
-pub fn shoot(sc: &Bullet, start: Vec3, end: Vec3, damage: f32, range_mod: f32, pen: f32) -> Option<Shot> {
-    let ray = trace_ray(sc, start, end)?;
-    let (out, hits) = handle(sc, &ray, damage, range_mod, pen);
-    Some(Shot { ray, out, hits })
 }
 
 #[cfg(test)]

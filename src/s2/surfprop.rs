@@ -54,6 +54,8 @@ pub struct Surfaces {
     pub digest: u64,
 }
 
+pub const FNV0: u64 = 0xcbf2_9ce4_8422_2325;
+
 pub fn fnv(h: &mut u64, b: &[u8]) {
     for &x in b {
         *h ^= x as u64;
@@ -69,7 +71,7 @@ fn read_mod(root: &Path, m: &str, name: &str) -> Option<Vec<u8>> {
 
 impl Surfaces {
     pub fn load(root: Option<&Path>) -> Result<Surfaces> {
-        let mut s = Surfaces { digest: 0xcbf2_9ce4_8422_2325, ..Default::default() };
+        let mut s = Surfaces { digest: FNV0, ..Default::default() };
         let Some(root) = root else { return Ok(s) };
         for m in ["core", "csgo"] {
             let Some(b) = read_mod(root, m, VSURF) else { continue };

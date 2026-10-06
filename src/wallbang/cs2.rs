@@ -5,7 +5,7 @@ use super::sim_s2::MERGE;
 use crate::bsp::Bsp;
 use crate::nav::Stance;
 use crate::s2::bullet::{self, Bullet, Crossing};
-use crate::s2::surfprop::{Surfaces, Weapon, fnv, weapons};
+use crate::s2::surfprop::{FNV0, Surfaces, Weapon, fnv, weapons};
 
 pub const EYE_STAND: f64 = 64.0;
 pub const EYE_DUCK: f64 = 46.0;
@@ -25,10 +25,11 @@ impl Cs2 {
         let x = bsp.extra.as_ref().context("CS2 map data missing")?;
         let root = x.root.as_deref().context("CS2 install not found; surface properties and weapons.vdata are needed for wallbang (use --game)")?;
         let sp = Surfaces::load(Some(root))?;
-        let mut data_hash = 0xcbf2_9ce4_8422_2325;
+        let mut data_hash = FNV0;
         fnv(&mut data_hash, &x.fs.read(VDATA).with_context(|| format!("reading {VDATA}"))?);
         let weapons = weapons(&x.fs)?;
         let bullet = bullet::load(&x.fs, &bsp.name().to_lowercase(), &sp)?;
+        fnv(&mut data_hash, &bullet.digest.to_le_bytes());
         Ok(Cs2 { bullet, weapons, surf_hash: sp.digest, data_hash, root: root.display().to_string() })
     }
 

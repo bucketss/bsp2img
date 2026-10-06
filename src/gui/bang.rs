@@ -174,7 +174,7 @@ pub struct Bang {
 impl Default for Bang {
     fn default() -> Bang {
         Bang {
-            style: Style::Lines,
+            style: Style::Off,
             weapon: "ak47".into(),
             stance: "both".into(),
             opacity: 0.8,

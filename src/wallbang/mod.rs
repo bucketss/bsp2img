@@ -45,7 +45,7 @@ pub fn overview_bases(bsp: &Bsp, dirs: &[PathBuf], size: u32, secs: &[Section], 
     let img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
     let mut px = img.into_raw();
     dim(&mut px);
-    let k =ov.zoom / 8.0 * (w as f64 / 1024.0);
+    let k = ov.zoom / 8.0 * (w as f64 / 1024.0);
     let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
     let (ox, oy) = (ov.origin[0], ov.origin[1]);
     let m = if ov.rotated != 0 { [k, 0.0, cx - ox * k, 0.0, -k, cy + oy * k] } else { [0.0, -k, cx + oy * k, -k, 0.0, cy + ox * k] };
