@@ -17,7 +17,7 @@ Renders GoldSrc, Source and CS2 maps.
 | `overview` | Overview / radar images and `.txt` |
 | `timing` | Rush timing maps |
 | `kills` | Kill heatmaps from demos |
-| `wallbang` | GoldSrc wallbang maps |
+| `wallbang` | GoldSrc and CS2 wallbang maps |
 | `pixelwalk` | GoldSrc pixelwalk maps |
 | `health` | Map health report |
 | `svg` | Vector callout map |
@@ -148,19 +148,20 @@ Also the spin output options.
 | `--pitch A..B/S` | Pitch range and step (-20..20/4) |
 | `--spot-cell U` | Shooter spacing (64) |
 | `--max-hit U` | Max wall distance (2000) |
-| `--skip-translucent A` | Ignore translucent brush entities |
-| `--skip-doors` | Ignore doors |
+| `--skip-translucent A` | GoldSrc: ignore translucent brush entities |
+| `--skip-doors` | GoldSrc: ignore doors |
 | `--min-thickness U` | Min wall thickness (0) |
 | `--slab U` | Ground thickness (256) |
-| `--materials FILE` | Override `materials.txt` |
+| `--materials FILE` | GoldSrc: override `materials.txt` |
 | `--style lines\|areas\|both` | 2D style (both) |
 | `--sigma PX` | Area smoothing (2) |
 | `--base render\|radar` | Backdrop (render) |
 | `--size N` | Longest side (1600) |
 | `--sections auto\|none\|Z,...` | Per-level images (none) |
 | `--others off\|faint` | Other levels (off) |
-| `--pixelwalks` | Pixelwalk layer |
+| `--pixelwalks` | GoldSrc: pixelwalk layer |
 | `--damage` | Colour by headshot kill |
+| `--no-cache` | Simulate again; save nothing |
 | `--3d` | Also write iso renders |
 | `--gltf`, `--obj` | Also write a model |
 | `--csv` | Write every shot |
