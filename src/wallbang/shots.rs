@@ -439,7 +439,7 @@ impl Ctx<'_> {
         Ok(Geom { hp, n, q, path, exit, normal_thick })
     }
 
-    fn filters(&self, g: &Geom, model: u16, death: Option<DVec3>, dir: DVec3) -> Result<(), Drop> {
+    fn filters(&self, g: &Geom, model: u16, death: Option<(DVec3, f64)>, dir: DVec3) -> Result<(), Drop> {
         if g.path < CORNER_PATH && g.normal_thick > CORNER_NORMAL {
             return Err(Drop::Corner);
         }
@@ -452,13 +452,12 @@ impl Ctx<'_> {
                 return Err(Drop::Slab);
             }
         }
-        let Some(d) = death else {
+        let Some((d, span)) = death else {
             return if self.playable_behind(g.exit, dir) { Ok(()) } else { Err(Drop::Behind) };
         };
         if !self.in_play(d) {
             return Err(Drop::Void);
         }
-        let span = g.hp.distance(d).min(g.path);
         let mut t = COLUMN_STEP / 2.0;
         while t < span {
             let p = g.hp + dir * t;
@@ -475,7 +474,7 @@ impl Ctx<'_> {
         let made = !next.dead();
         let g = self.geometry(it, next, made, dir)?;
         let death = (!made).then(|| dv(&next.death()));
-        self.filters(&g, it.model, death, dir)?;
+        self.filters(&g, it.model, death.map(|d| (d, g.hp.distance(d).min(g.path))), dir)?;
         let w = self.opts.weapon;
         let to_target = ((g.exit - dv(&next.src)).dot(dir)).max(0.0);
         let damage = if made { (next.dmg_in as f64 * (w.rangemod as f64).powf(to_target / 500.0)).max(0.0) as u16 } else { 0 };
@@ -552,7 +551,7 @@ impl Ctx<'_> {
                 if !made && !self.playable_behind(g.exit, dir) {
                     return Err(Drop::Behind);
                 }
-                self.filters(&g, 0, (!made).then_some(hp), dir)?;
+                self.filters(&g, 0, (!made).then_some((hp, g.path)), dir)?;
                 Ok(g)
             });
             match r {

@@ -10,7 +10,7 @@ use crate::bsp::Bsp;
 use crate::nav::Stance;
 use crate::s2::surfprop::{FNV0, fnv};
 
-pub const SIM_VERSION: u32 = 2;
+pub const SIM_VERSION: u32 = 3;
 
 const MAGIC: &[u8; 8] = b"B2IWBSIM";
 
@@ -74,6 +74,7 @@ pub fn key(bsp: &Bsp, base: &Base, ents: EntOpts, o: &ShotOpts) -> Option<Key> {
     b.extend(file_hash(&bsp.path)?.to_le_bytes());
     b.extend(base.mat_hash.to_le_bytes());
     b.extend(base.data_hash.to_le_bytes());
+    let ents = if matches!(base.world, super::World::Gold(_)) { ents } else { EntOpts::default() };
     b.extend([ents.skip_translucent.is_some() as u8, ents.skip_translucent.unwrap_or(0), ents.skip_doors as u8]);
     b.extend(o.weapon.name.as_bytes());
     b.extend([0, o.stand as u8, o.duck as u8]);

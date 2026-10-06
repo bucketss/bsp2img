@@ -169,6 +169,9 @@ pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>
     let (world, mat_label, mat_hash, data_hash) = match bsp.engine() {
         Engine::GoldSrc => gold_world(bsp, dirs, ents, materials, rep)?,
         Engine::Cs2 => {
+            if ents.skip_doors || ents.skip_translucent.is_some() || materials.is_some() {
+                rep.log("  --skip-doors, --skip-translucent and --materials are GoldSrc only; ignored".into());
+            }
             let w = Cs2::load(bsp)?;
             let st = &w.bullet.stats;
             rep.log(format!(
