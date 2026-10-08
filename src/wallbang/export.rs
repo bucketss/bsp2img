@@ -146,6 +146,25 @@ pub struct Base {
     pub mat_label: String,
     pub mat_hash: u64,
     pub data_hash: u64,
+    pub map_hash: Option<u64>,
+}
+
+#[derive(Default)]
+pub struct BaseSlot {
+    base: std::sync::Mutex<Option<Arc<Base>>>,
+    pub stop: AtomicBool,
+}
+
+impl BaseSlot {
+    fn get(&self, bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, rep: &mut Report) -> Result<Arc<Base>> {
+        let mut g = self.base.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(b) = &*g {
+            return Ok(b.clone());
+        }
+        let b = Arc::new(base(bsp, dirs, o.ents, o.materials.as_deref(), Some(&self.stop), rep)?);
+        *g = Some(b.clone());
+        Ok(b)
+    }
 }
 
 pub struct Sim {
@@ -161,12 +180,21 @@ impl Sim {
     }
 }
 
+fn log_spots(spots: &[Spot], rep: &mut Report) {
+    rep.log(format!(
+        "  {} shooter spots ({} standing, {} crouched)",
+        spots.len(),
+        spots.iter().filter(|s| s.stance == Stance::Stand).count(),
+        spots.iter().filter(|s| s.stance == Stance::Duck).count()
+    ));
+}
+
 fn stopped(stop: Option<&AtomicBool>) -> Result<()> {
     if stop.is_some_and(|s| s.load(Ordering::Relaxed)) { Err(Cancelled.into()) } else { Ok(()) }
 }
 
 pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>, stop: Option<&AtomicBool>, rep: &mut Report) -> Result<Base> {
-    let (world, mat_label, mat_hash, data_hash) = match bsp.engine() {
+    let (world, mat_label, mat_hash, data_hash, map_hash) = match bsp.engine() {
         Engine::GoldSrc => gold_world(bsp, dirs, ents, materials, rep)?,
         Engine::Cs2 => {
             if ents.skip_doors || ents.skip_translucent.is_some() || materials.is_some() {
@@ -184,8 +212,8 @@ pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>
             ));
             let label = format!("surface properties and weapons.vdata from {}", w.root);
             rep.log(format!("  materials: {label}"));
-            let (sh, dh) = (w.surf_hash, w.data_hash);
-            (World::Cs2(w), label, sh, dh)
+            let (sh, dh, mh) = (w.surf_hash, w.data_hash, w.map_hash);
+            (World::Cs2(w), label, sh, dh, Some(mh))
         }
         _ => bail!("wallbang supports GoldSrc (CS 1.6 / CZ) and CS2 maps; Source uses a different penetration model"),
     };
@@ -195,10 +223,10 @@ pub fn base(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>
     let reach = shots::reachable(bsp, &nav);
     let reachable = reach.iter().filter(|&&b| b).count();
     rep.log(format!("  nav: {} floor cells, {reachable} reachable", nav.len()));
-    Ok(Base { world, nav, reach, reachable, mat_label, mat_hash, data_hash })
+    Ok(Base { world, nav, reach, reachable, mat_label, mat_hash, data_hash, map_hash })
 }
 
-fn gold_world(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>, rep: &mut Report) -> Result<(World, String, u64, u64)> {
+fn gold_world(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Path>, rep: &mut Report) -> Result<(World, String, u64, u64, Option<u64>)> {
     let mat_path = materials.map(Path::to_path_buf).or_else(|| Materials::locate(&bsp.path, dirs));
     let mats = match &mat_path {
         Some(p) => Materials::load(p).with_context(|| format!("reading {}", p.display()))?,
@@ -213,15 +241,16 @@ fn gold_world(bsp: &Bsp, dirs: &[PathBuf], ents: EntOpts, materials: Option<&Pat
         let list: Vec<String> = world.rotated.iter().map(|(c, n)| format!("{n} {c}")).collect();
         rep.log(format!("  warning: skipped rotated brush entities: {}", list.join(", ")));
     }
-    Ok((World::Gold(world), mat_label, mat_hash, 0))
+    Ok((World::Gold(world), mat_label, mat_hash, 0, cache::file_hash(&bsp.path)))
 }
 
-pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<Base>>, stop: Option<&AtomicBool>, rep: &mut Report) -> Result<Sim> {
+pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, slot: Option<&BaseSlot>, stop: Option<&AtomicBool>, rep: &mut Report) -> Result<Sim> {
     o.shots.check()?;
-    let base = match base {
-        Some(b) => b,
+    let base = match slot {
+        Some(s) => s.get(bsp, dirs, o, rep)?,
         None => Arc::new(self::base(bsp, dirs, o.ents, o.materials.as_deref(), stop, rep)?),
     };
+    stopped(stop)?;
     if let World::Cs2(w) = &base.world {
         let name = o.shots.weapon.name;
         let wp = w.weapon(name).with_context(|| format!("{name} is not in weapons.vdata"))?;
@@ -232,14 +261,20 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
     } else if o.shots.walls > 2 {
         rep.log("  --pen4 is CS2 only; ignored".into());
     }
-    let key = o.cache.as_ref().and_then(|d| cache::key(bsp, &base, o.ents, &o.shots).map(|k| (cache::path(d, &k), k)));
-    if let Some((p, k)) = &key
+    let key = o.cache.as_ref().and_then(|d| match cache::key(bsp, &base, o.ents, &o.shots) {
+        Some(k) => Some((d, cache::path(d, &k), k)),
+        None => {
+            rep.log(format!("  sim cache: could not read {}; not cached", bsp.path.display()));
+            None
+        }
+    });
+    if let Some((_, p, k)) = &key
         && p.is_file()
     {
         let ts = std::time::Instant::now();
-        match cache::load(p, k) {
+        match cache::load(p, k, o.shots.yaws().len(), o.shots.pitches().len()) {
             Ok((spots, shots, counts)) => {
-                rep.log(format!("  {} shooter spots", spots.len()));
+                log_spots(&spots, rep);
                 rep.log(format!(
                     "  {} shots fired, {} hit a wall within {} units: {} made it, {} died (cached, {:.1}s: {})",
                     counts.fired,
@@ -256,12 +291,7 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
         }
     }
     let spots = shots::spots(&base.nav, &base.reach, &o.shots);
-    rep.log(format!(
-        "  {} shooter spots ({} standing, {} crouched)",
-        spots.len(),
-        spots.iter().filter(|s| s.stance == Stance::Stand).count(),
-        spots.iter().filter(|s| s.stance == Stance::Duck).count()
-    ));
+    log_spots(&spots, rep);
     if spots.is_empty() {
         bail!("no reachable shooter positions (no spawns on walkable ground?)");
     }
@@ -293,9 +323,15 @@ pub fn simulate(bsp: &Bsp, dirs: &[PathBuf], o: &WallbangOpts, base: Option<Arc<
         counts.died,
         ts.elapsed().as_secs_f64()
     ));
-    if let Some((p, k)) = &key {
+    if let Some((d, p, k)) = &key {
         match cache::save(p, k, &spots, &shots, &counts) {
-            Ok(()) => rep.log(format!("  sim cache: {}", p.display())),
+            Ok(()) => {
+                rep.log(format!("  sim cache: {}", p.display()));
+                let (n, bytes) = cache::prune(d, k);
+                if n > 0 {
+                    rep.log(format!("  sim cache: removed {n} old file{} ({:.0} MB)", if n == 1 { "" } else { "s" }, bytes as f64 / 1048576.0));
+                }
+            }
             Err(e) => rep.log(format!("  sim cache: could not write {}: {e:#}", p.display())),
         }
     }

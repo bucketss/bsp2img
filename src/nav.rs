@@ -197,7 +197,12 @@ const DIRS: [(i64, i64); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const BUCKET: f64 = 128.0;
 const NAV_CACHE: usize = 2;
 
-pub type NavCache = std::sync::Mutex<Vec<(u64, u64, bool, std::sync::Arc<Nav>)>>;
+pub type NavCache = std::sync::Mutex<Vec<(NavKey, std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Nav>>>>)>>;
+type NavKey = (u64, u64, bool, bool);
+pub fn links_gate() -> bool {
+    std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height")
+}
+
 const LADDER_PAD: DVec3 = DVec3::new(24.0, 24.0, 40.0);
 
 struct NavTri {
@@ -227,18 +232,29 @@ impl Nav {
     }
 
     pub fn build_with(bsp: &Bsp, cell: f64, speed: f64, collide: bool) -> Result<std::sync::Arc<Nav>> {
-        let key = (cell.to_bits(), speed.to_bits(), collide);
-        let found = bsp.nav_cache.lock().unwrap().iter().find(|e| (e.0, e.1, e.2) == key).map(|e| e.3.clone());
-        if let Some(n) = found {
-            return Ok(n);
+        let key = (cell.to_bits(), speed.to_bits(), collide, links_gate());
+        let slot = {
+            let mut cache = bsp.nav_cache.lock().unwrap_or_else(|e| e.into_inner());
+            match cache.iter().position(|e| e.0 == key) {
+                Some(i) => {
+                    let e = cache.remove(i);
+                    cache.push(e);
+                }
+                None => {
+                    cache.push((key, Default::default()));
+                    if cache.len() > NAV_CACHE {
+                        cache.remove(0);
+                    }
+                }
+            }
+            cache.last().unwrap().1.clone()
+        };
+        let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = &*slot {
+            return Ok(n.clone());
         }
         let nav = std::sync::Arc::new(Nav::make(bsp, cell, speed, collide)?);
-        let mut cache = bsp.nav_cache.lock().unwrap();
-        cache.retain(|e| (e.0, e.1, e.2) != key);
-        cache.push((key.0, key.1, key.2, nav.clone()));
-        if cache.len() > NAV_CACHE {
-            cache.remove(0);
-        }
+        *slot = Some(nav.clone());
         Ok(nav)
     }
 
@@ -255,7 +271,7 @@ impl Nav {
                 }
                 bail!("map has no nav mesh")
             };
-            let gate = std::env::var("BSP2IMG_NAV_LINKS").map_or(true, |v| v != "height");
+            let gate = links_gate();
             let phys = (gate && collide).then(|| x.phys());
             let mut nav = Nav::from_areas(m, cell, speed, gate, phys.as_ref().and_then(|p| p.as_ref().ok()).copied())?;
             if let Some(Err(e)) = phys {

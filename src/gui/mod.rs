@@ -292,7 +292,7 @@ impl App {
             poster: PosterOpts::default(),
             health_text: None,
             exporter: Exporter::Iso,
-            out: std::env::current_dir().unwrap_or_default().join("renders").to_string_lossy().into_owned(),
+            out: crate::paths::exe_dir().or_else(|| std::env::current_dir().ok()).unwrap_or_default().join("renders").to_string_lossy().into_owned(),
             preview: None,
             last_key: String::new(),
             view_cache: None,

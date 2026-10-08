@@ -24,6 +24,10 @@ pub fn app_dir() -> Option<PathBuf> {
     cfg_dir().map(|d| d.join("bsp2img"))
 }
 
+pub fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(Path::to_path_buf)
+}
+
 pub fn resolve_map(arg: &str, game: Option<&Path>) -> Result<PathBuf> {
     let p = Path::new(arg);
     if p.is_file() {
