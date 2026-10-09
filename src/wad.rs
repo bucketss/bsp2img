@@ -58,8 +58,8 @@ impl Wad {
 }
 
 pub struct TextureSource {
-    listing: Vec<(String, PathBuf)>,
-    cache: HashMap<PathBuf, Option<usize>>,
+    listing: Vec<(String, Vec<PathBuf>)>,
+    cache: HashMap<String, Option<usize>>,
     wads: Vec<Wad>,
     primary: Vec<usize>,
     fallback: Option<Vec<usize>>,
@@ -68,7 +68,7 @@ pub struct TextureSource {
 
 impl TextureSource {
     pub fn new(search_dirs: &[PathBuf]) -> TextureSource {
-        let mut listing: Vec<(String, PathBuf)> = Vec::new();
+        let mut listing: Vec<(String, Vec<PathBuf>)> = Vec::new();
         for d in search_dirs {
             let Ok(rd) = std::fs::read_dir(d) else { continue };
             let mut found: Vec<(String, PathBuf)> = rd
@@ -80,31 +80,37 @@ impl TextureSource {
                 .collect();
             found.sort();
             for (n, p) in found {
-                if !listing.iter().any(|(k, _)| *k == n) {
-                    listing.push((n, p));
+                match listing.iter_mut().find(|(k, _)| *k == n) {
+                    Some((_, ps)) => ps.push(p),
+                    None => listing.push((n, vec![p])),
                 }
             }
         }
         TextureSource { listing, cache: HashMap::new(), wads: Vec::new(), primary: Vec::new(), fallback: None, open_errors: Vec::new() }
     }
 
-    fn open(&mut self, fname: &str) -> Option<usize> {
+    fn open(&mut self, fname: &str, report: bool) -> Option<usize> {
         let key = fname.to_lowercase();
-        let path = self.listing.iter().find(|(k, _)| *k == key)?.1.clone();
-        if let Some(&i) = self.cache.get(&path) {
+        if let Some(&i) = self.cache.get(&key) {
             return i;
         }
-        let i = match Wad::open(&path) {
-            Ok(w) => {
-                self.wads.push(w);
-                Some(self.wads.len() - 1)
+        let paths = self.listing.iter().find(|(k, _)| *k == key)?.1.clone();
+        let mut errs = Vec::new();
+        let mut i = None;
+        for path in paths {
+            match Wad::open(&path) {
+                Ok(w) => {
+                    self.wads.push(w);
+                    i = Some(self.wads.len() - 1);
+                    break;
+                }
+                Err(e) => errs.push(format!("{}: {e:#}", path.display())),
             }
-            Err(e) => {
-                self.open_errors.push(format!("{}: {e:#}", path.display()));
-                None
-            }
-        };
-        self.cache.insert(path, i);
+        }
+        if i.is_none() && report {
+            self.open_errors.extend(errs);
+        }
+        self.cache.insert(key, i);
         i
     }
 
@@ -120,7 +126,7 @@ impl TextureSource {
                 continue;
             }
             let fname = p.rsplit(['\\', '/']).next().unwrap_or(p).to_string();
-            match self.open(&fname) {
+            match self.open(&fname, true) {
                 Some(i) => {
                     if !self.primary.contains(&i) {
                         self.primary.push(i);
@@ -143,7 +149,7 @@ impl TextureSource {
             names.sort();
             let mut fb = Vec::new();
             for n in names {
-                if let Some(i) = self.open(&n) {
+                if let Some(i) = self.open(&n, false) {
                     if !self.primary.contains(&i) && !fb.contains(&i) {
                         fb.push(i);
                     }
