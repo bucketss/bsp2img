@@ -18,7 +18,7 @@ use crate::radar::Split;
 use crate::render::{Cuts, GpuScene, MarkLine, Markers, Renderer};
 use crate::scene::Cancelled;
 use crate::wallbang::draw2d::{self, GREEN, Layer};
-use crate::wallbang::export::{Base, Sim};
+use crate::wallbang::export::{BaseSlot, Sim};
 use crate::wallbang::shots::{self, Shot, ShotOpts, Spot};
 use crate::wallbang::sim::{WEAPONS, weapon};
 use crate::wallbang::{EntOpts, WallbangOpts};
@@ -139,6 +139,20 @@ struct Replay {
     t0: f64,
 }
 
+struct WbBase(Arc<BaseSlot>);
+
+impl Default for WbBase {
+    fn default() -> WbBase {
+        WbBase(Arc::new(BaseSlot::default()))
+    }
+}
+
+impl Drop for WbBase {
+    fn drop(&mut self) {
+        self.0.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 pub struct Bang {
     pub style: Style,
     pub weapon: String,
@@ -153,7 +167,7 @@ pub struct Bang {
     pw_window: bool,
     scene: u64,
     base: Option<Arc<GpuScene>>,
-    wb_base: Option<Arc<Base>>,
+    wb_base: WbBase,
     sims: Vec<SimEntry>,
     sim_job: Option<Bg<Sim, SimKey>>,
     failed: Option<SimKey>,
@@ -189,7 +203,7 @@ impl Default for Bang {
             pw_window: true,
             scene: 0,
             base: None,
-            wb_base: None,
+            wb_base: WbBase::default(),
             sims: Vec::new(),
             sim_job: None,
             failed: None,
@@ -318,7 +332,6 @@ impl App {
             match r {
                 Ok(s) => {
                     self.log.push(format!("wallbang ready ({:.1}s)", j.started.elapsed().as_secs_f64()));
-                    self.bang.wb_base = Some(s.base.clone());
                     self.bang.sims.retain(|e| e.key != j.key);
                     self.bang.sims.push(SimEntry { key: j.key.clone(), generation: next_gen(), sim: Arc::new(s) });
                     let extra = self.bang.sims.len().saturating_sub(MAX_SIMS);
@@ -399,10 +412,10 @@ impl App {
                 damage: false,
                 cache: self.cache_loc().dir(),
             };
-            let base = self.bang.wb_base.clone();
+            let base = self.bang.wb_base.0.clone();
             self.log.push(format!("== wallbang {} {} ({})", scene.bsp.name(), self.bang.weapon, self.bang.stance));
             self.bang.sim_job = Some(Bg::spawn(self.sim_key(), ctx, move |stop, rep| {
-                crate::wallbang::export::simulate(&scene.bsp, &scene.dirs, &o, base, Some(stop), rep)
+                crate::wallbang::export::simulate(&scene.bsp, &scene.dirs, &o, Some(&base), Some(stop), rep)
             }));
         }
         if self.pw_on()

@@ -41,7 +41,7 @@ impl CacheLoc {
 
     pub fn dir(&self) -> Option<PathBuf> {
         match self {
-            CacheLoc::Program => std::env::current_dir().ok().map(|d| d.join("cache")),
+            CacheLoc::Program => crate::paths::exe_dir().map(|d| d.join("cache")),
             CacheLoc::AppData => crate::paths::app_dir().map(|d| d.join("cache")),
             CacheLoc::Custom(p) if !p.trim().is_empty() => Some(PathBuf::from(p.trim())),
             CacheLoc::Custom(_) => None,
@@ -55,43 +55,62 @@ impl CacheLoc {
     }
 }
 
+pub fn sum(d: &[u8]) -> u64 {
+    let mut h = FNV0 ^ d.len() as u64;
+    let mut it = d.chunks_exact(8);
+    for c in &mut it {
+        h = (h ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(0x100_0000_01b3).rotate_left(29);
+    }
+    fnv(&mut h, it.remainder());
+    h
+}
+
 pub fn file_hash(p: &Path) -> Option<u64> {
-    let d = std::fs::read(p).ok()?;
+    std::fs::read(p).ok().map(|d| sum(&d))
+}
+
+fn version() -> u64 {
     let mut h = FNV0;
-    fnv(&mut h, &d);
-    Some(h)
+    fnv(&mut h, &SIM_VERSION.to_le_bytes());
+    fnv(&mut h, env!("BSP2IMG_SIM_SRC").as_bytes());
+    h
 }
 
 pub struct Key {
     bytes: Vec<u8>,
+    slot: u64,
     name: String,
 }
 
 pub fn key(bsp: &Bsp, base: &Base, ents: EntOpts, o: &ShotOpts) -> Option<Key> {
     let mut b = Vec::new();
-    b.extend(SIM_VERSION.to_le_bytes());
     b.push(base.world.kind());
-    b.extend(file_hash(&bsp.path)?.to_le_bytes());
-    b.extend(base.mat_hash.to_le_bytes());
-    b.extend(base.data_hash.to_le_bytes());
+    let id = std::path::absolute(&bsp.path).unwrap_or_else(|_| bsp.path.clone()).to_string_lossy().to_lowercase();
+    b.extend((id.len() as u32).to_le_bytes());
+    b.extend(id.as_bytes());
     let ents = if matches!(base.world, super::World::Gold(_)) { ents } else { EntOpts::default() };
     b.extend([ents.skip_translucent.is_some() as u8, ents.skip_translucent.unwrap_or(0), ents.skip_doors as u8]);
     b.extend(o.weapon.name.as_bytes());
-    b.extend([0, o.stand as u8, o.duck as u8]);
+    b.extend([0, o.stand as u8, o.duck as u8, crate::nav::links_gate() as u8]);
     if !matches!(base.world, super::World::Gold(_)) {
         b.push(o.walls as u8);
     }
     for v in [o.yaw_step, o.pitch.0, o.pitch.1, o.pitch.2, o.spot_cell, o.max_hit, o.min_thickness, o.slab, NAV_CELL, NAV_STEP] {
         b.extend(v.to_le_bytes());
     }
-    let mut h = FNV0;
+    let mut slot = FNV0;
+    fnv(&mut slot, &b);
+    for v in [base.map_hash?, base.mat_hash, base.data_hash] {
+        b.extend(v.to_le_bytes());
+    }
+    let mut h = version();
     fnv(&mut h, &b);
     let st = match (o.stand, o.duck) {
         (true, true) => "both",
         (true, false) => "stand",
         _ => "duck",
     };
-    Some(Key { bytes: b, name: format!("{}_{}_{st}_{h:016x}.bin", bsp.name(), o.weapon.name) })
+    Some(Key { bytes: b, slot, name: format!("{}_{}_{st}_{h:016x}.bin", bsp.name(), o.weapon.name) })
 }
 
 pub fn path(dir: &Path, k: &Key) -> PathBuf {
@@ -229,7 +248,7 @@ pub fn encode(spots: &[Spot], shots: &[Shot], counts: &Counts) -> Vec<u8> {
     w.0
 }
 
-pub fn decode(d: &[u8]) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
+pub fn decode(d: &[u8], yaws: usize, pitches: usize) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
     let mut r = R(d);
     let mut counts = Counts::default();
     for v in counts_list(&mut counts) {
@@ -250,7 +269,7 @@ pub fn decode(d: &[u8]) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
         let pitch_idx = r.u8()?;
         let stance = stance_of(r.u8()?)?;
         let walls = r.u8()?;
-        if walls == 0 || walls as usize > MAX_WALLS || shooter as usize >= spots.len() {
+        if walls == 0 || walls as usize > MAX_WALLS || shooter as usize >= spots.len() || yaw_idx as usize >= yaws || pitch_idx as usize >= pitches {
             bail!("bad shot");
         }
         let mut shot = Shot { dir, shooter, yaw_idx, pitch_idx, stance, walls: 0, cross: Default::default(), more: None };
@@ -275,20 +294,40 @@ pub fn decode(d: &[u8]) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
     Ok((spots, shots, counts))
 }
 
-pub fn load(p: &Path, k: &Key) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
+const HEAD: usize = MAGIC.len() + 8 + 8 + 8 + 4;
+const MAX_BYTES: u64 = 4 << 30;
+
+pub fn load(p: &Path, k: &Key, yaws: usize, pitches: usize) -> Result<(Vec<Spot>, Vec<Shot>, Counts)> {
     let d = std::fs::read(p)?;
-    let head = MAGIC.len() + 4 + k.bytes.len();
-    if d.len() < head || &d[..MAGIC.len()] != MAGIC || d[MAGIC.len()..MAGIC.len() + 4] != (k.bytes.len() as u32).to_le_bytes() || d[MAGIC.len() + 4..head] != k.bytes[..] {
+    let head = HEAD + k.bytes.len();
+    let u64_at = |i: usize| u64::from_le_bytes(d[i..i + 8].try_into().unwrap());
+    if d.len() < head
+        || &d[..MAGIC.len()] != MAGIC
+        || u64_at(8) != version()
+        || u64_at(16) != k.slot
+        || d[32..36] != (k.bytes.len() as u32).to_le_bytes()
+        || d[HEAD..head] != k.bytes[..]
+    {
         bail!("key mismatch");
     }
+    if sum(&d[head..]) != u64_at(24) {
+        bail!("checksum mismatch");
+    }
     let raw = lz4_flex::block::decompress_size_prepended(&d[head..]).map_err(|e| anyhow::anyhow!("lz4: {e}"))?;
-    decode(&raw)
+    let out = decode(&raw, yaws, pitches)?;
+    if let Ok(f) = std::fs::File::options().write(true).open(p) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
+    Ok(out)
 }
 
 pub fn save(p: &Path, k: &Key, spots: &[Spot], shots: &[Shot], counts: &Counts) -> Result<()> {
     let body = lz4_flex::block::compress_prepend_size(&encode(spots, shots, counts));
-    let mut d = Vec::with_capacity(MAGIC.len() + 4 + k.bytes.len() + body.len());
+    let mut d = Vec::with_capacity(HEAD + k.bytes.len() + body.len());
     d.extend(MAGIC);
+    d.extend(version().to_le_bytes());
+    d.extend(k.slot.to_le_bytes());
+    d.extend(sum(&body).to_le_bytes());
     d.extend((k.bytes.len() as u32).to_le_bytes());
     d.extend(&k.bytes);
     d.extend(body);
@@ -301,6 +340,50 @@ pub fn save(p: &Path, k: &Key, spots: &[Spot], shots: &[Shot], counts: &Counts) 
         let _ = std::fs::remove_file(&tmp);
     })?;
     Ok(())
+}
+
+fn head_of(p: &Path) -> Option<(u64, u64)> {
+    use std::io::Read;
+    let mut b = [0u8; 24];
+    std::fs::File::open(p).ok()?.read_exact(&mut b).ok()?;
+    (&b[..MAGIC.len()] == MAGIC).then(|| (u64::from_le_bytes(b[8..16].try_into().unwrap()), u64::from_le_bytes(b[16..24].try_into().unwrap())))
+}
+
+pub fn prune(dir: &Path, k: &Key) -> (usize, u64) {
+    let dir = dir.join("wallbang");
+    let Ok(rd) = std::fs::read_dir(&dir) else { return (0, 0) };
+    let (ver, mut gone, mut freed) = (version(), 0, 0);
+    let mut keep = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_file() || p.extension().is_none_or(|x| x != "bin") || p.file_name().and_then(|n| n.to_str()) == Some(k.name.as_str()) {
+            continue;
+        }
+        let Some((v, slot)) = head_of(&p) else { continue };
+        if v != ver || slot == k.slot {
+            if std::fs::remove_file(&p).is_ok() {
+                gone += 1;
+                freed += m.len();
+            }
+        } else {
+            keep.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), p));
+        }
+    }
+    let cur = std::fs::metadata(dir.join(&k.name)).map_or(0, |m| m.len());
+    let mut total = cur + keep.iter().map(|e| e.1).sum::<u64>();
+    keep.sort_by_key(|e| e.0);
+    for (_, len, p) in keep {
+        if total <= MAX_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total -= len;
+            gone += 1;
+            freed += len;
+        }
+    }
+    (gone, freed)
 }
 
 #[cfg(test)]
@@ -344,11 +427,13 @@ mod tests {
             shot(Vec3::new(1.0, 0.0, 0.0), 1, Stance::Stand, &[cross(1.0, true), cross(2.0, true), cross(3.0, true), cross(4.0, false)]),
         ];
         let counts = Counts { fired: 9, hits: 8, far: 1, made: 2, died: 1, thin: 3, ..Default::default() };
-        let (sp, sh, co) = decode(&encode(&spots, &shots, &counts)).unwrap();
+        let (sp, sh, co) = decode(&encode(&spots, &shots, &counts), 180, 5).unwrap();
         assert_eq!(sp.len(), 2);
         assert!(sp.iter().zip(&spots).all(|(a, b)| a.feet == b.feet && a.stance == b.stance));
         assert!(sh.len() == 3 && sh[2].crossings().len() == 4 && sh.iter().zip(&shots).all(|(a, b)| same(a, b)));
         assert_eq!((co.fired, co.hits, co.far, co.made, co.died, co.thin), (9, 8, 1, 2, 1, 3));
-        assert!(decode(&encode(&spots, &shots, &counts)[..40]).is_err());
+        assert!(decode(&encode(&spots, &shots, &counts)[..40], 180, 5).is_err());
+        assert!(decode(&encode(&spots, &shots, &counts), 179, 5).is_err());
+        assert!(decode(&encode(&spots, &shots, &counts), 180, 4).is_err());
     }
 }

@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use glam::DVec3;
 
+use super::cache::sum;
 use super::sim_s2::MERGE;
 use crate::bsp::Bsp;
+use crate::extra::{Extra, PhysSrc};
 use crate::nav::Stance;
 use crate::s2::bullet::{self, Bullet, Crossing};
 use crate::s2::surfprop::{FNV0, Surfaces, Weapon, fnv, weapons};
@@ -17,7 +19,26 @@ pub struct Cs2 {
     pub weapons: Vec<Weapon>,
     pub surf_hash: u64,
     pub data_hash: u64,
+    pub map_hash: u64,
     pub root: String,
+}
+
+fn map_hash(x: &Extra, map: &str) -> u64 {
+    let mut names = vec![format!("maps/{map}/world.vwrld_c"), format!("maps/{map}/world_physics.vmdl_c"), format!("maps/{map}.nav")];
+    names.extend(x.fs.names_with(&format!("maps/{map}/entities/")));
+    if let PhysSrc::Cs2(s) = &x.phys_src {
+        let mut m: Vec<String> = s.ents.iter().map(|e| format!("{}_c", e.0)).collect();
+        m.sort_unstable();
+        m.dedup();
+        names.extend(m);
+    }
+    let mut h = FNV0;
+    for n in names {
+        fnv(&mut h, n.as_bytes());
+        let v = x.fs.read(&n).map_or(u64::MAX, |d| sum(&d));
+        fnv(&mut h, &v.to_le_bytes());
+    }
+    h
 }
 
 impl Cs2 {
@@ -28,9 +49,11 @@ impl Cs2 {
         let mut data_hash = FNV0;
         fnv(&mut data_hash, &x.fs.read(VDATA).with_context(|| format!("reading {VDATA}"))?);
         let weapons = weapons(&x.fs)?;
-        let bullet = bullet::load(&x.fs, &bsp.name().to_lowercase(), &sp)?;
+        let map = bsp.name().to_lowercase();
+        let bullet = bullet::load(&x.fs, &map, &sp)?;
         fnv(&mut data_hash, &bullet.digest.to_le_bytes());
-        Ok(Cs2 { bullet, weapons, surf_hash: sp.digest, data_hash, root: root.display().to_string() })
+        let map_hash = map_hash(x, &map);
+        Ok(Cs2 { bullet, weapons, surf_hash: sp.digest, data_hash, map_hash, root: root.display().to_string() })
     }
 
     pub fn weapon(&self, name: &str) -> Option<&Weapon> {
