@@ -29,6 +29,7 @@ pub struct Ent {
     pub render: bool,
     pub tint: [f32; 3],
     pub alpha: f32,
+    pub actor: bool,
 }
 
 pub struct Lumps {
@@ -134,7 +135,7 @@ fn normalize(vals: &Value, disabled: &mut Vec<(String, DVec3)>) -> Option<Ent> {
     let c = nums(vals.get("rendercolor"));
     let tint = if c.len() >= 3 { [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0] } else { [1.0; 3] };
     let alpha = nums(vals.get("renderamt")).first().map_or(1.0, |a| (*a as f32 / 255.0).clamp(0.0, 1.0));
-    Some(Ent { kv, vmdl, xf, render, tint, alpha })
+    Some(Ent { kv, vmdl, xf, render, tint, alpha, actor: false })
 }
 
 fn read_lump(fs: &Fs, name: &str, out: &mut Lumps, depth: usize) -> Result<()> {
@@ -167,7 +168,7 @@ pub fn load(fs: &Fs, lumps: &[String]) -> Result<Lumps> {
         out.ents.insert(0, w);
     } else {
         let kv = HashMap::from([("classname".to_string(), "worldspawn".to_string())]);
-        out.ents.insert(0, Ent { kv, vmdl: None, xf: Xf::IDENTITY, render: false, tint: [1.0; 3], alpha: 1.0 });
+        out.ents.insert(0, Ent { kv, vmdl: None, xf: Xf::IDENTITY, render: false, tint: [1.0; 3], alpha: 1.0, actor: false });
     }
     Ok(out)
 }

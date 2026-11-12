@@ -137,6 +137,7 @@ pub struct Batch {
     pub verts: Vec<Vertex>,
     pub idx: Vec<u32>,
     pub chunks: Vec<Chunk>,
+    pub actor: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

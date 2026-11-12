@@ -1,3 +1,4 @@
+mod actors;
 mod addon;
 mod bsp;
 mod camera;
@@ -36,6 +37,7 @@ mod sky;
 mod svg;
 mod spin;
 mod stl;
+mod studio;
 mod sun;
 mod timing;
 mod wallbang;

@@ -42,6 +42,15 @@ pub struct Opts<'a> {
     pub crop: Option<[f64; 4]>,
     pub band: Option<[f64; 2]>,
     pub light: &'a LightParams,
+    pub placed: Vec<Placed>,
+}
+
+pub struct Placed {
+    pub model: String,
+    pub xf: Xf,
+    pub skin: usize,
+    pub posed: bool,
+    pub player: bool,
 }
 
 #[derive(Default, Debug)]
@@ -63,9 +72,12 @@ pub struct Built {
     pub missing: Vec<String>,
     pub no_base: usize,
     pub textures: usize,
+    pub items: usize,
+    pub players: usize,
+    pub unposed: Vec<String>,
 }
 
-type Key = (usize, Mode, u32, [u8; 3]);
+type Key = (usize, Mode, u32, [u8; 3], bool);
 
 struct Inst {
     model: u32,
@@ -79,6 +91,7 @@ struct Inst {
     prop: Option<usize>,
     origin: Option<DVec3>,
     flat: bool,
+    actor: bool,
 }
 
 struct Entry {
@@ -133,7 +146,7 @@ pub fn vhv_linear(c: [u8; 3]) -> [f32; 3] {
 
 fn inst(model: u32, xf: Xf) -> Inst {
     let nrm = xf.r.inverse().transpose();
-    Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, skin: 0, tint: [1.0; 3], alpha: 1.0, mode: None, prop: None, origin: None, flat: false }
+    Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, skin: 0, tint: [1.0; 3], alpha: 1.0, mode: None, prop: None, origin: None, flat: false, actor: false }
 }
 
 fn entity_inst(e: &Entity, model: u32) -> Option<Inst> {
@@ -219,16 +232,43 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
             out.ent_props += 1;
         }
     }
+    let mut posed: BTreeSet<u32> = BTreeSet::new();
+    let mut actor_insts: Vec<(u32, bool)> = Vec::new();
+    for p in &o.placed {
+        let mid = id(&p.model);
+        if p.posed {
+            posed.insert(mid);
+        }
+        let mut it = inst(mid, p.xf);
+        it.skin = p.skin;
+        it.actor = true;
+        actor_insts.push((mid, p.player));
+        insts.push(it);
+    }
     if insts.is_empty() {
         return out;
     }
 
-    let loaded: Vec<Result<Model, String>> =
-        names.par_iter().map(|n| Model::load(n, |p| fs.read(p).ok()).map_err(|e| format!("{e:#}"))).collect();
+    let loaded: Vec<Result<(Model, bool), String>> = names
+        .par_iter()
+        .enumerate()
+        .map(|(i, n)| {
+            if posed.contains(&(i as u32)) {
+                Model::load_posed(n, |p| fs.read(p).ok()).map(|(m, ok)| (m, !ok)).map_err(|e| format!("{e:#}"))
+            } else {
+                Model::load(n, |p| fs.read(p).ok()).map(|m| (m, false)).map_err(|e| format!("{e:#}"))
+            }
+        })
+        .collect();
     let mut models: Vec<Option<Model>> = Vec::with_capacity(loaded.len());
     for (n, r) in names.iter().zip(loaded) {
         match r {
-            Ok(m) => models.push(Some(m)),
+            Ok((m, unposed)) => {
+                if unposed {
+                    out.unposed.push(n.clone());
+                }
+                models.push(Some(m))
+            }
             Err(e) => {
                 if e.ends_with(": not found") {
                     out.missing_models.push(n.clone());
@@ -239,6 +279,11 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
         }
     }
     out.models = names.len();
+    for (mid, player) in actor_insts {
+        if models[mid as usize].is_some() {
+            if player { out.players += 1 } else { out.items += 1 }
+        }
+    }
     tm.lap("models");
 
     let mut entries: Vec<Entry> = Vec::new();
@@ -364,7 +409,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
         let mode = if alpha < 0.99 && matches!(mode, Mode::Opaque | Mode::AlphaTest) { Mode::Blend } else { mode };
         let alpha = if matches!(mode, Mode::Blend | Mode::Additive) { alpha } else { 1.0 };
         let t = quant(std::array::from_fn(|k| tint[k] * it.tint[k]));
-        let key = (tex, mode, alpha.to_bits(), t);
+        let key = (tex, mode, alpha.to_bits(), t, it.actor);
         let gi = *index.entry(key).or_insert_with(|| {
             groups.push((key, Vec::new()));
             groups.len() - 1
@@ -493,7 +538,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
     let batches: Vec<Batch> = parts
         .par_iter()
         .map(|&(gi, start, end)| {
-            let ((tex, mode, alpha, tint), list) = &groups[gi];
+            let ((tex, mode, alpha, tint, actor), list) = &groups[gi];
             let part = &list[start..end];
             let (verts, idx) = gather(part, &entries, |ei, v, ix| match clipped.get(&ei) {
                 Some(c) => {
@@ -525,6 +570,7 @@ pub fn add(map: &Map, fs: &Fs, ents: &[Entity], mesh: &mut Mesh, tex_ids: &mut H
                 verts,
                 idx,
                 chunks,
+                actor: *actor,
             }
         })
         .collect();
@@ -645,4 +691,64 @@ mod tests {
             println!("vhv {v:.3}: n {} cube median {med:.4} p25 {:.4} p75 {:.4}; ratio med/v^2.2 {:.3}; mean alpha {:.1}", b.len(), b[b.len() / 4], b[b.len() * 3 / 4], med / v.powf(2.2), alpha[bi][0] / alpha[bi][1]);
         }
     }
+}
+
+pub fn floor_at(phys: Option<&crate::phys::Phys>, p: DVec3, reach: f64) -> DVec3 {
+    let Some(ph) = phys else { return p };
+    let mut col = Vec::new();
+    ph.column(p.x, p.y, crate::phys::Mask::SOLID, &mut col);
+    match col.iter().map(|iv| iv.1 as f64).filter(|&t| t.is_finite() && t <= p.z + reach).reduce(f64::max) {
+        Some(t) if p.z - t <= DROP_MAX => DVec3::new(p.x, p.y, t),
+        _ => p,
+    }
+}
+
+const DROP_MAX: f64 = 512.0;
+pub const FLOOR_REACH: f64 = 8.0;
+
+pub fn placed(b: &crate::bsp::Bsp, fs: &Fs, phys: Option<&crate::phys::Phys>, raised: &[usize], show: crate::actors::Show) -> (Vec<Placed>, Vec<String>) {
+    use crate::actors;
+    let mut out = Vec::new();
+    let mut missing = BTreeSet::new();
+    if show.items {
+        for e in b.entities.iter().skip(1) {
+            let cls = e.class().to_lowercase();
+            if !actors::is_item_class(&cls) || e.model().is_some() {
+                continue;
+            }
+            let Some(o) = e.origin() else { continue };
+            match actors::source_item(e, |p| fs.has(p)) {
+                Some(m) => out.push(Placed {
+                    model: m,
+                    xf: Xf { r: super::entities::rotation(e), t: floor_at(phys, o, FLOOR_REACH) },
+                    skin: num(e, "skin", 0.0).max(0.0) as usize,
+                    posed: false,
+                    player: false,
+                }),
+                None => {
+                    missing.insert(cls);
+                }
+            }
+        }
+    }
+    if show.spawns && !b.is_l4d() {
+        let csgo = matches!(b.engine(), crate::bsp::Engine::Source(v) if v >= 21);
+        for s in actors::spawns(&b.entities) {
+            let e = &b.entities[s.index];
+            let mut o = e.origin().unwrap();
+            if raised.contains(&s.index) {
+                o.z -= crate::nav::STAND_OFS;
+            }
+            let (name, skin) = if b.is_tf2() {
+                (actors::TF2_PLAYERS[s.nth % actors::TF2_PLAYERS.len()], s.team)
+            } else {
+                let list = if csgo { actors::CSGO_PLAYERS[s.team] } else { actors::CSS_PLAYERS[s.team] };
+                (list[s.nth % list.len()], 0)
+            };
+            let yaw = super::entities::rotation(e).x_axis;
+            let r = DMat3::from_rotation_z(yaw.y.atan2(yaw.x));
+            out.push(Placed { model: format!("models/player/{name}.mdl"), xf: Xf { r, t: floor_at(phys, o, FLOOR_REACH) }, skin, posed: true, player: true });
+        }
+    }
+    (out, missing.into_iter().collect())
 }

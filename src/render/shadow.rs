@@ -119,7 +119,7 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.shadow_frame_bind, &[0]);
             let mut cur = None;
-            for b in self.sc.batches.iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest)) {
+            for b in self.sc.batches.iter().filter(|b| matches!(b.mode, Mode::Opaque | Mode::AlphaTest) && (self.show_actors || !b.actor)) {
                 let full = b.mode == Mode::AlphaTest;
                 if cur != Some(full) {
                     pass.set_pipeline(&self.sc.shadow_pipe[full as usize]);

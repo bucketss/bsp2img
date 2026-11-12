@@ -368,6 +368,7 @@ pub fn build_mesh(
                 verts: Vec::new(),
                 idx: Vec::new(),
                 chunks: Vec::new(),
+                actor: false,
             });
             batches.len() - 1
         });

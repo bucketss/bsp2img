@@ -43,6 +43,8 @@ pub struct Built {
     pub casters: usize,
 }
 
+type Group = (String, [u8; 3], Mode, f32, Vec<usize>, bool);
+
 struct Inst {
     model: u32,
     xf: Xf,
@@ -54,6 +56,7 @@ struct Inst {
     skin: String,
     probe: i64,
     caster: bool,
+    actor: bool,
 }
 
 struct Entry {
@@ -118,7 +121,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     let mut insts: Vec<Inst> = Vec::new();
     let inst = |model: u32, xf: Xf, tint: [f32; 3], alpha: f32, dcs: Option<u32>, skin: String, probe: i64, caster: bool| {
         let nrm = xf.r.inverse().transpose();
-        Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, tint, alpha, dcs, skin, probe, caster }
+        Inst { model, flip: xf.r.determinant() < 0.0, xf, nrm, tint, alpha, dcs, skin, probe, caster, actor: false }
     };
     for d in &world.draws {
         insts.push(inst(d.model, d.xf, d.tint, 1.0, d.dc, d.skin.clone(), d.probe, d.flags & BLOCK_LIGHT != 0));
@@ -131,7 +134,9 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
             n
         });
         let skin = e.kv.get("skin").cloned().unwrap_or_default();
-        insts.push(inst(id, e.xf, e.tint, e.alpha, None, skin, -1, false));
+        let mut it = inst(id, e.xf, e.tint, e.alpha, None, skin, -1, false);
+        it.actor = e.actor;
+        insts.push(it);
     }
 
     let loaded: Vec<Result<Model, String>> = names
@@ -225,8 +230,8 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         })
         .collect();
     tm.lap("materials");
-    let mut keys: HashMap<(String, [u8; 3], Mode, u32), usize> = HashMap::new();
-    let mut groups: Vec<(String, [u8; 3], Mode, f32, Vec<usize>)> = Vec::new();
+    let mut keys: HashMap<(String, [u8; 3], Mode, u32, bool), usize> = HashMap::new();
+    let mut groups: Vec<Group> = Vec::new();
     for (ei, e) in entries.iter().enumerate() {
         let it = &insts[e.inst as usize];
         let c = &models[it.model as usize].as_ref().unwrap().draws[e.dc as usize];
@@ -236,9 +241,9 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
         let alpha = mat.alpha * c.alpha * it.alpha;
         let md = mode(mat, alpha);
         let a = if matches!(md, Mode::Blend | Mode::Additive | Mode::Mod2x) { alpha } else { 1.0 };
-        let key = (mn.clone(), quant(t), md, a.to_bits());
+        let key = (mn.clone(), quant(t), md, a.to_bits(), it.actor);
         let gi = *keys.entry(key).or_insert_with(|| {
-            groups.push((mn, quant(t), md, a, Vec::new()));
+            groups.push((mn, quant(t), md, a, Vec::new(), it.actor));
             groups.len() - 1
         });
         groups[gi].4.push(ei);
@@ -279,7 +284,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     let mut group_l3 = Vec::with_capacity(groups.len());
     let mut group_tm = Vec::with_capacity(groups.len());
     let mut decoded = decoded;
-    for (mn, _, _, _, _) in &groups {
+    for (mn, _, _, _, _, _) in &groups {
         let mat = mats[mn].as_ref().unwrap();
         let label = mn.rsplit('/').next().unwrap_or(mn).trim_end_matches(".vmat").to_string();
         let mut add = |src: String, fill: &Fill| {
@@ -406,7 +411,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
     let batches: Vec<Batch> = parts
         .par_iter()
         .map(|&(gi, start, end)| {
-            let (mn, tq, md, alpha, list) = &groups[gi];
+            let (mn, tq, md, alpha, list, actor) = &groups[gi];
             let mat = mats[mn].as_ref().unwrap();
             let part = &list[start..end];
             let (verts, idx) = gather(part, &entries, |ei, out, ix| {
@@ -444,6 +449,7 @@ pub fn build(fs: &Fs, world: &World, ents: &[Ent], o: Opts) -> Built {
                 verts,
                 idx,
                 chunks,
+                actor: *actor,
             }
         })
         .collect();

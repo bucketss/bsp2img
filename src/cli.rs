@@ -150,6 +150,22 @@ pub struct IsoArgs {
     pub cam: CamArgs,
     #[command(flatten)]
     pub ex: ExplodeArgs,
+    #[command(flatten)]
+    pub show: ShowArgs,
+}
+
+#[derive(Args, Clone, Copy)]
+pub struct ShowArgs {
+    #[arg(long, help = "show items and weapons placed by the mapper")]
+    pub items: bool,
+    #[arg(long, help = "show team player models at the spawn points")]
+    pub spawns: bool,
+}
+
+impl ShowArgs {
+    pub fn show(&self) -> crate::actors::Show {
+        crate::actors::Show { items: self.items, spawns: self.spawns }
+    }
 }
 
 #[derive(Args, Clone)]
@@ -178,6 +194,8 @@ pub struct SpinArgs {
     pub cam: CamArgs,
     #[command(flatten)]
     pub ex: ExplodeArgs,
+    #[command(flatten)]
+    pub show: ShowArgs,
     #[arg(long, default_value_t = 720, value_parser = clap::value_parser!(u32).range(64..), help = "longest image side in pixels")]
     pub size: u32,
     #[arg(long, default_value_t = 35.264, help = "degrees down; 35.264 true iso, 30 for 2:1")]
@@ -232,6 +250,8 @@ pub struct AnimArgs {
     pub cam: CamArgs,
     #[command(flatten)]
     pub ex: ExplodeArgs,
+    #[command(flatten)]
+    pub show: ShowArgs,
 }
 
 #[derive(Args)]
@@ -517,6 +537,8 @@ pub struct PosterArgs {
     pub cam: CamArgs,
     #[command(flatten)]
     pub ex: ExplodeArgs,
+    #[command(flatten)]
+    pub show: ShowArgs,
 }
 
 #[derive(Args)]
@@ -560,6 +582,7 @@ impl Common {
             hull: self.hull.as_ref().and_then(|h| h.parse().ok()),
             hull_pad: self.hull_pad,
             tex_max: self.tex_max.max(16),
+            show: Default::default(),
             cancel: Default::default(),
         }
     }
@@ -641,7 +664,7 @@ pub fn run_spin(a: &SpinArgs) -> Result<()> {
         kind: if a.day_cycle { Anim::Day(DayOpts { from: a.day_from, to: a.day_to, turn: !a.no_turn }) } else { Anim::Spin },
         framing: a.cam.framing()?,
     };
-    run_anim(&a.c, &o, &a.ex)
+    run_anim(&a.c, &o, &a.ex, a.show)
 }
 
 impl AnimArgs {
@@ -672,12 +695,12 @@ pub fn run_peel(a: &PeelArgs) -> Result<()> {
         reverse: a.reverse,
         then_spin: a.a.then_spin,
     };
-    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Peel(p))?, &a.a.ex)
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Peel(p))?, &a.a.ex, a.a.show)
 }
 
 pub fn run_slice(a: &SliceArgs) -> Result<()> {
     let s = SliceOpts { slices: a.count, seconds: a.seconds, hold: a.hold, then_spin: a.a.then_spin };
-    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?, &a.a.ex)
+    run_anim(&a.c, &a.a.opts(&a.c, &a.l, Anim::Slice(s))?, &a.a.ex, a.a.show)
 }
 
 fn each_map(c: &Common, mut job: impl FnMut(&std::path::Path, &str) -> Result<()>) -> Result<()> {
@@ -721,9 +744,9 @@ fn in_named_dir<T>(c: &Common, name: &str, f: impl FnOnce(&std::path::Path) -> R
     res
 }
 
-fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs) -> Result<()> {
+fn run_anim(c: &Common, o: &AnimOpts, ex: &ExplodeArgs, show: ShowArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
-    let lo = c.load_opts();
+    let lo = LoadOpts { show: show.show(), ..c.load_opts() };
     let co = c.cut_opts();
     let ex = ex.opts();
     each_map(c, |path, name| {
@@ -1085,7 +1108,7 @@ pub fn run_kills(a: &KillsArgs) -> Result<()> {
 
 pub fn run_iso(a: &IsoArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
-    let lo = a.c.load_opts();
+    let lo = LoadOpts { show: a.show.show(), ..a.c.load_opts() };
     let co = a.c.cut_opts();
     let o = IsoOpts {
         size: a.size,
@@ -1211,7 +1234,7 @@ pub fn run_gltf(a: &GltfArgs, obj: bool) -> Result<()> {
 
 pub fn run_poster(a: &PosterArgs) -> Result<()> {
     let gpu = Gpu::headless()?;
-    let lo = a.c.load_opts();
+    let lo = LoadOpts { show: a.show.show(), ..a.c.load_opts() };
     let co = a.c.cut_opts();
     let o = PosterOpts {
         paper: a.paper.clone(),

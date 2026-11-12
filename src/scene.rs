@@ -74,6 +74,7 @@ pub struct LoadOpts {
     pub hull: Option<usize>,
     pub hull_pad: f64,
     pub tex_max: usize,
+    pub show: crate::actors::Show,
     pub cancel: Cancel,
 }
 
@@ -87,6 +88,7 @@ impl Default for LoadOpts {
             hull: None,
             hull_pad: 64.0,
             tex_max: 512,
+            show: Default::default(),
             cancel: Cancel::default(),
         }
     }
@@ -216,7 +218,7 @@ impl Scene {
         };
         opts.cancel.check()?;
         let mut tm = crate::prof::Timer::new("goldsrc");
-        let mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim)?;
+        let mut mesh = build_mesh(&bsp, &mut tex, &opts.light, rc.as_ref(), max_dim)?;
         opts.cancel.check()?;
         tm.lap("mesh");
         for e in tex.errors() {
@@ -239,6 +241,9 @@ impl Scene {
             log(format!("animated textures: {} sequences, {} water batches", seqs.len(), warps));
         }
         let levels = levels(&mesh, log);
+        if opts.show.any() {
+            log(crate::studio::add(&bsp, &dirs, &mut mesh, &opts.light, rc.as_ref(), opts.show).summary());
+        }
         let mask = match opts.hull {
             Some(h) => {
                 let t = Instant::now();

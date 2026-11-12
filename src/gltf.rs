@@ -999,7 +999,7 @@ pub fn export_gltf(
     let parts: Vec<Part> = mesh
         .batches
         .par_iter()
-        .filter(|b| b.mode != Mode::Mod2x)
+        .filter(|b| b.mode != Mode::Mod2x && !b.actor)
         .map(|b| Part {
             tex: b.tex,
             mode: b.mode,

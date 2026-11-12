@@ -9,6 +9,7 @@ pub mod light;
 pub mod model;
 pub mod nav;
 pub mod phy;
+pub mod pose;
 pub mod props;
 pub mod radar;
 pub mod sky;
@@ -136,8 +137,23 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         log(n.clone());
     }
     opts.cancel.check()?;
-    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, band, light: &light });
+    let placed = if opts.show.any() {
+        let (p, missing) = props::placed(&b, &x.fs, x.phys().ok(), &x.stats.raised, opts.show);
+        if !missing.is_empty() {
+            log(format!("no model known for: {}", missing.join(", ")));
+        }
+        p
+    } else {
+        Vec::new()
+    };
+    let pr = props::add(&map, &x.fs, &b.entities, &mut built.mesh, &mut built.tex_ids, props::Opts { tex_max: opts.tex_max, crop, band, light: &light, placed });
     log(pr.summary());
+    if opts.show.any() {
+        log(format!("shown: {} items, {} players", pr.items, pr.players));
+        if !pr.unposed.is_empty() {
+            log(format!("no idle pose found, bind pose used: {}", pr.unposed.join(", ")));
+        }
+    }
     if !pr.bad_models.is_empty() {
         log(format!("{} models failed ({} missing)", pr.bad_models.len(), pr.missing_models.len()));
     }
