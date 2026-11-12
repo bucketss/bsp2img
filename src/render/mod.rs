@@ -182,6 +182,7 @@ struct GpuBatch {
     zr: [f32; 2],
     bind: wgpu::BindGroup,
     frames: Vec<wgpu::BindGroup>,
+    actor: bool,
 }
 
 #[repr(C)]
@@ -377,6 +378,7 @@ pub struct Renderer {
     pick: std::sync::OnceLock<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     pub sun_env: SunEnv,
     pub tex_gamma: f32,
+    pub show_actors: bool,
 }
 
 fn make_batch(
@@ -446,7 +448,7 @@ fn make_batch(
     let chunks = if b.chunks.is_empty() { &whole[..] } else { &b.chunks[..] };
     let dv = |p: [f32; 3]| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64);
     let chunks = chunks.iter().map(|c| GpuChunk { first: c.first, count: c.count, lo: dv(c.lo), hi: dv(c.hi) }).collect();
-    Some(GpuBatch { mode: b.mode, chunks, pbuf, abuf, ibuf, zr, bind: make(view), frames })
+    Some(GpuBatch { mode: b.mode, chunks, pbuf, abuf, ibuf, zr, bind: make(view), frames, actor: b.actor })
 }
 
 fn batch_bind(dev: &wgpu::Device, layout: &wgpu::BindGroupLayout, v: [&wgpu::TextureView; 5], ub: &wgpu::Buffer) -> wgpu::BindGroup {
@@ -943,6 +945,7 @@ impl Renderer {
             pick: std::sync::OnceLock::new(),
             sun_env: SunEnv::default(),
             tex_gamma: 0.0,
+            show_actors: true,
             nearest,
             sc,
             gpu,
@@ -1490,7 +1493,7 @@ impl Renderer {
             };
             for &pipe in sets {
                 pass.set_pipeline(&self.sc.pipelines[pipe]);
-                for b in self.sc.batches.iter().filter(|b| modes.contains(&b.mode)) {
+                for b in self.sc.batches.iter().filter(|b| modes.contains(&b.mode) && (self.show_actors || !b.actor)) {
                     let bind = if anim && !b.frames.is_empty() { &b.frames[tick % b.frames.len()] } else { &b.bind };
                     pass.set_bind_group(1, bind, &[]);
                     pass.set_vertex_buffer(0, b.pbuf.slice(..));

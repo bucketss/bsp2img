@@ -90,10 +90,22 @@ impl Model {
         let mdl = read(&format!("{base}.mdl")).ok_or_else(|| anyhow!("{name}: not found"))?;
         let vvd = read(&format!("{base}.vvd")).ok_or_else(|| anyhow!("{name}: no .vvd"))?;
         let vtx = VTX_EXTS.iter().find_map(|e| read(&format!("{base}{e}"))).ok_or_else(|| anyhow!("{name}: no .vtx"))?;
-        Model::parse(&mdl, &vvd, &vtx).map_err(|e| anyhow!("{name}: {e}"))
+        Model::parse(&mdl, &vvd, &vtx, None).map_err(|e| anyhow!("{name}: {e}"))
     }
 
-    pub fn parse(mdl: &[u8], vvd: &[u8], vtx: &[u8]) -> Result<Model> {
+    pub fn load_posed(name: &str, read: impl Fn(&str) -> Option<Vec<u8>>) -> Result<(Model, bool)> {
+        let name = norm_name(name);
+        let base = name.strip_suffix(".mdl").unwrap_or(&name);
+        let mdl = read(&format!("{base}.mdl")).ok_or_else(|| anyhow!("{name}: not found"))?;
+        let vvd = read(&format!("{base}.vvd")).ok_or_else(|| anyhow!("{name}: no .vvd"))?;
+        let vtx = VTX_EXTS.iter().find_map(|e| read(&format!("{base}{e}"))).ok_or_else(|| anyhow!("{name}: no .vtx"))?;
+        let skin = catch_unwind(AssertUnwindSafe(|| super::pose::skin(&mdl, &read))).ok().flatten();
+        let posed = skin.is_some();
+        let m = Model::parse(&mdl, &vvd, &vtx, skin.as_deref()).map_err(|e| anyhow!("{name}: {e}"))?;
+        Ok((m, posed))
+    }
+
+    pub fn parse(mdl: &[u8], vvd: &[u8], vtx: &[u8], skin: Option<&[glam::DMat4]>) -> Result<Model> {
         HOOK.call_once(|| {
             let prev = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |i| {
@@ -103,7 +115,7 @@ impl Model {
             }));
         });
         QUIET.with(|q| q.set(true));
-        let r = catch_unwind(AssertUnwindSafe(|| build(mdl, vvd, vtx)));
+        let r = catch_unwind(AssertUnwindSafe(|| build(mdl, vvd, vtx, skin)));
         QUIET.with(|q| q.set(false));
         match r {
             Ok(r) => r,
@@ -148,7 +160,7 @@ impl Model {
     }
 }
 
-fn build(mdl_b: &[u8], vvd_b: &[u8], vtx_b: &[u8]) -> Result<Model> {
+fn build(mdl_b: &[u8], vvd_b: &[u8], vtx_b: &[u8], skin: Option<&[glam::DMat4]>) -> Result<Model> {
     let mdl = Mdl::read(mdl_b).map_err(|e| anyhow!("mdl: {e}"))?;
     let vvd = Vvd::read(vvd_b).map_err(|e| anyhow!("vvd: {e}"))?;
     let vtx = Vtx::read(vtx_b).map_err(|e| anyhow!("vtx: {e}"))?;
@@ -191,8 +203,17 @@ fn build(mdl_b: &[u8], vvd_b: &[u8], vtx_b: &[u8]) -> Result<Model> {
                         let Some(src) = usize::try_from(id).ok().and_then(|i| verts.get(i)) else {
                             bail!("vertex {id} out of range ({} in vvd)", verts.len());
                         };
-                        out.pos.push(src.position.into());
-                        out.normal.push(src.normal.into());
+                        match skin {
+                            Some(sk) => {
+                                let (p, n) = skinned(sk, src);
+                                out.pos.push(p);
+                                out.normal.push(n);
+                            }
+                            None => {
+                                out.pos.push(src.position.into());
+                                out.normal.push(src.normal.into());
+                            }
+                        }
                         out.uv.push(src.texture_coordinates);
                     }
                     for st in &sg.strips {
@@ -248,6 +269,26 @@ fn build(mdl_b: &[u8], vvd_b: &[u8], vtx_b: &[u8]) -> Result<Model> {
     })
 }
 
+fn skinned(sk: &[glam::DMat4], v: &vmdl::vvd::Vertex) -> ([f32; 3], [f32; 3]) {
+    let p0: [f32; 3] = v.position.into();
+    let n0: [f32; 3] = v.normal.into();
+    let (p0, n0) = (glam::DVec3::from(p0.map(f64::from)), glam::DVec3::from(n0.map(f64::from)));
+    let mut p = glam::DVec3::ZERO;
+    let mut n = glam::DVec3::ZERO;
+    let mut total = 0.0;
+    for w in v.bone_weights.weights() {
+        let Some(m) = sk.get(w.bone_id as usize) else { continue };
+        let k = w.weight as f64;
+        p += m.transform_point3(p0) * k;
+        n += m.transform_vector3(n0) * k;
+        total += k;
+    }
+    if total <= 1e-6 {
+        return (p0.as_vec3().to_array(), n0.as_vec3().to_array());
+    }
+    ((p / total).as_vec3().to_array(), n.normalize_or_zero().as_vec3().to_array())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,7 +338,7 @@ mod tests {
                 read_t += t0.elapsed().as_secs_f64();
                 let t0 = std::time::Instant::now();
                 let r = match &parts[..] {
-                    [Some(a), Some(b), Some(c)] => Model::parse(a, b, c),
+                    [Some(a), Some(b), Some(c)] => Model::parse(a, b, c, None),
                     _ => Err(anyhow!("missing files")),
                 };
                 parse_t += t0.elapsed().as_secs_f64();

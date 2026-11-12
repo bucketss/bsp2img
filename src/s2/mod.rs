@@ -53,7 +53,7 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         anyhow::bail!("{} is not a CS2 map (no maps/{map}/world.vwrld)", path.display());
     }
     let world = world::load(&fs, &map).context("loading world")?;
-    let lumps = entities::load(&fs, &world.lumps).context("loading entities")?;
+    let mut lumps = entities::load(&fs, &world.lumps).context("loading entities")?;
     if lumps.legacy > 0 {
         log(format!("{} entities use the legacy key-value format and were skipped", lumps.legacy));
     }
@@ -165,6 +165,16 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
     let nprobe = probes.as_ref().map_or(0, |p| p.count());
     tm.lap("probes");
     opts.cancel.check()?;
+    if opts.show.any() {
+        let x = bsp.extra.as_ref().unwrap();
+        let (ents, missing) = actors(&bsp, fs, x.phys().ok(), &x.stats.raised, opts.show);
+        if !missing.is_empty() {
+            log(format!("no model known for: {}", missing.join(", ")));
+        }
+        let (items, players) = (ents.iter().filter(|e| !e.kv.contains_key("player")).count(), ents.iter().filter(|e| e.kv.contains_key("player")).count());
+        log(format!("shown: {items} items, {players} players (CS2 agents in bind pose)"));
+        lumps.ents.extend(ents);
+    }
     let built = mesh::build(fs, &world, &lumps.ents, mesh::Opts { tex_max: opts.tex_max, crop, lightmap, hdr, probes });
     tm.lap("mesh");
     if nprobe > 0 {
@@ -203,4 +213,52 @@ pub fn load(path: &Path, opts: &LoadOpts, max_dim: u32, log: &mut dyn FnMut(Stri
         };
     }
     Ok((bsp, built.mesh))
+}
+
+fn actors(bsp: &Bsp, fs: &vpk::Fs, phys: Option<&crate::phys::Phys>, raised: &[usize], show: crate::actors::Show) -> (Vec<entities::Ent>, Vec<String>) {
+    use crate::actors as a;
+    use crate::s1::props::{FLOOR_REACH, floor_at};
+    let mut out = Vec::new();
+    let mut missing = std::collections::BTreeSet::new();
+    let ent = |vmdl: String, r: glam::DMat3, t: DVec3, player: bool| {
+        let mut kv = std::collections::HashMap::from([("classname".to_string(), "bsp2img_actor".to_string())]);
+        if player {
+            kv.insert("player".into(), "1".into());
+        }
+        entities::Ent { kv, vmdl: Some(vmdl), xf: world::Xf { r, t }, render: true, tint: [1.0; 3], alpha: 1.0, actor: true }
+    };
+    if show.items {
+        let names = fs.names_with("weapons/models/");
+        for e in bsp.entities.iter().skip(1) {
+            let cls = e.class().to_lowercase();
+            if !a::is_item_class(&cls) {
+                continue;
+            }
+            let Some(o) = e.origin() else { continue };
+            match a::cs2_item(e, &names) {
+                Some(m) => out.push(ent(m, crate::s1::entities::rotation(e), floor_at(phys, o, FLOOR_REACH), false)),
+                None => {
+                    missing.insert(cls);
+                }
+            }
+        }
+    }
+    if show.spawns {
+        for s in a::spawns(&bsp.entities) {
+            let e = &bsp.entities[s.index];
+            let list: Vec<&str> = a::CS2_PLAYERS[s.team].iter().copied().filter(|n| fs.has(&format!("agents/models/{n}.vmdl_c"))).collect();
+            let Some(n) = list.get(s.nth % list.len().max(1)) else {
+                missing.insert("agents".to_string());
+                continue;
+            };
+            let mut o = e.origin().unwrap();
+            if raised.contains(&s.index) {
+                o.z -= crate::nav::STAND_OFS;
+            }
+            let f = crate::s1::entities::rotation(e).x_axis;
+            let r = glam::DMat3::from_rotation_z(f.y.atan2(f.x));
+            out.push(ent(format!("agents/models/{n}.vmdl"), r, floor_at(phys, o, FLOOR_REACH), true));
+        }
+    }
+    (out, missing.into_iter().collect())
 }

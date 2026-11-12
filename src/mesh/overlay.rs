@@ -554,6 +554,7 @@ mod tests {
             verts,
             idx: vec![0, 1, 2, 0, 2, 3, 0, 5, 4],
             chunks: Vec::new(),
+            actor: false,
         };
         let mut mesh = Mesh {
             batches: vec![batch],

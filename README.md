@@ -119,6 +119,13 @@ Also the spin output options.
 | `--persp FOV` | Perspective |
 | `--camera FILE` | `.cam` from the GUI |
 
+### Show (iso, spin, peel, slice, poster)
+
+| Option | Effect |
+|---|---|
+| `--items` | Mapper-placed items and weapons |
+| `--spawns` | Team player models at spawns |
+
 ### overview
 
 | Option | Effect |

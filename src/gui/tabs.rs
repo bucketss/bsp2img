@@ -135,6 +135,10 @@ pub fn tab_scene(app: &mut App, ui: &mut egui::Ui) {
         ui.radio_value(&mut app.hull_kind, 1, "stand");
     });
     ui.add(egui::Slider::new(&mut app.load.hull_pad, 0.0..=256.0).text("hull pad"));
+    ui.heading("Show");
+    ui.checkbox(&mut app.load.show.items, "Items and weapons");
+    ui.checkbox(&mut app.load.show.spawns, "Players at spawns");
+    ui.weak("3D renders only; needs reload");
     egui::CollapsingHeader::new("Lighting").show(ui, |ui| {
         let l = &mut app.load.light;
         ui.add(egui::Slider::new(&mut l.brightness, 0.0..=3.0).text("brightness"));

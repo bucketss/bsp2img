@@ -134,6 +134,8 @@ pub fn start(spec: JobSpec, ctx: &egui::Context) -> Running {
             let (mut r, sky_tag) = spec.scene.job_renderer(&spec.gpu, spec.shared.as_ref(), spec.nearest, spec.sky.clone(), &mut log)?;
             if matches!(spec.job, Job::Iso(_) | Job::Anim(_) | Job::Poster(_)) {
                 spec.cut_tag += &spec.scene.apply_explode(&mut r, &spec.explode, &spec.cuts, &mut log);
+            } else {
+                r.show_actors = false;
             }
             if let Some(l) = spec.job.look() {
                 spec.scene.log_light(l, &mut log);
